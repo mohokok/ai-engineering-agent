@@ -33,8 +33,15 @@ Classification: For Review
 
 ## ADR-005 — Owner-approved public repository with strict zero-leak rule and tightened `protect-main` ruleset (Step 00 FIX)
 - **Context:** On GitHub Free, repository rulesets require public visibility (`403` when private), and the initial `protect-main` ruleset (`required_approving_review_count: 0`, `bypass_actors: []`) allowed a fast-forward push of open PR #2's head commit to `main` (`e4d4942`).
-- **Decision:** Keep `mohokok/ai-engineering-agent` **public** with explicit owner approval, update Section 0 Rule 12 (+ Rule 12a) and Step 00 in `ANTIGRAVITY_BUILD_PLAN.md` to forbid committing client files, drawings, personal data, keys, or tokens (because everything in this repo is publicly visible), and require `protect-main` on `main` to enforce `required_approving_review_count: 1`, `bypass_actors` = Repository admin (`actor_id: 5`) with `bypass_mode: "pull_request"`, plus deletion and force-push blocks.
-- **Alternatives:** Upgrade to GitHub Pro to keep the repository private with rulesets, or waive server-side branch protection on GitHub Free.
-- **Reason:** Owner explicitly approved keeping the repository public so free repository rulesets protect `main`, while reinforcing strict zero-leak controls across the repository and its history.
+- **Decision:** Keep `mohokok/ai-engineering-agent` **public** with explicit owner approval, update Section 0 Rule 12 (+ Rule 12a) and Step 00 in `ANTIGRAVITY_BUILD_PLAN.md` to forbid committing client files, drawings, personal data, keys, or tokens (because everything in this repo is publicly visible), and require `protect-main` on `main` to enforce `required_approving_review_count: 1`, `bypass_actors` = Repository admin (`actor_id: 5`) with `bypass_mode: "pull_request"`, plus deletion and force-push blocks. Explicitly accept and document the remaining limitation: Antigravity's fine-grained PAT belongs to the owner's account (`mohokok`), so it acts as the owner and `bypass_mode: "pull_request"` would technically permit that token to merge a PR via the GitHub API; direct pushes to `main` are blocked server-side, while PR self-merging is guarded by Rule 2a until/unless a separate non-admin collaborator account is created for Antigravity.
+- **Alternatives:** Upgrade to GitHub Pro to keep the repository private with rulesets, or create a separate non-admin GitHub account for Antigravity with Write-only permissions.
+- **Reason:** Owner explicitly approved keeping the repository public so free repository rulesets protect `main`, and explicitly accepted documenting the owner-token PR-merge bypass limitation in ADR-005 and the Step 00 report.
+
+## ADR-006 — UTF-8 (no BOM) Rule 14 and Step 00 Node encoding test (Step 00 FIX)
+- **Context:** During PR #3 dummy README testing, PowerShell `Set-Content` without `-Encoding UTF8` wrote Windows-1252 `0x97`, which `claude[bot]` flagged as encoding corruption risk for Arabic/RTL text. Python is not yet set up until Step 01, while Node.js (`v24.18.0`) is installed.
+- **Decision:** Add Section 0 Rule 14 requiring UTF-8 (no BOM) across all repository text files, add `docs/arabic-utf8-sample.md`, and verify every tracked text file in `git ls-files` with `tests/test_utf8_encoding.mjs` (`node --test`).
+- **Alternatives:** Wait until Step 01 to write a `pytest` encoding test.
+- **Reason:** Establishing the encoding rule and automated test in Step 00 prevents silent Windows-1252 / BOM corruption from entering the repository from the start.
+
 
 
