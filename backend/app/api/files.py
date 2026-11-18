@@ -20,13 +20,9 @@ from app.services.file_classification import (
     list_supported_extensions,
 )
 from app.services.files import (
-    EmptyFileError,
     FileRecordNotFoundError,
     FileTooLargeError,
     FileVersionNotFoundError,
-    TooManyFilesError,
-    UnsafeFilenameError,
-    UnsupportedFileTypeError,
     get_project_file,
     ingest_project_files,
     list_project_files,
@@ -57,6 +53,8 @@ def _build_download_response(
         )
     except (FileRecordNotFoundError, FileVersionNotFoundError) as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
 @router.get("/files/supported-extensions", response_model=SupportedExtensionsResponse)
@@ -103,16 +101,13 @@ async def upload_project_files_endpoint(
         )
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except FileExistsError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except FileTooLargeError as exc:
         raise HTTPException(
             status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail=str(exc)
         ) from exc
-    except (
-        UnsafeFilenameError,
-        UnsupportedFileTypeError,
-        EmptyFileError,
-        TooManyFilesError,
-    ) as exc:
+    except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
