@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { fetchHealth } from "./api";
 import { ProjectWorkspaceView } from "./components/ProjectWorkspaceView";
+import { ProviderSettingsView } from "./components/ProviderSettingsView";
 import type { HealthPayload, Lang } from "./types";
+
+type ActiveTab = "projects" | "settings";
 
 const COPY: Record<
   Lang,
@@ -15,11 +18,13 @@ const COPY: Record<
     backendStatusTitle: string;
     backendHealthy: string;
     offlinePrefix: string;
+    projectsTab: string;
+    settingsTab: string;
   }
 > = {
   ar: {
     title: "الوكيل الهندسي الاستشاري المحلي",
-    subtitle: "الخطوة 03 — رفع الملفات والتحقق من التكامل والإصدارات (RTL)",
+    subtitle: "الخطوة 04 — بنية المزودين القابلة للتبديل وتكامل Gemini API (RTL)",
     classificationLabel: "التصنيف: أولي (Preliminary)",
     toggleLang: "Switch to English (LTR)",
     refreshHealth: "تحديث فحص الخادم",
@@ -27,10 +32,12 @@ const COPY: Record<
     backendStatusTitle: "حالة الخادم الخلفي (/api/health)",
     backendHealthy: "متصل",
     offlinePrefix: "تعذر الاتصال بالخادم الخلفي: ",
+    projectsTab: "المشاريع والملفات",
+    settingsTab: "إعدادات Gemini والمزودين",
   },
   en: {
     title: "Local AI Engineering Consultancy Agent",
-    subtitle: "Step 03 — File Upload, Integrity & Versioning",
+    subtitle: "Step 04 — Swappable Provider Architecture & Gemini Settings",
     classificationLabel: "Classification: Preliminary",
     toggleLang: "التبديل إلى العربية (RTL)",
     refreshHealth: "Refresh Health Check",
@@ -38,11 +45,20 @@ const COPY: Record<
     backendStatusTitle: "Backend Health (/api/health)",
     backendHealthy: "Connected",
     offlinePrefix: "Backend unreachable: ",
+    projectsTab: "Projects & Files",
+    settingsTab: "AI Provider Settings",
   },
 };
 
-export function App({ initialLang = "ar" }: { initialLang?: Lang }) {
+export function App({
+  initialLang = "ar",
+  initialTab = "projects",
+}: {
+  initialLang?: Lang;
+  initialTab?: ActiveTab;
+}) {
   const [lang, setLang] = useState<Lang>(initialLang);
+  const [activeTab, setActiveTab] = useState<ActiveTab>(initialTab);
   const [health, setHealth] = useState<HealthPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
@@ -124,7 +140,28 @@ export function App({ initialLang = "ar" }: { initialLang?: Lang }) {
           )}
         </div>
 
-        <ProjectWorkspaceView lang={lang} />
+        <nav className="nav-tabs" aria-label="Main workspace navigation">
+          <button
+            type="button"
+            className={`btn ${activeTab === "projects" ? "" : "btn-secondary"}`}
+            onClick={() => setActiveTab("projects")}
+          >
+            {text.projectsTab}
+          </button>
+          <button
+            type="button"
+            className={`btn ${activeTab === "settings" ? "" : "btn-secondary"}`}
+            onClick={() => setActiveTab("settings")}
+          >
+            {text.settingsTab}
+          </button>
+        </nav>
+
+        {activeTab === "projects" ? (
+          <ProjectWorkspaceView lang={lang} />
+        ) : (
+          <ProviderSettingsView lang={lang} />
+        )}
       </section>
     </main>
   );

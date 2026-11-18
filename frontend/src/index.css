@@ -392,3 +392,28 @@ body {
   border-top: 1px solid #e2e8f0;
   padding-top: 0.85rem;
 }
+
+.nav-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  margin-top: 1rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid #e5eaf1;
+}
+
+.notice-box {
+  background: #fffbeb;
+  border-color: #fcd34d;
+  color: #78350f;
+}
+
+.badge-connected {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.badge-err {
+  background: #fee2e2;
+  color: #991b1b;
+}

@@ -1,11 +1,15 @@
 import type {
+  ConnectionTestOut,
   HealthPayload,
   ProjectCreateInput,
   ProjectDetail,
   ProjectFileListResponse,
   ProjectFilesUploadResponse,
   ProjectListResponse,
+  ProviderSettingsOut,
+  ProviderSettingsUpdate,
   SupportedExtensionsResponse,
+  TaskComplexity,
 } from "./types";
 
 async function extractErrorMessage(response: Response): Promise<string> {
@@ -92,4 +96,42 @@ export function getFileDownloadUrl(fileId: string, versionNumber?: number): stri
     return `${base}?version=${encodeURIComponent(String(versionNumber))}`;
   }
   return base;
+}
+
+export function getProviderSettings(): Promise<ProviderSettingsOut> {
+  return requestJson<ProviderSettingsOut>("/api/settings/provider");
+}
+
+export function updateProviderSettings(
+  payload: ProviderSettingsUpdate
+): Promise<ProviderSettingsOut> {
+  return requestJson<ProviderSettingsOut>("/api/settings/provider", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function saveProviderApiKey(apiKey: string): Promise<ProviderSettingsOut> {
+  return requestJson<ProviderSettingsOut>("/api/settings/provider/api-key", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ api_key: apiKey }),
+  });
+}
+
+export function deleteProviderApiKey(): Promise<ProviderSettingsOut> {
+  return requestJson<ProviderSettingsOut>("/api/settings/provider/api-key", {
+    method: "DELETE",
+  });
+}
+
+export function testProviderConnection(
+  complexity: TaskComplexity = "fast"
+): Promise<ConnectionTestOut> {
+  return requestJson<ConnectionTestOut>("/api/settings/provider/test", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ complexity }),
+  });
 }

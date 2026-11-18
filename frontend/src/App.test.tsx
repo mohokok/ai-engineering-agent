@@ -3,16 +3,22 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { App } from "./App";
 import {
   createProject,
+  deleteProviderApiKey,
   getFileDownloadUrl,
   getProject,
+  getProviderSettings,
   getSupportedExtensions,
   listProjectFiles,
   listProjects,
+  saveProviderApiKey,
+  testProviderConnection,
+  updateProviderSettings,
   uploadProjectFiles,
 } from "./api";
 import { ProjectFilesPanel } from "./components/ProjectFilesPanel";
 import { ProjectWorkspaceView } from "./components/ProjectWorkspaceView";
-import type { ProjectDetail, ProjectFileOut, ProjectSummary } from "./types";
+import { ProviderSettingsView } from "./components/ProviderSettingsView";
+import type { ProjectDetail, ProjectFileOut, ProjectSummary, ProviderSettingsOut } from "./types";
 
 const TWELVE_FOLDERS = [
   "01_Input_Documents",
@@ -245,5 +251,124 @@ describe("Step 03 ProjectFilesPanel & file API client", () => {
     expect(fetchMock).toHaveBeenNthCalledWith(3, "/api/files/supported-extensions", undefined);
     expect(getFileDownloadUrl("file-1")).toBe("/api/files/file-1/download");
     expect(getFileDownloadUrl("file-1", 1)).toBe("/api/files/file-1/download?version=1");
+  });
+});
+
+describe("Step 04 ProviderSettingsView & settings API client", () => {
+  it("renders Arabic RTL provider settings screen with masked password input and notice", () => {
+    const sampleSettings: ProviderSettingsOut = {
+      active_provider: "gemini",
+      available_providers: [
+        {
+          id: "gemini",
+          name: "Google Gemini (Official google-genai SDK)",
+          models: [
+            { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash", tier: "fast" },
+            { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro", tier: "deep" },
+          ],
+        },
+      ],
+      models: { fast: "gemini-2.5-flash", deep: "gemini-2.5-pro" },
+      usage_limits: { daily_request_limit: 200, daily_token_limit: 500000, max_output_tokens: 8192 },
+      daily_usage: {
+        date_utc: "2026-11-19",
+        requests: 2,
+        prompt_tokens: 120,
+        output_tokens: 45,
+        total_tokens: 165,
+      },
+      api_key_configured: true,
+      credential_backend: "WinVaultKeyring",
+      last_connection_check: {
+        status: "connected",
+        checked_at: "2026-11-19T00:00:00Z",
+        model: "gemini-2.5-flash",
+        message: "Connected cleanly to gemini-2.5-flash.",
+        latency_ms: 95,
+      },
+      consumer_subscription_notice:
+        "Consumer Gemini subscription does not include Gemini API access.",
+      classification: "Preliminary",
+    };
+
+    const shellHtml = renderToStaticMarkup(<App initialLang="ar" initialTab="settings" />);
+    expect(shellHtml).toContain('dir="rtl"');
+    expect(shellHtml).toContain("إعدادات Gemini والمزودين");
+    expect(shellHtml).toContain('type="password"');
+    expect(shellHtml).toContain("اشتراك Gemini الاستهلاكي");
+
+    const settingsHtml = renderToStaticMarkup(
+      <ProviderSettingsView lang="ar" initialSettings={sampleSettings} />
+    );
+    expect(settingsHtml).toContain("محفوظ بأمان (••••••••••••)");
+    expect(settingsHtml).toContain("WinVaultKeyring");
+    expect(settingsHtml).toContain("gemini-2.5-flash");
+    expect(settingsHtml).toContain("gemini-2.5-pro");
+    expect(settingsHtml).toContain("اختبار الاتصال بـ Gemini");
+    expect(settingsHtml).toContain("متصل بنجاح");
+  });
+
+  it("calls settings endpoints cleanly without exposing secrets", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ active_provider: "gemini", api_key_configured: false }), {
+          status: 200,
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ active_provider: "gemini", api_key_configured: true }), {
+          status: 200,
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ active_provider: "gemini", api_key_configured: true }), {
+          status: 200,
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ connected: true, model: "gemini-2.5-flash" }), {
+          status: 200,
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ active_provider: "gemini", api_key_configured: false }), {
+          status: 200,
+        })
+      );
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    await getProviderSettings();
+    await saveProviderApiKey("mock-nonkey-credential-value");
+    await updateProviderSettings({
+      active_provider: "gemini",
+      models: { fast: "gemini-2.5-flash", deep: "gemini-2.5-pro" },
+      usage_limits: { daily_request_limit: 100, daily_token_limit: 250000, max_output_tokens: 4096 },
+    });
+    await testProviderConnection("fast");
+    await deleteProviderApiKey();
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/settings/provider", undefined);
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/api/settings/provider/api-key",
+      expect.objectContaining({ method: "PUT" })
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      "/api/settings/provider",
+      expect.objectContaining({ method: "PUT" })
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      4,
+      "/api/settings/provider/test",
+      expect.objectContaining({ method: "POST" })
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      5,
+      "/api/settings/provider/api-key",
+      expect.objectContaining({ method: "DELETE" })
+    );
   });
 });
