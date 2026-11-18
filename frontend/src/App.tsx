@@ -1,14 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
-
-export interface HealthPayload {
-  status: string;
-  service: string;
-  version: string;
-  environment: string;
-  classification: string;
-}
-
-type Lang = "ar" | "en";
+import { fetchHealth } from "./api";
+import { ProjectWorkspaceView } from "./components/ProjectWorkspaceView";
+import type { HealthPayload, Lang } from "./types";
 
 const COPY: Record<
   Lang,
@@ -20,27 +13,30 @@ const COPY: Record<
     refreshHealth: string;
     checking: string;
     backendStatusTitle: string;
+    backendHealthy: string;
     offlinePrefix: string;
   }
 > = {
   ar: {
     title: "الوكيل الهندسي الاستشاري المحلي",
-    subtitle: "الخطوة 01 — التحقق من بيئة التشغيل المحلية وواجهة البرمجة (RTL)",
+    subtitle: "الخطوة 02 — قاعدة البيانات ومساحات عمل المشاريع (RTL)",
     classificationLabel: "التصنيف: أولي (Preliminary)",
     toggleLang: "Switch to English (LTR)",
     refreshHealth: "تحديث فحص الخادم",
     checking: "جاري التحقق من الخادم...",
     backendStatusTitle: "حالة الخادم الخلفي (/api/health)",
+    backendHealthy: "متصل",
     offlinePrefix: "تعذر الاتصال بالخادم الخلفي: ",
   },
   en: {
     title: "Local AI Engineering Consultancy Agent",
-    subtitle: "Step 01 — Local Windows Environment & API Health Placeholder",
+    subtitle: "Step 02 — Database & Project Workspaces",
     classificationLabel: "Classification: Preliminary",
     toggleLang: "التبديل إلى العربية (RTL)",
     refreshHealth: "Refresh Health Check",
     checking: "Checking backend health...",
     backendStatusTitle: "Backend Health (/api/health)",
+    backendHealthy: "Connected",
     offlinePrefix: "Backend unreachable: ",
   },
 };
@@ -61,15 +57,11 @@ export function App({ initialLang = "ar" }: { initialLang?: Lang }) {
     }
   }, [lang, dir]);
 
-  const fetchHealth = useCallback(async () => {
+  const loadHealth = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch("/api/health");
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`);
-      }
-      const data = (await res.json()) as HealthPayload;
+      const data = await fetchHealth();
       setHealth(data);
     } catch (err) {
       setHealth(null);
@@ -80,8 +72,8 @@ export function App({ initialLang = "ar" }: { initialLang?: Lang }) {
   }, []);
 
   useEffect(() => {
-    void fetchHealth();
-  }, [fetchHealth]);
+    void loadHealth();
+  }, [loadHealth]);
 
   return (
     <main className="app-shell" dir={dir} lang={lang}>
@@ -104,8 +96,8 @@ export function App({ initialLang = "ar" }: { initialLang?: Lang }) {
           </button>
           <button
             type="button"
-            className="btn"
-            onClick={() => void fetchHealth()}
+            className="btn btn-secondary"
+            onClick={() => void loadHealth()}
             disabled={loading}
           >
             {loading ? text.checking : text.refreshHealth}
@@ -113,24 +105,26 @@ export function App({ initialLang = "ar" }: { initialLang?: Lang }) {
         </div>
 
         <div
-          className={`status-box ${
+          className={`status-box compact-status ${
             health?.status === "ok" ? "status-ok" : error ? "status-err" : ""
           }`}
         >
-          <strong>{text.backendStatusTitle}</strong>
-          {loading && !health && !error && <p>{text.checking}</p>}
+          <strong>{text.backendStatusTitle}:</strong>{" "}
+          {loading && !health && !error && <span>{text.checking}</span>}
           {error && (
-            <p>
+            <span>
               {text.offlinePrefix}
               <code>{error}</code>
-            </p>
+            </span>
           )}
           {health && (
-            <pre style={{ margin: "0.5rem 0 0", direction: "ltr", textAlign: "left" }}>
-              {JSON.stringify(health, null, 2)}
-            </pre>
+            <span>
+              {text.backendHealthy} ({health.service} v{health.version} — {health.classification})
+            </span>
           )}
         </div>
+
+        <ProjectWorkspaceView lang={lang} />
       </section>
     </main>
   );
