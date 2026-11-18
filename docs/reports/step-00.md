@@ -113,22 +113,20 @@ Output:
 ```
 Every difference matches ADR-001 exactly (`issues: write` + `id-token: write`, `--allowedTools`, and `REPO`/`PR NUMBER`/`gh pr comment` prompt context).
 
-### C. `gitleaks` full-history secret scan across all refs (at `022a545`, prior to committing this report)
+### C. `gitleaks` full-history secret scan across all refs (at final PR #6 head `fc3b1d8`, colour codes stripped)
 ```powershell
-git show-ref
-git rev-list --all --oneline
 & "<scratch>\gitleaks\gitleaks.exe" version
-& "<scratch>\gitleaks\gitleaks.exe" git . --log-opts="--all" --no-banner -v
+& "<scratch>\gitleaks\gitleaks.exe" git . --log-opts="--all" --no-banner -v 2>&1 | ForEach-Object { $_ -replace '\x1b\[[0-9;]*m','' }
 "gitleaks (--all) exit code: $LASTEXITCODE"
 ```
-Output (across all commits in `git rev-list --all`, covering `main`, `step-00-fix-public-repo-and-report` at `022a545`, `step-00-github-review-pipeline`, and `refs/remotes/origin/pr/1..5`; commit `9af9813` is empty so `gitleaks` scanned all 12 non-empty commits):
+Output (15 total commits in `git rev-list --all`, covering `main`, `step-00-fix-public-repo-and-report` at `fc3b1d8`, `step-00-github-review-pipeline`, and `refs/remotes/origin/pr/1..5`; commit `9af9813` is empty so `gitleaks` scanned all 14 non-empty commits):
 ```text
-6:54PM INF 12 commits scanned.
-6:54PM INF scanned ~92697 bytes (92.70 KB) in 228ms
-6:54PM INF no leaks found
-gitleaks exit code: 0
+8.30.1
+7:08PM INF 14 commits scanned.
+7:08PM INF scanned ~95721 bytes (95.72 KB) in 164ms
+7:08PM INF no leaks found
+gitleaks (--all) exit code: 0
 ```
-*(Post-commit `gitleaks`, `git grep`, and `node --test` output on the final PR #6 head commit is pasted in the PR #6 description and chat summary after committing this report.)*
 
 ### D. Updated `protect-main` ruleset (`id: 27557147`) and push-rejection tests
 - Ruleset API check: `enforcement: "active"`, `rules: [deletion, non_fast_forward, pull_request(required_approving_review_count: 1)]`, `bypass_actors: [{actor_id: 5, actor_type: "RepositoryRole", bypass_mode: "pull_request"}]`, `current_user_can_bypass: "pull_requests_only"`.
@@ -148,7 +146,7 @@ gitleaks exit code: 0
 3. **Run stays within per-run budget cap:** **PASS** (`$0.1208` and `$0.1128` vs `--max-budget-usd 2`).
 4. **Antigravity cannot push to `main`:** **PASS** (both direct push and open-PR-head push rejected by GitHub `protect-main` with `GH013`, exit `1`; local `pre-push` hook is only a secondary convenience guard because `--no-verify` skips it).
 5. **Repo and its full git history contain no secrets:** **PASS** (`gitleaks 8.30.1 --log-opts="--all"`: `no leaks found`, exit `0`; planted non-live dummy string in closed unmerged `refs/pull/4/head` only, `0` matches on `main` or `HEAD`).
-6. **Every committed text file (including an Arabic sample file) passes UTF-8 (no BOM) check:** **PASS** (`node --test tests/test_utf8_encoding.mjs`: 2/2 passed).
+6. **Every committed text file (including an Arabic sample file) passes UTF-8 (no BOM) & Rule 12a path checks:** **PASS** (`node --test tests/test_utf8_encoding.mjs tests/test_no_local_paths.mjs`: 3/3 passed).
 
 ## 5. Decisions made (also in [docs/DECISIONS.md](../DECISIONS.md))
 - **ADR-001:** Verified `claude-code-action@v1` permissions/inputs (`id-token: write`, `issues: write`, `--allowedTools`, `REPO`/`PR NUMBER`/`gh pr comment`).
