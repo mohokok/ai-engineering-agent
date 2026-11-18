@@ -7,11 +7,15 @@ const BINARY_EXTENSIONS = new Set([
   ".dwg", ".rvt", ".rfa", ".rte", ".docx", ".xlsx", ".pptx", ".sqlite", ".db",
 ]);
 
+/** Return all git-tracked file paths from full `git ls-files -z`, including binaries. */
+export function getAllTrackedFiles() {
+  const out = execFileSync("git", ["ls-files", "-z"], { encoding: "utf8" });
+  return out.split("\0").filter(Boolean);
+}
+
 /** Return git-tracked file paths excluding known binary extensions. */
 export function getTrackedTextFiles() {
-  const out = execFileSync("git", ["ls-files", "-z"], { encoding: "utf8" });
-  return out
-    .split("\0")
-    .filter(Boolean)
-    .filter((filePath) => !BINARY_EXTENSIONS.has(path.extname(filePath).toLowerCase()));
+  return getAllTrackedFiles().filter(
+    (filePath) => !BINARY_EXTENSIONS.has(path.extname(filePath).toLowerCase())
+  );
 }

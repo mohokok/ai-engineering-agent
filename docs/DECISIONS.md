@@ -45,8 +45,8 @@ Classification: For Review
 
 ## ADR-007 — Step 01 Windows dev environment, ports, and startup launcher (Step 01)
 - **Context:** Step 01 requires a reproducible Windows dev environment with `scripts/start.bat` opening a placeholder UI and `/api/health` returning `OK`. Windows `timeout.exe` fails under non-interactive stdin redirection, and PowerShell `ExecutionPolicy` blocks `npm.ps1` unless `npm.cmd` is invoked.
-- **Decision:** Run FastAPI (`uvicorn`) on `127.0.0.1:8000` and Vite React/TypeScript on `localhost:5173` (proxying `/api` to `127.0.0.1:8000`), invoke `npm.cmd` in `scripts/start.bat`, use `scripts/wait_for_servers.py` instead of `timeout.exe` to poll HTTP readiness before opening the browser, and pin `backend/.venv` to Python 3.12.10 (`winget install Python.Python.3.12`). Keep `.env.example` free of real secrets.
-- **Alternatives:** Use `timeout.exe` / fixed `sleep` in `.bat`, or serve static Vite builds from FastAPI in dev.
-- **Reason:** Polling real HTTP readiness avoids race conditions and works reliably in both interactive CMD windows and automated smoke checks, while Vite dev proxy supports hot reload during Phases A–F.
+- **Decision:** Run FastAPI (`uvicorn`) on `127.0.0.1:8000` and Vite React/TypeScript on `127.0.0.1:5173` (using one consistent loopback host `127.0.0.1`, with `vite.config.ts` reading `BACKEND_HOST`/`BACKEND_PORT`/`FRONTEND_HOST`/`FRONTEND_PORT` from repo-root `.env` and `process.env`), invoke `npm.cmd` in `scripts/start.bat`, use `scripts/wait_for_servers.py` instead of `timeout.exe`, resolve blank or relative `WORKSPACES_DIR` against `REPO_ROOT` in `Settings` (removing `DATABASE_URL` from `.env.example` until Step 02), and pin exact tested Python versions (`fastapi==0.164.0`, `uvicorn[standard]==0.54.0`, `pydantic-settings==2.16.3`, `pytest==8.4.2`, `httpx2==2.16.2`) in `backend/requirements.txt`.
+- **Alternatives:** Use `timeout.exe` / fixed `sleep` in `.bat`, hardcode Vite proxy port, or rely on `httpx` fallback despite Starlette 1.10.0 deprecation warning.
+- **Reason:** Polling real HTTP readiness avoids race conditions, env-driven proxy/host config prevents drift when ports change, and verified `httpx2` keeps `TestClient` warning-free and reproducible.
 
 

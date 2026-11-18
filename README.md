@@ -49,7 +49,7 @@ Local Windows 10/11 AI engineering consultancy platform supporting **Arabic (RTL
    ```
 
 4. **Launch both servers & open UI:**
-   Run `scripts\start.bat` from the repository root (opens `http://localhost:5173`, proxying `/api/*` to `http://127.0.0.1:8000/api/*`).
+   Run `scripts\start.bat` from the repository root (opens `http://127.0.0.1:5173`, proxying `/api/*` to `http://127.0.0.1:8000/api/*`).
 
 ## Repository Safety & Encoding Tests
 

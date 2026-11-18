@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { getTrackedTextFiles } from "./helpers.mjs";
+import { getAllTrackedFiles, getTrackedTextFiles } from "./helpers.mjs";
 
 const LOCAL_USER_PATH_REGEX = new RegExp(
   "(?:[A-Za-z]:[\\\\/]Users[\\\\/]|/Users/|/home/)(?!<user>)[A-Za-z0-9_.-]+",
@@ -27,6 +27,11 @@ export function isWorkspaceTrackedPath(filePath) {
   return WORKSPACE_TRACKED_PATH_REGEX.test(filePath);
 }
 
+/** Filter a file path list for any path located under /workspaces/. */
+export function findTrackedWorkspaceFiles(filePaths) {
+  return filePaths.filter((filePath) => isWorkspaceTrackedPath(filePath));
+}
+
 test("no committed text file leaks local user home paths (Rule 12a)", () => {
   const files = getTrackedTextFiles();
   assert.ok(files.length > 0, "Expected at least one tracked text file");
@@ -39,9 +44,10 @@ test("no committed text file leaks local user home paths (Rule 12a)", () => {
   assert.deepEqual(hits, [], `Personal path leak(s) found:\n${hits.join("\n")}`);
 });
 
-test("no committed file is tracked inside /workspaces/ (Rule 12a)", () => {
-  const files = getTrackedTextFiles();
-  const workspaceHits = files.filter((filePath) => isWorkspaceTrackedPath(filePath));
+test("no committed file (including binaries) is tracked inside /workspaces/ (Rule 12a)", () => {
+  const allFiles = getAllTrackedFiles();
+  assert.ok(allFiles.length > 0, "Expected at least one tracked file");
+  const workspaceHits = findTrackedWorkspaceFiles(allFiles);
   assert.deepEqual(
     workspaceHits,
     [],
@@ -59,12 +65,13 @@ test("local user path detector catches other drive letters ([A-Za-z]:\\Users\\)"
   assert.equal(scanTextForLocalPaths(safePlaceholder, "sample.txt").length, 0);
 });
 
-test("/workspaces/ detector flags tracked workspace paths and allows normal paths", () => {
+test("/workspaces/ detector flags tracked binary and text workspace paths", () => {
+  const binaryWorkspace = "work" + "spaces/p/drawing.pdf";
   const absWorkspace = "/work" + "spaces/proj-01/01_Input_Documents/spec.pdf";
-  const relWorkspace = "work" + "spaces/proj-01/doc.txt";
   const safePath = "backend/app/services/workspace_manager.py";
 
-  assert.equal(isWorkspaceTrackedPath(absWorkspace), true);
-  assert.equal(isWorkspaceTrackedPath(relWorkspace), true);
-  assert.equal(isWorkspaceTrackedPath(safePath), false);
+  assert.deepEqual(
+    findTrackedWorkspaceFiles([safePath, binaryWorkspace, absWorkspace]),
+    [binaryWorkspace, absWorkspace]
+  );
 });

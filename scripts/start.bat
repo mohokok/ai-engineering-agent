@@ -6,15 +6,17 @@ for %%I in ("%SCRIPT_DIR%..") do set "REPO_ROOT=%%~fI"
 
 if not defined BACKEND_HOST set "BACKEND_HOST=127.0.0.1"
 if not defined BACKEND_PORT set "BACKEND_PORT=8000"
+if not defined FRONTEND_HOST set "FRONTEND_HOST=127.0.0.1"
 if not defined FRONTEND_PORT set "FRONTEND_PORT=5173"
 
 if exist "%REPO_ROOT%\.env" (
     for /f "usebackq tokens=1,* delims==" %%A in ("%REPO_ROOT%\.env") do (
         set "KEY=%%A"
         if not "!KEY!"=="" if not "!KEY:~0,1!"=="#" (
-            if /i "!KEY!"=="BACKEND_HOST" set "BACKEND_HOST=%%B"
-            if /i "!KEY!"=="BACKEND_PORT" set "BACKEND_PORT=%%B"
-            if /i "!KEY!"=="FRONTEND_PORT" set "FRONTEND_PORT=%%B"
+            if /i "!KEY!"=="BACKEND_HOST" if not "%%B"=="" set "BACKEND_HOST=%%B"
+            if /i "!KEY!"=="BACKEND_PORT" if not "%%B"=="" set "BACKEND_PORT=%%B"
+            if /i "!KEY!"=="FRONTEND_HOST" if not "%%B"=="" set "FRONTEND_HOST=%%B"
+            if /i "!KEY!"=="FRONTEND_PORT" if not "%%B"=="" set "FRONTEND_PORT=%%B"
         )
     )
 )
@@ -43,11 +45,11 @@ if not exist "%REPO_ROOT%\frontend\node_modules" (
 echo Starting Backend on http://%BACKEND_HOST%:%BACKEND_PORT% ...
 start "AI Engineering Agent - Backend" /D "%REPO_ROOT%\backend" "%PYTHON_EXE%" -m uvicorn app.main:app --host %BACKEND_HOST% --port %BACKEND_PORT% --reload
 
-echo Starting Frontend on http://localhost:%FRONTEND_PORT% ...
-start "AI Engineering Agent - Frontend" /D "%REPO_ROOT%\frontend" cmd /c "npm.cmd run dev -- --host localhost --port %FRONTEND_PORT%"
+echo Starting Frontend on http://%FRONTEND_HOST%:%FRONTEND_PORT% ...
+start "AI Engineering Agent - Frontend" /D "%REPO_ROOT%\frontend" cmd /c "npm.cmd run dev -- --host %FRONTEND_HOST% --port %FRONTEND_PORT%"
 
 echo Waiting for backend and frontend to listen...
-"%PYTHON_EXE%" "%REPO_ROOT%\scripts\wait_for_servers.py" "http://%BACKEND_HOST%:%BACKEND_PORT%/api/health" "http://localhost:%FRONTEND_PORT%/"
+"%PYTHON_EXE%" "%REPO_ROOT%\scripts\wait_for_servers.py" "http://%BACKEND_HOST%:%BACKEND_PORT%/api/health" "http://%FRONTEND_HOST%:%FRONTEND_PORT%/"
 if errorlevel 1 (
     echo [WARN] Backend or frontend did not respond within 20 seconds.
 ) else (
@@ -55,8 +57,8 @@ if errorlevel 1 (
 )
 
 if not "%NO_BROWSER%"=="1" (
-    start "" "http://localhost:%FRONTEND_PORT%"
+    start "" "http://%FRONTEND_HOST%:%FRONTEND_PORT%"
 )
 
-echo Launched backend (http://%BACKEND_HOST%:%BACKEND_PORT%/api/health) and frontend (http://localhost:%FRONTEND_PORT%).
+echo Launched backend (http://%BACKEND_HOST%:%BACKEND_PORT%/api/health) and frontend (http://%FRONTEND_HOST%:%FRONTEND_PORT%).
 endlocal
