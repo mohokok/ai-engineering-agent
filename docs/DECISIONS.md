@@ -43,3 +43,10 @@ Classification: For Review
 - **Alternatives:** Wait until Step 01 to write a `pytest` encoding test.
 - **Reason:** Establishing the encoding rule and automated test in Step 00 prevents silent Windows-1252 / BOM corruption from entering the repository from the start.
 
+## ADR-007 — Step 01 Windows dev environment, ports, and startup launcher (Step 01)
+- **Context:** Step 01 requires a reproducible Windows dev environment with `scripts/start.bat` opening a placeholder UI and `/api/health` returning `OK`. Windows `timeout.exe` fails under non-interactive stdin redirection, and PowerShell `ExecutionPolicy` blocks `npm.ps1` unless `npm.cmd` is invoked.
+- **Decision:** Run FastAPI (`uvicorn`) on `127.0.0.1:8000` and Vite React/TypeScript on `localhost:5173` (proxying `/api` to `127.0.0.1:8000`), invoke `npm.cmd` in `scripts/start.bat`, use `scripts/wait_for_servers.py` instead of `timeout.exe` to poll HTTP readiness before opening the browser, and pin `backend/.venv` to Python 3.12.10 (`winget install Python.Python.3.12`). Keep `.env.example` free of real secrets.
+- **Alternatives:** Use `timeout.exe` / fixed `sleep` in `.bat`, or serve static Vite builds from FastAPI in dev.
+- **Reason:** Polling real HTTP readiness avoids race conditions and works reliably in both interactive CMD windows and automated smoke checks, while Vite dev proxy supports hot reload during Phases A–F.
+
+
