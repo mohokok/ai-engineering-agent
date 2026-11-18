@@ -3,7 +3,7 @@
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import MetaData
+from sqlalchemy import CheckConstraint, MetaData
 from sqlalchemy.orm import DeclarativeBase
 
 NAMING_CONVENTION = {
@@ -13,6 +13,23 @@ NAMING_CONVENTION = {
     "fk": "fk_%(table_name)s_%(column_0_name)s_%(referred_table_name)s",
     "pk": "pk_%(table_name)s",
 }
+
+CLASSIFICATION_LABELS: tuple[str, ...] = (
+    "Preliminary",
+    "Conceptual",
+    "For Review",
+    "For Coordination",
+    "For Approval",
+)
+
+
+def classification_check_constraint() -> CheckConstraint:
+    """Return a CHECK constraint enforcing the five allowed classification labels."""
+    allowed = ", ".join(f"'{label}'" for label in CLASSIFICATION_LABELS)
+    return CheckConstraint(
+        f"classification IN ({allowed})",
+        name="classification_valid",
+    )
 
 
 def utc_now() -> datetime:

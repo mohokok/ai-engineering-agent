@@ -100,6 +100,8 @@ def create_project(
         db.refresh(project)
     except Exception:
         db.rollback()
+        # Safe rollback: project_dir was just created with exist_ok=False for a new UUID slug,
+        # so this only removes the empty 12-folder tree created by the same failed request.
         shutil.rmtree(project_dir, ignore_errors=True)
         raise
 

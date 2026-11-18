@@ -16,13 +16,14 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.db.base import Base, new_uuid, utc_now
+from app.db.base import Base, classification_check_constraint, new_uuid, utc_now
 
 
 class Project(Base):
     """Engineering project record tied to an isolated workspace directory."""
 
     __tablename__ = "projects"
+    __table_args__ = (classification_check_constraint(),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
     code: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
@@ -47,7 +48,7 @@ class Project(Base):
     )
 
     files: Mapped[list["ProjectFile"]] = relationship(
-        back_populates="project", cascade="all, delete-orphan"
+        back_populates="project", cascade="save-update, merge", passive_deletes="all"
     )
     tasks: Mapped[list["Task"]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
@@ -71,10 +72,11 @@ class ProjectFile(Base):
     """Registered input, original, or generated file within a project workspace."""
 
     __tablename__ = "files"
+    __table_args__ = (classification_check_constraint(),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
     project_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("projects.id", ondelete="CASCADE"), index=True, nullable=False
+        String(36), ForeignKey("projects.id", ondelete="RESTRICT"), index=True, nullable=False
     )
     folder_name: Mapped[str] = mapped_column(String(64), nullable=False)
     original_filename: Mapped[str] = mapped_column(String(512), nullable=False)
@@ -98,7 +100,7 @@ class ProjectFile(Base):
 
     project: Mapped["Project"] = relationship(back_populates="files")
     versions: Mapped[list["FileVersion"]] = relationship(
-        back_populates="file", cascade="all, delete-orphan"
+        back_populates="file", cascade="save-update, merge", passive_deletes="all"
     )
 
 
@@ -110,7 +112,7 @@ class FileVersion(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
     file_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("files.id", ondelete="CASCADE"), index=True, nullable=False
+        String(36), ForeignKey("files.id", ondelete="RESTRICT"), index=True, nullable=False
     )
     version_number: Mapped[int] = mapped_column(Integer, nullable=False)
     stored_relative_path: Mapped[str] = mapped_column(String(1024), nullable=False)
@@ -129,6 +131,7 @@ class Task(Base):
     """Autonomous engineering assignment belonging to a project."""
 
     __tablename__ = "tasks"
+    __table_args__ = (classification_check_constraint(),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
     project_id: Mapped[str] = mapped_column(
@@ -192,6 +195,7 @@ class Deliverable(Base):
     """Generated consultancy deliverable with mandatory review classification."""
 
     __tablename__ = "deliverables"
+    __table_args__ = (classification_check_constraint(),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
     project_id: Mapped[str] = mapped_column(
@@ -294,6 +298,7 @@ class Calculation(Base):
     """Deterministic engineering calculation record showing inputs, equations, and results."""
 
     __tablename__ = "calculations"
+    __table_args__ = (classification_check_constraint(),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
     project_id: Mapped[str] = mapped_column(
