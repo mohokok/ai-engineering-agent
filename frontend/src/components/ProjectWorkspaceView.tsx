@@ -1,5 +1,6 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { createProject, getProject, listProjects } from "../api";
+import { ProjectFilesPanel } from "./ProjectFilesPanel";
 import type {
   Lang,
   ProjectClassification,
@@ -317,6 +318,8 @@ export function ProjectWorkspaceView({
               </li>
             ))}
           </ul>
+
+          <ProjectFilesPanel lang={lang} projectId={openedProject.id} />
         </section>
       ) : (
         <>

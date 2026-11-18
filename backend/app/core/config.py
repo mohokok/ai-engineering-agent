@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     workspaces_dir: Path = REPO_ROOT / "workspaces"
     database_url: str = ""
     cors_origins: str = "http://127.0.0.1:5173,http://localhost:5173"
+    max_upload_size_bytes: int = 50 * 1024 * 1024
+    max_files_per_upload: int = 25
 
     model_config = SettingsConfigDict(
         env_file=str(REPO_ROOT / ".env"),

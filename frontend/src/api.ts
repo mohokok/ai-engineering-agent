@@ -2,7 +2,10 @@ import type {
   HealthPayload,
   ProjectCreateInput,
   ProjectDetail,
+  ProjectFileListResponse,
+  ProjectFilesUploadResponse,
   ProjectListResponse,
+  SupportedExtensionsResponse,
 } from "./types";
 
 async function extractErrorMessage(response: Response): Promise<string> {
@@ -54,4 +57,39 @@ export function createProject(payload: ProjectCreateInput): Promise<ProjectDetai
 
 export function getProject(projectId: string): Promise<ProjectDetail> {
   return requestJson<ProjectDetail>(`/api/projects/${encodeURIComponent(projectId)}`);
+}
+
+export function getSupportedExtensions(): Promise<SupportedExtensionsResponse> {
+  return requestJson<SupportedExtensionsResponse>("/api/files/supported-extensions");
+}
+
+export function listProjectFiles(projectId: string): Promise<ProjectFileListResponse> {
+  return requestJson<ProjectFileListResponse>(
+    `/api/projects/${encodeURIComponent(projectId)}/files`
+  );
+}
+
+export function uploadProjectFiles(
+  projectId: string,
+  files: File[]
+): Promise<ProjectFilesUploadResponse> {
+  const formData = new FormData();
+  for (const file of files) {
+    formData.append("files", file, file.name);
+  }
+  return requestJson<ProjectFilesUploadResponse>(
+    `/api/projects/${encodeURIComponent(projectId)}/files`,
+    {
+      method: "POST",
+      body: formData,
+    }
+  );
+}
+
+export function getFileDownloadUrl(fileId: string, versionNumber?: number): string {
+  const base = `/api/files/${encodeURIComponent(fileId)}/download`;
+  if (versionNumber !== undefined) {
+    return `${base}?version=${encodeURIComponent(String(versionNumber))}`;
+  }
+  return base;
 }
