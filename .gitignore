@@ -1,0 +1,40 @@
+# Runtime project workspaces and client data (never commit)
+/workspaces/
+workspaces/
+client_data/
+*.dwg
+*.rvt
+*.rfa
+*.rte
+
+# Secrets and local environment files
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.pfx
+*.p12
+*.sqlite
+*.db
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Node / Frontend
+node_modules/
+dist/
+.vite/
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+*.tmp
+*.bak
