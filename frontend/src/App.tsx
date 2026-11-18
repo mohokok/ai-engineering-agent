@@ -19,7 +19,7 @@ const COPY: Record<
 > = {
   ar: {
     title: "الوكيل الهندسي الاستشاري المحلي",
-    subtitle: "الخطوة 02 — قاعدة البيانات ومساحات عمل المشاريع (RTL)",
+    subtitle: "الخطوة 03 — رفع الملفات والتحقق من التكامل والإصدارات (RTL)",
     classificationLabel: "التصنيف: أولي (Preliminary)",
     toggleLang: "Switch to English (LTR)",
     refreshHealth: "تحديث فحص الخادم",
@@ -30,7 +30,7 @@ const COPY: Record<
   },
   en: {
     title: "Local AI Engineering Consultancy Agent",
-    subtitle: "Step 02 — Database & Project Workspaces",
+    subtitle: "Step 03 — File Upload, Integrity & Versioning",
     classificationLabel: "Classification: Preliminary",
     toggleLang: "التبديل إلى العربية (RTL)",
     refreshHealth: "Refresh Health Check",

@@ -1,7 +1,7 @@
 """Project workspace folder creation and filesystem verification helpers."""
 
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import unicodedata
 
@@ -66,6 +66,24 @@ def resolve_project_dir(workspaces_dir: Path, workspace_slug: str) -> Path:
     if project_dir == root or not project_dir.is_relative_to(root):
         raise ValueError("Workspace path escaped base workspaces directory")
     return project_dir
+
+
+def resolve_project_file_path(
+    workspaces_dir: Path,
+    workspace_slug: str,
+    relative_path: str,
+) -> Path:
+    """Resolve a project-relative file path and verify it stays inside project_dir."""
+    project_dir = resolve_project_dir(workspaces_dir, workspace_slug)
+    if not relative_path or "\\" in relative_path:
+        raise ValueError(f"Invalid relative project file path: {relative_path!r}")
+    rel = PurePosixPath(relative_path)
+    if rel.is_absolute() or ".." in rel.parts or any(part in ("", ".") for part in rel.parts):
+        raise ValueError(f"Invalid relative project file path: {relative_path!r}")
+    candidate = (project_dir / rel).resolve()
+    if candidate == project_dir or not candidate.is_relative_to(project_dir):
+        raise ValueError("File path escaped project workspace directory")
+    return candidate
 
 
 def create_project_workspace(workspaces_dir: Path, workspace_slug: str) -> Path:

@@ -1,9 +1,18 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { App } from "./App";
-import { createProject, getProject, listProjects } from "./api";
+import {
+  createProject,
+  getFileDownloadUrl,
+  getProject,
+  getSupportedExtensions,
+  listProjectFiles,
+  listProjects,
+  uploadProjectFiles,
+} from "./api";
+import { ProjectFilesPanel } from "./components/ProjectFilesPanel";
 import { ProjectWorkspaceView } from "./components/ProjectWorkspaceView";
-import type { ProjectDetail, ProjectSummary } from "./types";
+import type { ProjectDetail, ProjectFileOut, ProjectSummary } from "./types";
 
 const TWELVE_FOLDERS = [
   "01_Input_Documents",
@@ -123,5 +132,118 @@ describe("Project API client", () => {
     );
     expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/projects", undefined);
     expect(fetchMock).toHaveBeenNthCalledWith(3, "/api/projects/p-1", undefined);
+  });
+});
+
+describe("Step 03 ProjectFilesPanel & file API client", () => {
+  it("renders Arabic RTL dropzone, file metadata columns, and expanded version history", () => {
+    const sampleHashV1 = "1111111111112222222222223333333333334444444444445555555555556666";
+    const sampleHashV2 = "aaaaaabbbbbbccccccddddddeeeeeeffffff0000001111112222223333334444";
+    const sampleFile: ProjectFileOut = {
+      id: "file-1",
+      project_id: "p-1",
+      folder_name: "01_Input_Documents",
+      original_filename: "تقرير_تربة.pdf",
+      stored_relative_path: "12_Revision_History/file-1/v2_تقرير_تربة.pdf",
+      mime_type: "application/pdf",
+      extension: ".pdf",
+      size_bytes: 2048,
+      sha256: sampleHashV2,
+      is_original: true,
+      status: "registered",
+      classification: "Preliminary",
+      current_version: 2,
+      created_at: "2026-11-18T22:00:00+00:00",
+      updated_at: "2026-11-18T22:05:00+00:00",
+      versions: [
+        {
+          id: "ver-2",
+          file_id: "file-1",
+          version_number: 2,
+          stored_relative_path: "12_Revision_History/file-1/v2_تقرير_تربة.pdf",
+          size_bytes: 2048,
+          sha256: sampleHashV2,
+          change_note: "Re-uploaded updated file (v2); original preserved",
+          created_by: "owner",
+          created_at: "2026-11-18T22:05:00+00:00",
+        },
+        {
+          id: "ver-1",
+          file_id: "file-1",
+          version_number: 1,
+          stored_relative_path: "01_Input_Documents/تقرير_تربة.pdf",
+          size_bytes: 1024,
+          sha256: sampleHashV1,
+          change_note: "Original file upload (read-only)",
+          created_by: "owner",
+          created_at: "2026-11-18T22:00:00+00:00",
+        },
+      ],
+    };
+
+    const html = renderToStaticMarkup(
+      <ProjectFilesPanel
+        lang="ar"
+        projectId="p-1"
+        initialFiles={[sampleFile]}
+        initialExpandedFileId="file-1"
+      />
+    );
+
+    expect(html).toContain("اسحب وأفلت ملفات المشروع هنا");
+    expect(html).toContain("تقرير_تربة.pdf");
+    expect(html).toContain("01_Input_Documents");
+    expect(html).toContain("2.0 KB");
+    expect(html).toContain("aaaaaabbbbbb…334444");
+    expect(html).toContain("الأصل للقراءة فقط");
+    expect(html).toContain("سجل الإصدارات الثابت");
+    expect(html).toContain("v2");
+    expect(html).toContain("أصل v1");
+    expect(html).toContain('/api/files/file-1/download?version=1');
+  });
+
+  it("calls file upload, list, supported extensions, and formats versioned download URLs", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ project_id: "p-1", created_count: 1, new_version_count: 0, duplicate_count: 0, items: [] }), {
+          status: 201,
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ project_id: "p-1", files: [], total: 0, classification: "Preliminary" }), {
+          status: 200,
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ extensions: [], explicitly_unsupported_examples: [], max_upload_size_bytes: 52428800, max_files_per_upload: 25 }), {
+          status: 200,
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ detail: "Path traversal or directory separators rejected" }), {
+          status: 400,
+        })
+      );
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    const file = new File([new Uint8Array([1, 2, 3])], "brief.pdf", { type: "application/pdf" });
+    await uploadProjectFiles("p-1", [file]);
+    await listProjectFiles("p-1");
+    await getSupportedExtensions();
+    await expect(uploadProjectFiles("p-1", [file])).rejects.toThrow(
+      "Path traversal or directory separators rejected"
+    );
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "/api/projects/p-1/files",
+      expect.objectContaining({ method: "POST" })
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/projects/p-1/files", undefined);
+    expect(fetchMock).toHaveBeenNthCalledWith(3, "/api/files/supported-extensions", undefined);
+    expect(getFileDownloadUrl("file-1")).toBe("/api/files/file-1/download");
+    expect(getFileDownloadUrl("file-1", 1)).toBe("/api/files/file-1/download?version=1");
   });
 });

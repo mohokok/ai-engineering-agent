@@ -51,16 +51,32 @@ def run_migrations_online() -> None:
     url = get_database_url()
     connectable = create_db_engine(url)
     try:
+        is_sqlite = url.startswith("sqlite")
         with connectable.connect() as connection:
+            if is_sqlite:
+                # Commit the implicit begin and disable SQLite FK enforcement during
+                # batch table rebuilds so parent tables with existing rows can migrate cleanly.
+                connection.commit()
+                autocommit_conn = connection.execution_options(isolation_level="AUTOCOMMIT")
+                autocommit_conn.exec_driver_sql("PRAGMA foreign_keys=OFF")
+
             context.configure(
                 connection=connection,
                 target_metadata=target_metadata,
-                render_as_batch=url.startswith("sqlite"),
+                render_as_batch=is_sqlite,
                 compare_type=True,
             )
 
             with context.begin_transaction():
                 context.run_migrations()
+
+            if is_sqlite:
+                connection.commit()
+                autocommit_conn = connection.execution_options(isolation_level="AUTOCOMMIT")
+                autocommit_conn.exec_driver_sql("PRAGMA foreign_keys=ON")
+                fk_errors = autocommit_conn.exec_driver_sql("PRAGMA foreign_key_check").fetchall()
+                if fk_errors:
+                    raise RuntimeError(f"Foreign key violations after migration: {fk_errors}")
     finally:
         connectable.dispose()
 
