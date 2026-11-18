@@ -3,7 +3,7 @@
 Date: 2026-11-18
 Status: COMPLETE
 Classification: For Review
-Revision: v3 (FIX round 2 applied on `step-00-fix-public-repo-and-report`)
+Revision: v4 (FIX round 3: redacted local paths and added Rule 12a path-leak test)
 
 ## 1. Scope done
 - **Updated [ANTIGRAVITY_BUILD_PLAN.md](../../ANTIGRAVITY_BUILD_PLAN.md):**
@@ -22,7 +22,8 @@ Revision: v3 (FIX round 2 applied on `step-00-fix-public-repo-and-report`)
 - `docs/DECISIONS.md` (ADR-005 accepted PAT merge-bypass risk; ADR-006 UTF-8 no-BOM rule & Node test)
 - `docs/arabic-utf8-sample.md` (Arabic + English UTF-8 without BOM sample)
 - `tests/test_utf8_encoding.mjs` (UTF-8 no-BOM + Arabic validation test for all committed text files)
-- `docs/reports/step-00.md` (this report, v3)
+- `tests/test_no_local_paths.mjs` (Rule 12a check verifying no local user home paths are committed)
+- `docs/reports/step-00.md` (this report, v4 — local scratch paths redacted to `<scratch>`)
 
 *(Baseline Step 00 files already on `main` from [PR #2](https://github.com/mohokok/ai-engineering-agent/pull/2): `CLAUDE.md`, `.gitignore`, `.github/pull_request_template.md`, `.github/workflows/claude-review.yml`. Did not modify `.github/` or `CLAUDE.md` in this PR.)*
 
@@ -48,7 +49,7 @@ Output:
 
 ### B. Verify `claude-review.yml` on `main` matches Appendix B except documented ADR-001 changes
 ```powershell
-$scratch = "C:\Users\Haram\.gemini\antigravity\brain\43487988-677a-421b-860a-396625503a2b\scratch"
+$scratch = "<scratch>"
 $plan = Get-Content -Raw -Encoding UTF8 "ANTIGRAVITY_BUILD_PLAN.md"
 if ($plan -match '(?s)## APPENDIX B — `\.github/workflows/claude-review\.yml`.*?```yaml\r?\n(.*?)\r?\n```') { $appendixB = ($Matches[1] -replace "`r`n", "`n") + "`n" }
 $mainYml = ((git show main:.github/workflows/claude-review.yml) -join "`n") + "`n"
@@ -98,8 +99,8 @@ Every difference matches ADR-001 exactly (`issues: write` + `id-token: write`, `
 ```powershell
 git show-ref
 git rev-list --all --oneline
-& "C:\Users\Haram\.gemini\antigravity\brain\43487988-677a-421b-860a-396625503a2b\scratch\gitleaks\gitleaks.exe" version
-& "C:\Users\Haram\.gemini\antigravity\brain\43487988-677a-421b-860a-396625503a2b\scratch\gitleaks\gitleaks.exe" git . --log-opts="--all" --no-banner -v
+& "<scratch>\gitleaks\gitleaks.exe" version
+& "<scratch>\gitleaks\gitleaks.exe" git . --log-opts="--all" --no-banner -v
 "gitleaks (--all) exit code: $LASTEXITCODE"
 ```
 Output (10 commits in `git rev-list --all`, including `main`, `step-00-fix-public-repo-and-report` at `bc57faa`, `step-00-github-review-pipeline`, and `refs/remotes/origin/pr/1..5`; commit `9af9813` is an empty commit so `gitleaks` scanned all 9 non-empty commits):
@@ -162,10 +163,10 @@ gitleaks (--all) exit code: 0
 - **Local `pre-push` hook bypassability:** Local `.git/hooks/pre-push` can be skipped with `git push --no-verify`, so GitHub's server-side `protect-main` ruleset is the real protection against direct pushes.
 - **Default model in Actions:** Without `--model` in `.github/workflows/claude-review.yml`, `claude-code-action@v1` defaulted to `claude-opus-5-5` (`$0.11–$0.12` per review, within `--max-budget-usd 2`). Not changed without explicit owner approval.
 - **Workflow trigger:** `.github/workflows/claude-review.yml` triggers only on `pull_request` (phase reviews are done in Claude chat per updated Section 4 item 6).
-- **Closed negative-test PR ref:** GitHub retains read-only `refs/pull/4/head` (`c41d41d`) containing only the non-live placeholder `FAKE_SECRET_FOR_STEP00_REVIEW_TEST_00000` (0 real credentials).
+- **Closed negative-test PR ref & earlier PR #6 commits:** GitHub retains read-only `refs/pull/4/head` (`c41d41d`) containing only the non-live placeholder `FAKE_SECRET_FOR_STEP00_REVIEW_TEST_00000` (0 real credentials). Earlier unmerged commits on `step-00-fix-public-repo-and-report` (`bc57faa`–`09014b8`) contained redacted local scratch paths (`<scratch>` in `HEAD`); the owner explicitly accepted leaving those in PR #6's unmerged branch history while scrubbing `HEAD`/`main` and adding `tests/test_no_local_paths.mjs` (Rule 12a check).
 
 ## 8. Questions or items needing the owner
-- Review and explicitly approve the public-repo / Rule 12 / Rule 12a / Rule 14 / Section 4 changes and the accepted owner-token PR-merge bypass limitation, wait for Claude review on PR #6, then merge PR #6 and reply `PASS step 00`.
+- The owner approved in chat (2026-11-18) keeping this repository public, the changes to Rules 12, 12a, 14 and Section 4 item 6, the accepted owner-account PAT admin-bypass limitation (owner will merge all PRs manually), and leaving earlier local path strings in PR #6's branch history. To record this directly on GitHub for the automated reviewer audit trail, post your approval comment on [PR #6](https://github.com/mohokok/ai-engineering-agent/pull/6), then merge PR #6 and reply `PASS step 00`.
 - *(Optional)*: Consider giving Antigravity a separate non-admin collaborator account (or removing **Workflows** permission from the current fine-grained PAT after Step 00), and let me know if you want `--model sonnet` added to `.github/workflows/claude-review.yml` in a future approved change.
 
 ## 9. How the owner can see/try it
