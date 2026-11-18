@@ -24,3 +24,10 @@ Classification: For Review
 - **Decision:** Include `ANTIGRAVITY_BUILD_PLAN.md` in the initial Step 00 commit on branch `step-00-github-review-pipeline`.
 - **Alternatives:** Leave `ANTIGRAVITY_BUILD_PLAN.md` untracked locally until Step 01.
 - **Reason:** The GitHub Actions reviewer checks out only repository contents and cannot access untracked local files.
+
+## ADR-004 — Preserve `anthropics/claude-code-action@v1` OIDC workflow validation (Step 00)
+- **Context:** During the Step 00 dummy PR smoke test ([PR #1](https://github.com/mohokok/ai-engineering-agent/pull/1), Actions run `44326920938`), `anthropics/claude-code-action@v1` obtained an OIDC token and exited cleanly with: `Workflow validation failed. The workflow file must exist and have identical content to the version on the repository's default branch. If you're seeing this on a PR when you first add a code review workflow file to your repository, this is normal and you should ignore this error.`
+- **Decision:** Do **not** override `github_token` with `${{ secrets.GITHUB_TOKEN }}` to bypass OIDC workflow validation; instead, require the owner to merge the initial Step 00 PR (`step-00-github-review-pipeline` -> `main`) first so `.github/workflows/claude-review.yml` exists on `main`, and then execute post-merge verification of the dummy PR and fake-secret PR acceptance tests.
+- **Alternatives:** Pass `github_token: ${{ secrets.GITHUB_TOKEN }}` to skip the Claude GitHub App OIDC token exchange.
+- **Reason:** The default-branch parity check is an intentional anti-tampering control preventing PR branches from modifying `.github/workflows/claude-review.yml` to misuse `ANTHROPIC_API_KEY` or weaken review rules, and Step 00 explicitly relies on the Claude GitHub App (`https://github.com/apps/claude`).
+
