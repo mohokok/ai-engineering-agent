@@ -31,3 +31,10 @@ Classification: For Review
 - **Alternatives:** Pass `github_token: ${{ secrets.GITHUB_TOKEN }}` to skip the Claude GitHub App OIDC token exchange.
 - **Reason:** The default-branch parity check is an intentional anti-tampering control preventing PR branches from modifying `.github/workflows/claude-review.yml` to misuse `ANTHROPIC_API_KEY` or weaken review rules, and Step 00 explicitly relies on the Claude GitHub App (`https://github.com/apps/claude`).
 
+## ADR-005 — Owner-approved public repository with strict zero-leak rule and tightened `protect-main` ruleset (Step 00 FIX)
+- **Context:** On GitHub Free, repository rulesets require public visibility (`403` when private), and the initial `protect-main` ruleset (`required_approving_review_count: 0`, `bypass_actors: []`) allowed a fast-forward push of open PR #2's head commit to `main` (`e4d4942`).
+- **Decision:** Keep `mohokok/ai-engineering-agent` **public** with explicit owner approval, update Section 0 Rule 12 (+ Rule 12a) and Step 00 in `ANTIGRAVITY_BUILD_PLAN.md` to forbid committing client files, drawings, personal data, keys, or tokens (because everything in this repo is publicly visible), and require `protect-main` on `main` to enforce `required_approving_review_count: 1`, `bypass_actors` = Repository admin (`actor_id: 5`) with `bypass_mode: "pull_request"`, plus deletion and force-push blocks.
+- **Alternatives:** Upgrade to GitHub Pro to keep the repository private with rulesets, or waive server-side branch protection on GitHub Free.
+- **Reason:** Owner explicitly approved keeping the repository public so free repository rulesets protect `main`, while reinforcing strict zero-leak controls across the repository and its history.
+
+
