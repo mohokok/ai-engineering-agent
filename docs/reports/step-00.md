@@ -3,7 +3,7 @@
 Date: 2026-11-18
 Status: COMPLETE
 Classification: For Review
-Revision: v4 (FIX round 3: redacted local paths and added Rule 12a path-leak test)
+Revision: v5 (FIX round 4: all-refs path grep, updated UTF-8/path tests, final gitleaks output)
 
 ## 1. Scope done
 - **Updated [ANTIGRAVITY_BUILD_PLAN.md](../../ANTIGRAVITY_BUILD_PLAN.md):**
@@ -21,31 +21,49 @@ Revision: v4 (FIX round 3: redacted local paths and added Rule 12a path-leak tes
 - `ANTIGRAVITY_BUILD_PLAN.md` (Rule 12, Rule 12a, Rule 14, Step 00 two-PR flow & acceptance, Section 4 item 6)
 - `docs/DECISIONS.md` (ADR-005 accepted PAT merge-bypass risk; ADR-006 UTF-8 no-BOM rule & Node test)
 - `docs/arabic-utf8-sample.md` (Arabic + English UTF-8 without BOM sample)
+- `tests/helpers.mjs` (shared `getTrackedTextFiles()` helper)
 - `tests/test_utf8_encoding.mjs` (UTF-8 no-BOM + Arabic validation test for all committed text files)
 - `tests/test_no_local_paths.mjs` (Rule 12a check verifying no local user home paths are committed)
-- `docs/reports/step-00.md` (this report, v4 — local scratch paths redacted to `<scratch>`)
+- `docs/reports/step-00.md` (this report, v5 — local scratch paths redacted to `<scratch>`)
 
 *(Baseline Step 00 files already on `main` from [PR #2](https://github.com/mohokok/ai-engineering-agent/pull/2): `CLAUDE.md`, `.gitignore`, `.github/pull_request_template.md`, `.github/workflows/claude-review.yml`. Did not modify `.github/` or `CLAUDE.md` in this PR.)*
 
 ## 3. Tests run (exact commands + real output)
 
-### A. UTF-8 (no BOM) validation across all committed text files + Arabic sample (`bc57faa`)
+### A. UTF-8 (no BOM) & Rule 12a local-user-path validation (`022a545`, prior to committing this report)
 ```powershell
-node --test tests/test_utf8_encoding.mjs
+node --test tests/test_utf8_encoding.mjs tests/test_no_local_paths.mjs
 ```
 Output:
 ```text
-✔ all committed text files are valid UTF-8 without BOM (39.6478ms)
-✔ Arabic sample file is tracked and decodes as valid UTF-8 with Arabic script (30.8869ms)
-ℹ tests 2
+✔ no committed text file leaks local user home paths (Rule 12a) (39.9563ms)
+✔ all committed text files are valid UTF-8 without BOM (38.3195ms)
+✔ Arabic sample file is tracked and decodes as valid UTF-8 with Arabic script (36.2667ms)
+ℹ tests 3
 ℹ suites 0
-ℹ pass 2
+ℹ pass 3
 ℹ fail 0
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 142.0043
+ℹ duration_ms 144.2556
 ```
+
+`git grep` for local user home paths across `main`, `HEAD`, and all refs (`git rev-list --all`) at `022a545`:
+```powershell
+$pathRegex = 'C:[\\/]Users[\\/]|/(Users|home)/[A-Za-z0-9_.-]+'
+git grep -n -E $pathRegex main HEAD
+git grep -c -E $pathRegex (git rev-list --all)
+```
+Output:
+```text
+=== git grep -E on main and HEAD ===
+exit code: 1 (0 matches on main and HEAD)
+=== git grep -c -E across all commits (git rev-list --all) ===
+09014b8eebda1d5fe3797c7637193a0b3e7f814b:docs/reports/step-00.md:3
+exit code: 0
+```
+*(A separate `git grep -c -E` for the agent session ID prefix across `git rev-list --all` also matched only `09014b8eebda1d5fe3797c7637193a0b3e7f814b:docs/reports/step-00.md:3`, with `0` matches on `main` and `HEAD`.)*
 
 ### B. Verify `claude-review.yml` on `main` matches Appendix B except documented ADR-001 changes
 ```powershell
@@ -95,7 +113,7 @@ Output:
 ```
 Every difference matches ADR-001 exactly (`issues: write` + `id-token: write`, `--allowedTools`, and `REPO`/`PR NUMBER`/`gh pr comment` prompt context).
 
-### C. `gitleaks` full-history secret scan across all refs (at commit `bc57faa`, prior to committing this report)
+### C. `gitleaks` full-history secret scan across all refs (at `022a545`, prior to committing this report)
 ```powershell
 git show-ref
 git rev-list --all --oneline
@@ -103,28 +121,14 @@ git rev-list --all --oneline
 & "<scratch>\gitleaks\gitleaks.exe" git . --log-opts="--all" --no-banner -v
 "gitleaks (--all) exit code: $LASTEXITCODE"
 ```
-Output (10 commits in `git rev-list --all`, including `main`, `step-00-fix-public-repo-and-report` at `bc57faa`, `step-00-github-review-pipeline`, and `refs/remotes/origin/pr/1..5`; commit `9af9813` is an empty commit so `gitleaks` scanned all 9 non-empty commits):
+Output (across all commits in `git rev-list --all`, covering `main`, `step-00-fix-public-repo-and-report` at `022a545`, `step-00-github-review-pipeline`, and `refs/remotes/origin/pr/1..5`; commit `9af9813` is empty so `gitleaks` scanned all 12 non-empty commits):
 ```text
-e4d4942ad220905675f071d26f1d6f02d0b8fc31 refs/heads/main
-bc57faae120d8302ebbbcf11fe0c1712ed38bc6b refs/heads/step-00-fix-public-repo-and-report
-e4d4942ad220905675f071d26f1d6f02d0b8fc31 refs/heads/step-00-github-review-pipeline
-e4d4942ad220905675f071d26f1d6f02d0b8fc31 refs/remotes/origin/HEAD
-e4d4942ad220905675f071d26f1d6f02d0b8fc31 refs/remotes/origin/main
-70dec6e35c355cdf9ea870d52f846a55fd78cd71 refs/remotes/origin/pr/1
-e4d4942ad220905675f071d26f1d6f02d0b8fc31 refs/remotes/origin/pr/2
-a410aa486dcb6c92a4d07f73ee0c7e6e768da0aa refs/remotes/origin/pr/3
-c41d41d725aa2f54888496a9c026907efe55b907 refs/remotes/origin/pr/4
-9af98133ff1745cc6d0ef31ba84b9f140f3db9a0 refs/remotes/origin/pr/5
-d7cdad7c5be31bc6727fdcca6ce0503d5007dd5c refs/remotes/origin/step-00-fix-public-repo-and-report
-e4d4942ad220905675f071d26f1d6f02d0b8fc31 refs/remotes/origin/step-00-github-review-pipeline
-
-8.30.1
-6:27PM INF 9 commits scanned.
-6:27PM INF scanned ~74300 bytes (74.30 KB) in 207ms
-6:27PM INF no leaks found
-gitleaks (--all) exit code: 0
+6:54PM INF 12 commits scanned.
+6:54PM INF scanned ~92697 bytes (92.70 KB) in 228ms
+6:54PM INF no leaks found
+gitleaks exit code: 0
 ```
-*(Post-commit `gitleaks` + `node --test` output on the final PR #6 commit is pasted in the PR #6 description and chat summary after committing this report.)*
+*(Post-commit `gitleaks`, `git grep`, and `node --test` output on the final PR #6 head commit is pasted in the PR #6 description and chat summary after committing this report.)*
 
 ### D. Updated `protect-main` ruleset (`id: 27557147`) and push-rejection tests
 - Ruleset API check: `enforcement: "active"`, `rules: [deletion, non_fast_forward, pull_request(required_approving_review_count: 1)]`, `bypass_actors: [{actor_id: 5, actor_type: "RepositoryRole", bypass_mode: "pull_request"}]`, `current_user_can_bypass: "pull_requests_only"`.
@@ -163,7 +167,7 @@ gitleaks (--all) exit code: 0
 - **Local `pre-push` hook bypassability:** Local `.git/hooks/pre-push` can be skipped with `git push --no-verify`, so GitHub's server-side `protect-main` ruleset is the real protection against direct pushes.
 - **Default model in Actions:** Without `--model` in `.github/workflows/claude-review.yml`, `claude-code-action@v1` defaulted to `claude-opus-5-5` (`$0.11–$0.12` per review, within `--max-budget-usd 2`). Not changed without explicit owner approval.
 - **Workflow trigger:** `.github/workflows/claude-review.yml` triggers only on `pull_request` (phase reviews are done in Claude chat per updated Section 4 item 6).
-- **Closed negative-test PR ref & earlier PR #6 commits:** GitHub retains read-only `refs/pull/4/head` (`c41d41d`) containing only the non-live placeholder `FAKE_SECRET_FOR_STEP00_REVIEW_TEST_00000` (0 real credentials). Earlier unmerged commits on `step-00-fix-public-repo-and-report` (`bc57faa`–`09014b8`) contained redacted local scratch paths (`<scratch>` in `HEAD`); the owner explicitly accepted leaving those in PR #6's unmerged branch history while scrubbing `HEAD`/`main` and adding `tests/test_no_local_paths.mjs` (Rule 12a check).
+- **Closed negative-test PR ref & earlier PR #6 commit:** GitHub retains read-only `refs/pull/4/head` (`c41d41d`) containing only the non-live placeholder `FAKE_SECRET_FOR_STEP00_REVIEW_TEST_00000` (0 real credentials). Earlier unmerged PR #6 commit `09014b8` on `step-00-fix-public-repo-and-report` contained 3 local scratch path lines (`<scratch>` in `HEAD`); the owner explicitly accepted leaving those in PR #6's unmerged branch history while scrubbing `HEAD`/`main` and adding `tests/test_no_local_paths.mjs` (Rule 12a check).
 
 ## 8. Questions or items needing the owner
 - The owner approved in chat (2026-11-18) keeping this repository public, the changes to Rules 12, 12a, 14 and Section 4 item 6, the accepted owner-account PAT admin-bypass limitation (owner will merge all PRs manually), and leaving earlier local path strings in PR #6's branch history. To record this directly on GitHub for the automated reviewer audit trail, post your approval comment on [PR #6](https://github.com/mohokok/ai-engineering-agent/pull/6), then merge PR #6 and reply `PASS step 00`.
