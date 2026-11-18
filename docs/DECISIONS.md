@@ -43,5 +43,3 @@ Classification: For Review
 - **Alternatives:** Wait until Step 01 to write a `pytest` encoding test.
 - **Reason:** Establishing the encoding rule and automated test in Step 00 prevents silent Windows-1252 / BOM corruption from entering the repository from the start.
 
-
-
