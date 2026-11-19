@@ -1,5 +1,8 @@
 import type {
   ConnectionTestOut,
+  ExtractionCapabilitiesOut,
+  FileExtractionDetailOut,
+  FileExtractionListResponse,
   HealthPayload,
   ProjectCreateInput,
   ProjectDetail,
@@ -170,4 +173,38 @@ export function listTasks(filters?: {
 
 export function getTaskDetail(taskId: string): Promise<TaskDetailOut> {
   return requestJson<TaskDetailOut>(`/api/tasks/${encodeURIComponent(taskId)}`);
+}
+
+export function getExtractionCapabilities(): Promise<ExtractionCapabilitiesOut> {
+  return requestJson<ExtractionCapabilitiesOut>("/api/extraction/capabilities");
+}
+
+export function extractProjectFile(
+  fileId: string,
+  payload?: { version_number?: number; force_ocr?: boolean }
+): Promise<FileExtractionDetailOut> {
+  return requestJson<FileExtractionDetailOut>(
+    `/api/files/${encodeURIComponent(fileId)}/extract`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload ?? {}),
+    }
+  );
+}
+
+export function listFileExtractions(fileId: string): Promise<FileExtractionListResponse> {
+  return requestJson<FileExtractionListResponse>(
+    `/api/files/${encodeURIComponent(fileId)}/extractions`
+  );
+}
+
+export function getExtractionDetail(extractionId: string): Promise<FileExtractionDetailOut> {
+  return requestJson<FileExtractionDetailOut>(
+    `/api/extractions/${encodeURIComponent(extractionId)}`
+  );
+}
+
+export function getExtractionPageImageUrl(extractionId: string, pageNumber: number): string {
+  return `/api/extractions/${encodeURIComponent(extractionId)}/pages/${encodeURIComponent(String(pageNumber))}`;
 }

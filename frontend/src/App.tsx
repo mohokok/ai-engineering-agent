@@ -26,7 +26,7 @@ const COPY: Record<
 > = {
   ar: {
     title: "الوكيل الهندسي الاستشاري المحلي",
-    subtitle: "الخطوة 05 — محرك المهام والمنسّق الأولي (Orchestrator v0) وسجل المهام (RTL)",
+    subtitle: "الخطوة 06 — استخراج البيانات من المستندات والجداول والصور (RTL)",
     classificationLabel: "التصنيف: أولي (Preliminary)",
     toggleLang: "Switch to English (LTR)",
     refreshHealth: "تحديث فحص الخادم",
@@ -40,7 +40,7 @@ const COPY: Record<
   },
   en: {
     title: "Local AI Engineering Consultancy Agent",
-    subtitle: "Step 05 — Chat & Task Engine Foundation (Orchestrator v0 & Task History)",
+    subtitle: "Step 06 — Document, Spreadsheet & Image Extraction",
     classificationLabel: "Classification: Preliminary",
     toggleLang: "التبديل إلى العربية (RTL)",
     refreshHealth: "Refresh Health Check",

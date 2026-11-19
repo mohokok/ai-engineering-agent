@@ -37,7 +37,13 @@ class OrchestratorUnderstanding(BaseModel):
         ),
     )
     missing_information: list[str] = Field(default_factory=list)
-    assumptions: list[str] = Field(default_factory=list)
+    assumptions: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Unverified preliminary assumptions ONLY, each labelled as an assumption to confirm "
+            "with the owner and never stated as an established engineering fact."
+        ),
+    )
     clarification_needed: bool
     clarifying_questions: list[str] = Field(default_factory=list)
     recommended_next_steps: list[str] = Field(default_factory=list)
