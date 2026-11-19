@@ -369,10 +369,18 @@ export interface ExtractedItem {
   page_or_sheet: string;
   location: string;
   text: string | null;
+  raw_text?: string | null;
   raw_values: string[][] | null;
+  raw_uncollapsed_values?: string[][] | null;
+  normalization_applied?: string | null;
   formula: string | null;
   cached_value: string | null;
   unit_or_format: string | null;
+  ocr_dpi?: number | null;
+  start_row?: number | null;
+  start_column?: number | null;
+  start_column_letter?: string | null;
+  row_numbers?: number[] | null;
   extraction_method: "native" | "ocr" | "hybrid";
 }
 
@@ -403,6 +411,7 @@ export interface FileExtractionSummaryOut {
   original_unchanged: boolean;
   status: "extracted" | "partial_ocr_unavailable" | "failed";
   ocr_status: string;
+  ocr_dpi?: number | null;
   classification: ProjectClassification | string;
   counts: ExtractionCounts;
   warnings: string[];

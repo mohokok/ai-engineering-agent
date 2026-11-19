@@ -24,9 +24,12 @@ _DEFAULT_WINDOWS_TESSERACT_PATHS: tuple[Path, ...] = (
 
 
 @dataclass(frozen=True)
-class _TesseractProbe:
+class TesseractProbe:
     capability: OcrCapabilityOut
     executable: str | None
+
+
+_TesseractProbe = TesseractProbe
 
 
 def _resolve_tesseract_executable(configured_cmd: str = "") -> str | None:
@@ -46,10 +49,10 @@ def _resolve_tesseract_executable(configured_cmd: str = "") -> str | None:
     return None
 
 
-def _probe_tesseract(configured_cmd: str = "") -> _TesseractProbe:
+def probe_tesseract(configured_cmd: str = "") -> TesseractProbe:
     executable = _resolve_tesseract_executable(configured_cmd)
     if not executable:
-        return _TesseractProbe(
+        return TesseractProbe(
             executable=None,
             capability=OcrCapabilityOut(
                 installed=False,
@@ -117,7 +120,7 @@ def _probe_tesseract(configured_cmd: str = "") -> _TesseractProbe:
         status_label = "installed_missing_langs"
         msg = "Tesseract OCR executable detected, but eng/ara language packs were not reported."
 
-    return _TesseractProbe(
+    return TesseractProbe(
         executable=executable,
         capability=OcrCapabilityOut(
             installed=True,
@@ -132,25 +135,29 @@ def _probe_tesseract(configured_cmd: str = "") -> _TesseractProbe:
     )
 
 
+_probe_tesseract = probe_tesseract
+
+
 def detect_tesseract(configured_cmd: str = "") -> OcrCapabilityOut:
     """Detect Tesseract OCR installation and ara+eng packs without leaking local user paths."""
-    return _probe_tesseract(configured_cmd).capability
+    return probe_tesseract(configured_cmd).capability
 
 
 def run_ocr_on_image_bytes(
     image_bytes: bytes,
     *,
     configured_cmd: str = "",
+    ocr_probe: TesseractProbe | None = None,
     ocr_runner: OcrRunner | None = None,
     requested_lang: str = "ara+eng",
 ) -> tuple[str | None, str | None]:
-    """Run Arabic+English OCR on image bytes when available, else return structured pending note."""
+    """Run Arabic+English OCR on image bytes using a cached run-level probe when provided."""
     if ocr_runner is not None:
         raw_text = ocr_runner(image_bytes, requested_lang)
         cleaned = (raw_text or "").strip()
         return (cleaned or None), None
 
-    probe = _probe_tesseract(configured_cmd)
+    probe = ocr_probe if ocr_probe is not None else probe_tesseract(configured_cmd)
     if not probe.capability.installed or not probe.executable:
         return None, (
             "Tesseract OCR is not installed - pending owner; OCR text extraction skipped."

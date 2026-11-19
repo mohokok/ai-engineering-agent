@@ -23,6 +23,7 @@ from app.schemas.extraction import (
 from app.services.extractors import (
     ExtractedPayload,
     OcrRunner,
+    TesseractProbe,
     detect_tesseract,
     extract_csv,
     extract_docx,
@@ -31,6 +32,7 @@ from app.services.extractors import (
     extract_plain_text,
     extract_pptx,
     extract_xlsx,
+    probe_tesseract,
 )
 from app.services.files import FileRecordNotFoundError, FileVersionNotFoundError
 from app.services.workspace import resolve_project_file_path
@@ -84,7 +86,15 @@ class ExtractionNotFoundError(LookupError):
 
 
 class ExtractionProcessingError(RuntimeError):
-    """Raised when deterministic parsing fails on a corrupted input file."""
+    """Raised when deterministic parsing or SHA-256 verification fails."""
+
+
+class ExtractionIntegrityError(ExtractionProcessingError):
+    """Raised when the read-only source file hash changes during extraction."""
+
+
+class ExtractionRunConflictError(RuntimeError):
+    """Raised when a target r{n} run directory already exists on disk and cannot be overwritten."""
 
 
 def _compute_sha256(path: Path) -> str:
@@ -129,6 +139,7 @@ def _to_summary_out(
         original_unchanged=sha_before == sha_after,
         status=row.status,  # type: ignore[arg-type]
         ocr_status=row.ocr_status,
+        ocr_dpi=payload.get("ocr_dpi"),
         classification=row.classification,
         counts=ExtractionCounts.model_validate(row.counts_json or {}),
         warnings=list(row.warnings_json or []),
@@ -179,6 +190,7 @@ def _dispatch_extractor(
     file_id: str,
     version_number: int,
     configured_tesseract_cmd: str,
+    ocr_probe: TesseractProbe,
     ocr_runner: OcrRunner | None,
     force_ocr: bool,
 ) -> ExtractedPayload:
@@ -191,6 +203,7 @@ def _dispatch_extractor(
             file_id=file_id,
             version_number=version_number,
             configured_tesseract_cmd=configured_tesseract_cmd,
+            ocr_probe=ocr_probe,
             ocr_runner=ocr_runner,
             force_ocr=force_ocr,
         )
@@ -229,6 +242,7 @@ def _dispatch_extractor(
             file_id=file_id,
             version_number=version_number,
             configured_tesseract_cmd=configured_tesseract_cmd,
+            ocr_probe=ocr_probe,
             ocr_runner=ocr_runner,
         )
     if ext in _PLAIN_TEXT_EXTENSIONS:
@@ -307,14 +321,30 @@ def extract_project_file(
     artifact_rel_path = f"{run_rel_dir}/extraction.json"
     pages_rel_prefix = f"{run_rel_dir}/pages"
 
+    run_dir = resolve_project_file_path(
+        settings.workspaces_dir, project.workspace_slug, run_rel_dir
+    )
+    if run_dir.exists():
+        raise ExtractionRunConflictError(
+            f"Refusing to reuse or overwrite existing extraction run directory '{run_rel_dir}'."
+        )
+
     artifact_path = resolve_project_file_path(
         settings.workspaces_dir, project.workspace_slug, artifact_rel_path
     )
     pages_dir = resolve_project_file_path(
         settings.workspaces_dir, project.workspace_slug, pages_rel_prefix
     )
-    artifact_path.parent.mkdir(parents=True, exist_ok=True)
-    ocr_capability = detect_tesseract(settings.tesseract_cmd)
+    try:
+        run_dir.mkdir(parents=True, exist_ok=False)
+    except FileExistsError as exc:
+        raise ExtractionRunConflictError(
+            f"Refusing to reuse or overwrite existing extraction run directory '{run_rel_dir}'."
+        ) from exc
+
+    # Probe Tesseract once per extraction run and pass down to all page/image handlers.
+    ocr_probe = probe_tesseract(settings.tesseract_cmd)
+    ocr_capability = ocr_probe.capability
 
     extraction_id = new_uuid()
     try:
@@ -327,9 +357,16 @@ def extract_project_file(
             file_id=pf.id,
             version_number=target_version_num,
             configured_tesseract_cmd=settings.tesseract_cmd,
+            ocr_probe=ocr_probe,
             ocr_runner=ocr_runner,
             force_ocr=opts.force_ocr,
         )
+        sha256_after = _compute_sha256(source_path)
+        if sha256_after != sha256_before:
+            raise ExtractionIntegrityError(
+                f"Original file '{pf.original_filename}' SHA-256 changed during extraction "
+                f"(before={sha256_before}, after={sha256_after})."
+            )
     except Exception as exc:
         sha256_after_err = _compute_sha256(source_path)
         error_text = f"{exc.__class__.__name__}: {exc}"
@@ -349,6 +386,7 @@ def extract_project_file(
             payload_json={
                 "sha256_before": sha256_before,
                 "sha256_after": sha256_after_err,
+                "original_unchanged": sha256_after_err == sha256_before,
                 "ocr": ocr_capability.model_dump(),
                 "items": [],
             },
@@ -367,6 +405,9 @@ def extract_project_file(
                     "file_id": pf.id,
                     "source_file": pf.original_filename,
                     "version_number": target_version_num,
+                    "extraction_version": extraction_version,
+                    "sha256_before": sha256_before,
+                    "sha256_after": sha256_after_err,
                     "error": error_text,
                 },
             )
@@ -375,12 +416,6 @@ def extract_project_file(
         raise ExtractionProcessingError(
             f"Extraction failed for '{pf.original_filename}': {error_text}"
         ) from exc
-
-    sha256_after = _compute_sha256(source_path)
-    if sha256_after != sha256_before:
-        raise RuntimeError(
-            f"Original file '{pf.original_filename}' SHA-256 changed during extraction!"
-        )
 
     counts_dict = extracted.counts.model_dump()
     items_list = [item.model_dump() for item in extracted.items]
@@ -399,7 +434,13 @@ def extract_project_file(
         "classification": opts.classification,
         "status": extracted.status,
         "ocr_status": extracted.ocr_status,
+        "ocr_dpi": extracted.ocr_dpi,
         "ocr": ocr_capability.model_dump(),
+        "normalization_policy": {
+            "tables_pdf_docx_pptx": "cell_whitespace_collapsed (' '.join(cell.split())) with raw_uncollapsed_values saved when modified",
+            "csv_and_text_blocks": "outer_whitespace_trimmed (cell.strip() / text.strip(); internal newlines preserved) with raw saved when modified",
+            "xlsx_cells": "excel_number_format_preserving_precision (formulas and strings verbatim; numeric trailing zeros retained from fixed decimal format)",
+        },
         "counts": counts_dict,
         "warnings": extracted.warnings,
         "rendered_page_images": extracted.rendered_page_images,

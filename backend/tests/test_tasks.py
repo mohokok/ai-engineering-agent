@@ -668,3 +668,22 @@ def test_step05_assumptions_always_labelled_for_owner_confirmation(tmp_path: Pat
             "Assumption (to confirm with owner): The 6.0 m span beam is simply supported.",
             "افتراض أولي يحتاج تأكيد المالك: مساند البلاطة مستمرة على جميع الاتجاهات",
         ]
+
+    # Prefix-only rule: mid-sentence markers must NOT suppress the owner-confirmation prefix
+    from app.agents.orchestrator import _normalize_assumptions
+
+    mid_sentence_normalized = _normalize_assumptions(
+        [
+            "Beam is continuous and does not need to confirm with owner.",
+            "قيمة الأحمال افتراضية ولا تحتاج تأكيد المالك في هذه المرحلة.",
+            "Assumption (to confirm with owner): Already prefixed English.",
+            "افتراض أولي يحتاج تأكيد المالك: افتراض موثق مسبقاً.",
+        ],
+        "mixed",
+    )
+    assert mid_sentence_normalized == [
+        "Assumption (to confirm with owner): Beam is continuous and does not need to confirm with owner.",
+        "افتراض أولي يحتاج تأكيد المالك: قيمة الأحمال افتراضية ولا تحتاج تأكيد المالك في هذه المرحلة.",
+        "Assumption (to confirm with owner): Already prefixed English.",
+        "افتراض أولي يحتاج تأكيد المالك: افتراض موثق مسبقاً.",
+    ]

@@ -52,10 +52,18 @@ class ExtractedItem(BaseModel):
     page_or_sheet: str
     location: str
     text: str | None = None
+    raw_text: str | None = None
     raw_values: list[list[str]] | None = None
+    raw_uncollapsed_values: list[list[str]] | None = None
+    normalization_applied: str | None = None
     formula: str | None = None
     cached_value: str | None = None
     unit_or_format: str | None = None
+    ocr_dpi: int | float | None = None
+    start_row: int | None = None
+    start_column: int | None = None
+    start_column_letter: str | None = None
+    row_numbers: list[int] | None = None
     extraction_method: ExtractionMethod = "native"
 
 
@@ -98,6 +106,7 @@ class FileExtractionSummaryOut(BaseModel):
     original_unchanged: bool
     status: ExtractionStatus
     ocr_status: str
+    ocr_dpi: int | float | None = None
     classification: ProjectClassification | str
     counts: ExtractionCounts
     warnings: list[str] = Field(default_factory=list)

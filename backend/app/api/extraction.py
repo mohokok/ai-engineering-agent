@@ -15,6 +15,7 @@ from app.schemas.extraction import (
 from app.services.extraction import (
     ExtractionNotFoundError,
     ExtractionProcessingError,
+    ExtractionRunConflictError,
     UnsupportedExtractionFormatError,
     extract_project_file,
     get_extraction_capabilities,
@@ -62,6 +63,8 @@ def extract_project_file_endpoint(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except (UnsupportedExtractionFormatError, WorkspacePathError) as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except ExtractionRunConflictError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except ExtractionProcessingError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)

@@ -3,7 +3,9 @@
 from app.services.extractors.ocr import (
     TESSERACT_NOT_INSTALLED_STATUS,
     OcrRunner,
+    TesseractProbe,
     detect_tesseract,
+    probe_tesseract,
     run_ocr_on_image_bytes,
 )
 from app.services.extractors.office import (
@@ -20,6 +22,7 @@ __all__ = [
     "ExtractedPayload",
     "OcrRunner",
     "TESSERACT_NOT_INSTALLED_STATUS",
+    "TesseractProbe",
     "detect_tesseract",
     "extract_csv",
     "extract_docx",
@@ -28,5 +31,6 @@ __all__ = [
     "extract_plain_text",
     "extract_pptx",
     "extract_xlsx",
+    "probe_tesseract",
     "run_ocr_on_image_bytes",
 ]

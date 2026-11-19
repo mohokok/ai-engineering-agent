@@ -85,14 +85,15 @@ def _build_two_page_pdf_bytes() -> bytes:
     return raw
 
 
-def _build_scanned_only_pdf_bytes() -> bytes:
-    """Create a 1-page PDF containing only an embedded PNG raster (zero vector text)."""
+def _build_scanned_only_pdf_bytes(pages: int = 1) -> bytes:
+    """Create a multi-page or single-page PDF containing only embedded PNG rasters (zero vector text)."""
     img = Image.new("RGB", (400, 120), color=(255, 255, 255))
     img_buf = BytesIO()
     img.save(img_buf, format="PNG")
     doc = pymupdf.open()
-    page = doc.new_page(width=400, height=120)
-    page.insert_image(pymupdf.Rect(0, 0, 400, 120), stream=img_buf.getvalue())
+    for _ in range(pages):
+        page = doc.new_page(width=400, height=120)
+        page.insert_image(pymupdf.Rect(0, 0, 400, 120), stream=img_buf.getvalue())
     raw = doc.tobytes()
     doc.close()
     return raw
@@ -259,7 +260,7 @@ def test_extract_scanned_pdf_and_image_ocr_fallback_plus_absent_tesseract(
 
     settings = _test_settings(tmp_path)
     app = create_app(settings)
-    scanned_pdf = _build_scanned_only_pdf_bytes()
+    scanned_pdf = _build_scanned_only_pdf_bytes(pages=2)
 
     png_buf = BytesIO()
     Image.new("RGB", (320, 160), color=(30, 80, 180)).save(png_buf, format="PNG")
@@ -281,8 +282,11 @@ def test_extract_scanned_pdf_and_image_ocr_fallback_plus_absent_tesseract(
         d_no_ocr = res_scan_no_ocr.json()
         assert d_no_ocr["status"] == "partial_ocr_unavailable"
         assert d_no_ocr["ocr_status"] == "not installed - pending owner"
-        assert d_no_ocr["counts"]["rendered_page_images"] == 1
-        assert any("not installed - pending owner" in w for w in d_no_ocr["warnings"])
+        assert d_no_ocr["ocr_dpi"] is None
+        assert d_no_ocr["counts"]["rendered_page_images"] == 2
+        # OCR unavailable warning must be de-duplicated across multiple scanned pages
+        assert len(d_no_ocr["warnings"]) == 1
+        assert "not installed - pending owner" in d_no_ocr["warnings"][0]
 
         res_img_no_ocr = client.post(f"/api/files/{img_file['id']}/extract")
         assert res_img_no_ocr.status_code == 201
@@ -304,8 +308,10 @@ def test_extract_scanned_pdf_and_image_ocr_fallback_plus_absent_tesseract(
         )
         assert ocr_pdf_res.status == "extracted"
         assert ocr_pdf_res.ocr_status == "ocr_applied"
-        assert ocr_pdf_res.counts.ocr_items == 1
+        assert ocr_pdf_res.ocr_dpi == 300
+        assert ocr_pdf_res.counts.ocr_items == 2
         assert seen_langs[-1] == "ara+eng"
+        assert ocr_pdf_res.items[0].ocr_dpi == 300
         assert "مراجعة العمود C1" in ocr_pdf_res.items[0].text
         assert "1250.00 kN" in ocr_pdf_res.items[0].text
 
@@ -473,11 +479,11 @@ def test_extraction_rejects_cad_deferred_formats_and_logs_corrupt_file_failures(
         assert client.get("/api/extractions/nonexistent-ext").status_code == 404
 
 
-def test_tesseract_resolution_priority_and_live_ara_eng_ocr(
+def test_tesseract_resolution_priority_single_probe_and_300dpi_render(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Verify configured -> PATH -> default folder priority and run real Tesseract 5.x ara+eng OCR."""
+    """Verify configured -> PATH -> default priority, single Tesseract probe per run, and separate 300 DPI OCR render."""
     custom_exe = tmp_path / "custom_tesseract.exe"
     custom_exe.write_bytes(b"stub")
     default_exe = tmp_path / "default_tesseract.exe"
@@ -486,40 +492,83 @@ def test_tesseract_resolution_priority_and_live_ara_eng_ocr(
     with monkeypatch.context() as m:
         m.setattr("app.services.extractors.ocr._DEFAULT_WINDOWS_TESSERACT_PATHS", (default_exe,))
         m.setattr("app.services.extractors.ocr.shutil.which", lambda _cmd: "path_tesseract.exe")
-        # 1. Configured path takes highest precedence over PATH and default folder
         assert _resolve_tesseract_executable(str(custom_exe)) == str(custom_exe)
-        # 2. Blank setting falls back to PATH before default folder
         assert _resolve_tesseract_executable("") == "path_tesseract.exe"
-        # 3. Absent from PATH falls back to default install folder
         m.setattr("app.services.extractors.ocr.shutil.which", lambda _cmd: None)
         assert _resolve_tesseract_executable("") == str(default_exe)
 
-    # Verify live installed Tesseract 5.5.3 (not on PATH, found in default Program Files folder)
-    live_cap = detect_tesseract("")
-    assert live_cap.installed is True
-    assert live_cap.status == "installed"
-    assert live_cap.ara_installed is True
-    assert live_cap.eng_installed is True
-    assert "ara" in live_cap.languages and "eng" in live_cap.languages
+    # Probe count check: a 3-page scanned PDF must probe Tesseract (--version/--list-langs) only ONCE per run
+    subprocess_calls: list[list[str]] = []
 
-    # Build a sanitized Arabic + English raster image (250 DPI) and a scanned-only PDF wrapping it
-    fonts_dir = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts"
-    archive = pymupdf.Archive(str(fonts_dir))
-    render_doc = pymupdf.open()
-    render_page = render_doc.new_page(width=700, height=280)
-    html = """
-    <style>
-    @font-face { font-family: WinTahoma; src: url("tahoma.ttf"); }
-    body { font-family: WinTahoma; font-size: 26px; padding: 20px; }
-    </style>
-    <body>
-      <div dir="ltr">Beam Span = 6.00 m | Load = 18.50 kN/m</div>
-      <div dir="rtl" lang="ar" style="margin-top: 20px;">مشروع مستشفى طرابلس التعليمي</div>
-    </body>
-    """
-    render_page.insert_htmlbox(pymupdf.Rect(10, 10, 690, 270), html, archive=archive)
-    png_bytes = render_page.get_pixmap(dpi=250).tobytes("png")
-    render_doc.close()
+    def counting_run(args: list[str], **_kw: object) -> SimpleNamespace:
+        subprocess_calls.append(list(args))
+        return SimpleNamespace(
+            stdout="tesseract 5.5.3\n"
+            if "--version" in args
+            else "List of available languages in ...\nara\neng\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(
+        "app.services.extractors.ocr._resolve_tesseract_executable",
+        lambda _cmd="": "fake-tesseract",
+    )
+    monkeypatch.setattr("app.services.extractors.ocr.subprocess.run", counting_run)
+
+    ocr_sizes: list[tuple[int, int]] = []
+
+    def fake_pytesseract_ocr(img: Image.Image, lang: str = "ara+eng") -> str:
+        ocr_sizes.append(img.size)
+        return "Beam Span = 6.00 m"
+
+    monkeypatch.setattr(
+        "app.services.extractors.ocr.pytesseract.image_to_string",
+        fake_pytesseract_ocr,
+    )
+
+    settings = _test_settings(tmp_path)
+    app = create_app(settings)
+    scanned_3p = _build_scanned_only_pdf_bytes(pages=3)
+    with TestClient(app) as client:
+        project_id, workspace_slug = _create_project(client)
+        f_scan = _upload_file(client, project_id, "three_page_scan.pdf", scanned_3p, "application/pdf")
+        res = client.post(f"/api/files/{f_scan['id']}/extract")
+        assert res.status_code == 201, res.text
+        data = res.json()
+        assert data["ocr_dpi"] == 300
+        assert data["counts"]["ocr_items"] == 3
+
+        # 1 version call + 1 list-langs call = 2 subprocess calls total (NOT 3x per page!)
+        version_calls = [c for c in subprocess_calls if "--version" in c]
+        lang_calls = [c for c in subprocess_calls if "--list-langs" in c]
+        assert len(version_calls) == 1
+        assert len(lang_calls) == 1
+
+        # Verify OCR received dedicated 300 DPI renders (~2x dimensions of 150 DPI preview PNGs, accounting for integer point rounding)
+        preview_path = settings.workspaces_dir / workspace_slug / data["rendered_page_images"][0]
+        with Image.open(preview_path) as prev_img:
+            prev_w, prev_h = prev_img.size
+        assert len(ocr_sizes) == 3
+        for ocr_w, ocr_h in ocr_sizes:
+            assert abs(ocr_w - prev_w * 2) <= 2
+            assert abs(ocr_h - prev_h * 2) <= 2
+
+
+_RUN_REAL_OCR = os.getenv("RUN_REAL_OCR", "").strip().lower() in {"1", "true", "yes"}
+_REAL_CAP = detect_tesseract("")
+_REAL_OCR_AVAILABLE = bool(_REAL_CAP.installed and _REAL_CAP.ara_installed and _REAL_CAP.eng_installed)
+
+
+@pytest.mark.real_ocr
+@pytest.mark.skipif(
+    not (_RUN_REAL_OCR and _REAL_OCR_AVAILABLE),
+    reason="Opt-in test: set RUN_REAL_OCR=1 with Tesseract ara+eng installed to execute live OCR",
+)
+def test_optin_real_tesseract_ara_eng_on_committed_fixture(tmp_path: Path) -> None:
+    """Opt-in live Tesseract ara+eng OCR check against committed non-client Arabic+English sample image."""
+    fixture_path = Path(__file__).resolve().parent / "fixtures" / "bilingual_engineering_sample.png"
+    assert fixture_path.is_file(), f"Missing committed fixture image: {fixture_path}"
+    png_bytes = fixture_path.read_bytes()
 
     scanned_doc = pymupdf.open()
     scanned_page = scanned_doc.new_page(width=700, height=280)
@@ -527,35 +576,269 @@ def test_tesseract_resolution_priority_and_live_ara_eng_ocr(
     scanned_pdf_bytes = scanned_doc.tobytes()
     scanned_doc.close()
 
-    app = create_app(_test_settings(tmp_path))
+    settings = _test_settings(tmp_path)
+    app = create_app(settings)
     with TestClient(app) as client:
         caps = client.get("/api/extraction/capabilities").json()
-        assert caps["ocr"]["status"] == "installed"
+        assert caps["ocr"]["installed"] is True
         assert caps["ocr"]["ara_installed"] is True
         assert caps["ocr"]["eng_installed"] is True
 
         project_id, _ = _create_project(client)
-        f_png = _upload_file(client, project_id, "sample_bilingual.png", png_bytes, "image/png")
-        f_pdf = _upload_file(client, project_id, "sample_bilingual_scan.pdf", scanned_pdf_bytes, "application/pdf")
+        f_png = _upload_file(client, project_id, "bilingual_engineering_sample.png", png_bytes, "image/png")
+        f_pdf = _upload_file(client, project_id, "bilingual_engineering_scan.pdf", scanned_pdf_bytes, "application/pdf")
 
         res_png = client.post(f"/api/files/{f_png['id']}/extract")
-        assert res_png.status_code == 201
+        assert res_png.status_code == 201, res_png.text
         d_png = res_png.json()
         assert d_png["status"] == "extracted"
         assert d_png["ocr_status"] == "ocr_applied"
         assert d_png["original_unchanged"] is True
-        assert d_png["counts"]["ocr_items"] == 1
         png_ocr = next(i["text"] for i in d_png["items"] if i["item_type"] == "ocr_text")
-        assert "6.00" in png_ocr and "18.50" in png_ocr
+        assert "Beam Span = 6.00 m" in png_ocr
+        assert "18.50 kN/m" in png_ocr
         assert "مستشفى" in png_ocr and "طرابلس" in png_ocr
 
         res_pdf = client.post(f"/api/files/{f_pdf['id']}/extract")
-        assert res_pdf.status_code == 201
+        assert res_pdf.status_code == 201, res_pdf.text
         d_pdf = res_pdf.json()
         assert d_pdf["status"] == "extracted"
         assert d_pdf["ocr_status"] == "ocr_applied"
+        assert d_pdf["ocr_dpi"] == 300
         assert d_pdf["original_unchanged"] is True
-        assert d_pdf["counts"]["ocr_items"] == 1
         pdf_ocr = next(i["text"] for i in d_pdf["items"] if i["item_type"] == "ocr_text")
-        assert "6.00" in pdf_ocr and "18.50" in pdf_ocr
+        assert "Beam Span = 6.00 m" in pdf_ocr
+        assert "18.50 kN/m" in pdf_ocr
         assert "مستشفى" in pdf_ocr and "طرابلس" in pdf_ocr
+        print(f"\nREAL OCR VERSION: {caps['ocr']['version']} | LANGS: {caps['ocr']['languages']}")
+        print(f"PNG OCR TEXT: {png_ocr!r}")
+        print(f"PDF OCR TEXT (DPI={d_pdf['ocr_dpi']}): {pdf_ocr!r}")
+
+
+def test_extract_csv_multiline_quoted_arabic_and_offset_traceability(tmp_path: Path) -> None:
+    """CSV uses StringIO(newline=''), preserves quoted multiline Arabic+units cells, and records exact rows/start col."""
+    csv_bytes = (
+        "\r\n"
+        ",,,,\r\n"
+        ',,"  البند  ","Details & Units","Total "\r\n'
+        ',,"جسر خرساني B1","Span = 6.00 m\nحمل 18.50 kN/m","1250.50"\r\n'
+        ",,,,\r\n"
+        ',,"عمود C2","f\'c = 30.0 MPa","980.00"\r\n'
+    ).encode("utf-8-sig")
+
+    settings = _test_settings(tmp_path)
+    app = create_app(settings)
+    with TestClient(app) as client:
+        project_id, _ = _create_project(client)
+        f_csv = _upload_file(client, project_id, "multiline_offset.csv", csv_bytes, "text/csv")
+        res = client.post(f"/api/files/{f_csv['id']}/extract")
+        assert res.status_code == 201, res.text
+        tbl = res.json()["items"][0]
+
+        assert tbl["start_row"] == 3
+        assert tbl["start_column"] == 3
+        assert tbl["start_column_letter"] == "C"
+        assert tbl["row_numbers"] == [3, 4, 6]
+        assert tbl["location"] == "range:C3:E6"
+        assert tbl["raw_values"] == [
+            ["البند", "Details & Units", "Total"],
+            ["جسر خرساني B1", "Span = 6.00 m\nحمل 18.50 kN/m", "1250.50"],
+            ["عمود C2", "f'c = 30.0 MPa", "980.00"],
+        ]
+        # Outer whitespace trimming recorded with raw_uncollapsed_values preserved beside it
+        assert tbl["normalization_applied"] == "outer_whitespace_trimmed"
+        assert tbl["raw_uncollapsed_values"][0] == ["  البند  ", "Details & Units", "Total "]
+
+
+def test_extract_xlsx_reset_dimensions_offset_cells_chartsheet_and_hidden(tmp_path: Path) -> None:
+    """XLSX calls reset_dimensions(), maps offset cells + blank rows accurately, handles hidden sheets and Chartsheet."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "CalcGrid"
+    # Data starts at C4..E7 with blank row 5
+    ws["C4"] = "Item"
+    ws["D4"] = "Length (m)"
+    ws["E4"] = "Force (kN)"
+    ws["C6"] = "جسر B1"
+    ws["D6"] = 6.0
+    ws["D6"].number_format = "0.00"
+    ws["E6"] = 18.5
+    ws["E6"].number_format = "0.00"
+    ws["C7"] = "Total"
+    ws["D7"] = None
+    ws["E7"] = "=D6*E6"
+
+    ws_hidden = wb.create_sheet("RatesHidden")
+    ws_hidden.sheet_state = "hidden"
+    ws_hidden["B2"] = "Unit Rate"
+    ws_hidden["C2"] = 450.25
+
+    wb.create_chartsheet("SummaryChart")
+
+    raw_buf = BytesIO()
+    wb.save(raw_buf)
+    wb.close()
+
+    # Corrupt worksheet dimension XML tag intentionally to A1:A1 to prove reset_dimensions() prevents truncation!
+    patched_buf = BytesIO()
+    with zipfile.ZipFile(BytesIO(raw_buf.getvalue()), "r") as zin, zipfile.ZipFile(
+        patched_buf, "w", compression=zipfile.ZIP_DEFLATED
+    ) as zout:
+        for info in zin.infolist():
+            data = zin.read(info.filename)
+            if info.filename == "xl/worksheets/sheet1.xml":
+                xml_str = data.decode("utf-8")
+                xml_str = xml_str.replace('<dimension ref="C4:E7"/>', '<dimension ref="A1:A1"/>')
+                assert '<dimension ref="A1:A1"/>' in xml_str
+                data = xml_str.encode("utf-8")
+            zout.writestr(info, data)
+
+    settings = _test_settings(tmp_path)
+    app = create_app(settings)
+    with TestClient(app) as client:
+        project_id, _ = _create_project(client)
+        f_xlsx = _upload_file(
+            client,
+            project_id,
+            "offset_chart_hidden.xlsx",
+            patched_buf.getvalue(),
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        res = client.post(f"/api/files/{f_xlsx['id']}/extract")
+        assert res.status_code == 201, res.text
+        data = res.json()
+        assert data["status"] == "extracted"
+        assert data["counts"]["sheets"] == 3
+        assert data["counts"]["tables"] == 2
+        assert any("chartsheet" in w.lower() for w in data["warnings"])
+        assert any("sheet_state='hidden'" in w for w in data["warnings"])
+
+        grid_tbl = next(i for i in data["items"] if i["page_or_sheet"] == "sheet:CalcGrid" and i["item_type"] == "table")
+        assert grid_tbl["start_row"] == 4
+        assert grid_tbl["start_column"] == 3
+        assert grid_tbl["start_column_letter"] == "C"
+        assert grid_tbl["row_numbers"] == [4, 6, 7]
+        assert grid_tbl["location"] == "range:C4:E7"
+        assert grid_tbl["raw_values"] == [
+            ["Item", "Length (m)", "Force (kN)"],
+            ["جسر B1", "6.00", "18.50"],
+            ["Total", "", "=D6*E6"],
+        ]
+        # Verify exact cell mapping from (row_numbers[i], start_column + j) -> C4, D6, E7
+        from openpyxl.utils import get_column_letter
+
+        mapped_cells = {
+            f"{get_column_letter(grid_tbl['start_column'] + c_off)}{grid_tbl['row_numbers'][r_off]}": val
+            for r_off, row_vals in enumerate(grid_tbl["raw_values"])
+            for c_off, val in enumerate(row_vals)
+            if val != ""
+        }
+        assert mapped_cells["C4"] == "Item"
+        assert mapped_cells["C6"] == "جسر B1"
+        assert mapped_cells["D6"] == "6.00"
+        assert mapped_cells["E7"] == "=D6*E6"
+
+
+def test_extraction_hash_mismatch_and_refuse_existing_run_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SHA-256 mismatch persists failed FileExtraction + audit log; existing r{n} dir is never reused/overwritten."""
+    settings = _test_settings(tmp_path)
+    app = create_app(settings)
+
+    with TestClient(app) as client:
+        project_id, workspace_slug = _create_project(client)
+        f_txt = _upload_file(client, project_id, "notes.txt", b"Design load = 18.50 kN/m\n", "text/plain")
+
+        # 1. Pre-create existing r1 run directory with sentinel file -> extraction MUST refuse (409) without modifying it
+        r1_dir = (
+            settings.workspaces_dir
+            / workspace_slug
+            / "03_Analysis"
+            / "extractions"
+            / f_txt["id"]
+            / "v1"
+            / "r1"
+        )
+        r1_dir.mkdir(parents=True, exist_ok=True)
+        sentinel = r1_dir / "sentinel.txt"
+        sentinel.write_text("do-not-overwrite", encoding="utf-8")
+
+        conflict_res = client.post(f"/api/files/{f_txt['id']}/extract")
+        assert conflict_res.status_code == 409
+        assert "refusing to reuse or overwrite" in conflict_res.json()["detail"].lower()
+        assert sentinel.read_text(encoding="utf-8") == "do-not-overwrite"
+        assert not (r1_dir / "extraction.json").exists()
+
+    # Clean up sentinel and test mid-run SHA-256 mismatch handling cleanly on fresh file
+    f_txt2_bytes = b"Column C1 capacity = 1250.00 kN\n"
+    with TestClient(app) as client:
+        f_txt2 = _upload_file(client, project_id, "col_check.txt", f_txt2_bytes, "text/plain")
+        orig_hash = f_txt2["sha256"]
+        call_counter = {"n": 0}
+
+        def simulated_hash_tamper(_path: Path) -> str:
+            call_counter["n"] += 1
+            return orig_hash if call_counter["n"] == 1 else "tampered-" + ("f" * 55)
+
+        monkeypatch.setattr("app.services.extraction._compute_sha256", simulated_hash_tamper)
+
+        bad_hash_res = client.post(f"/api/files/{f_txt2['id']}/extract")
+        assert bad_hash_res.status_code == 422
+        assert "sha-256 changed" in bad_hash_res.json()["detail"].lower()
+
+        with app.state.session_factory() as db:
+            row = db.scalar(select(FileExtraction).where(FileExtraction.file_id == f_txt2["id"]))
+            assert row is not None
+            assert row.status == "failed"
+            assert row.artifact_relative_path is None
+            assert row.payload_json["original_unchanged"] is False
+            assert row.payload_json["sha256_before"] == orig_hash
+            assert row.payload_json["sha256_after"] != orig_hash
+
+            audit = db.scalar(
+                select(AuditLog).where(
+                    AuditLog.entity_type == "file_extraction",
+                    AuditLog.entity_id == row.id,
+                    AuditLog.action == "file.extraction_failed",
+                )
+            )
+            assert audit is not None
+            assert audit.details_json["sha256_before"] == orig_hash
+            assert audit.details_json["sha256_after"] != orig_hash
+
+
+def test_pptx_grouped_shapes_and_multiframe_tiff_warning(tmp_path: Path) -> None:
+    """Grouped PPTX shapes extract recursively and multi-frame TIFFs warn cleanly about frame-1 extraction."""
+    prs = Presentation()
+    s1 = prs.slides.add_slide(prs.slide_layouts[6])
+    grp = s1.shapes.add_group_shape()
+    tb = grp.shapes.add_textbox(Inches(1), Inches(1), Inches(4), Inches(1))
+    tb.text_frame.text = "Grouped Note: Span 5.50 m | Arabic نموذج"
+    pptx_buf = BytesIO()
+    prs.save(pptx_buf)
+
+    f1 = Image.new("RGB", (200, 100), color=(255, 255, 255))
+    f2 = Image.new("RGB", (200, 100), color=(240, 240, 240))
+    tiff_buf = BytesIO()
+    f1.save(tiff_buf, format="TIFF", save_all=True, append_images=[f2])
+
+    settings = _test_settings(tmp_path)
+    app = create_app(settings)
+    with TestClient(app) as client:
+        project_id, _ = _create_project(client)
+        f_pptx = _upload_file(
+            client,
+            project_id,
+            "grouped.pptx",
+            pptx_buf.getvalue(),
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        )
+        f_tiff = _upload_file(client, project_id, "multi_frame.tiff", tiff_buf.getvalue(), "image/tiff")
+
+        r_pptx = client.post(f"/api/files/{f_pptx['id']}/extract").json()
+        assert any("group:" in item["location"] and "5.50 m" in (item["text"] or "") for item in r_pptx["items"])
+
+        r_tiff = client.post(f"/api/files/{f_tiff['id']}/extract").json()
+        assert any("Multi-frame TIFF/image detected (2 frames)" in w for w in r_tiff["warnings"])

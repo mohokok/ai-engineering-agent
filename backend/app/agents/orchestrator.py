@@ -84,23 +84,22 @@ def build_orchestrator_v0_prompt(
 
 
 def _normalize_assumptions(assumptions: list[str], language: str) -> list[str]:
-    """Ensure every assumption is explicitly labelled as unverified and requiring owner confirmation."""
+    """Ensure every assumption is explicitly labelled with an unverified owner-confirmation prefix."""
     normalized: list[str] = []
-    markers = (
+    prefix_markers = (
         "assumption (to confirm",
         "assumption:",
-        "to confirm with owner",
-        "unverified assumption",
+        "unverified assumption:",
         "افتراض أولي يحتاج تأكيد",
-        "يحتاج تأكيد المالك",
-        "تحتاج تأكيد المالك",
+        "افتراض (يحتاج تأكيد",
+        "افتراض يحتاج تأكيد",
     )
     for raw in assumptions:
         cleaned = raw.strip()
         if not cleaned:
             continue
         lowered = cleaned.lower()
-        if any(marker in lowered for marker in markers):
+        if any(lowered.startswith(marker) for marker in prefix_markers):
             normalized.append(cleaned)
             continue
         has_arabic = any("\u0600" <= ch <= "\u06ff" for ch in cleaned)
