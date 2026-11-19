@@ -3,6 +3,7 @@
 workspaces/
 client_data/
 *.dwg
+!backend/tests/fixtures/sample_clinic_plan.dwg
 *.rvt
 *.rfa
 *.rte

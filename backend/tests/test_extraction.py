@@ -198,7 +198,7 @@ def test_extract_pdf_text_tables_page_images_and_preserve_units(tmp_path: Path) 
         assert data["sha256_after"] == orig_sha
         assert data["original_unchanged"] is True
 
-        # Exact verified manual counts: 2 pages, 2 PNGs, 2 native body text items, 1 vector table -> 3 items total
+        # Exact verified manual counts: 2 pages, 2 PNGs, 2 native body text items, 1 vector table -> 3 items total (zero CAD/BIM)
         assert data["counts"] == {
             "pages": 2,
             "sheets": 0,
@@ -208,6 +208,17 @@ def test_extract_pdf_text_tables_page_images_and_preserve_units(tmp_path: Path) 
             "text_items": 2,
             "ocr_items": 0,
             "rendered_page_images": 2,
+            "layers": 0,
+            "blocks": 0,
+            "block_inserts": 0,
+            "entities": 0,
+            "dimensions": 0,
+            "polylines": 0,
+            "closed_areas": 0,
+            "ifc_spaces": 0,
+            "ifc_walls": 0,
+            "ifc_doors": 0,
+            "ifc_windows": 0,
             "total_items": 3,
         }
         assert len(data["rendered_page_images"]) == 2
@@ -449,12 +460,12 @@ def test_extraction_rejects_cad_deferred_formats_and_logs_corrupt_file_failures(
 
     with TestClient(app) as client:
         project_id, _ = _create_project(client)
-        dxf_file = _upload_file(client, project_id, "plan.dxf", b"0\nSECTION\n2\nENTITIES\n0\nENDSEC\n0\nEOF\n", "application/dxf")
+        rvt_file = _upload_file(client, project_id, "building.rvt", b"REVIT-PROPRIETARY-STUB", "application/octet-stream")
         corrupt_pdf = _upload_file(client, project_id, "broken.pdf", b"NOT-A-VALID-PDF-HEADER", "application/pdf")
 
-        cad_res = client.post(f"/api/files/{dxf_file['id']}/extract")
+        cad_res = client.post(f"/api/files/{rvt_file['id']}/extract")
         assert cad_res.status_code == 400
-        assert "Step 07" in cad_res.json()["detail"]
+        assert "not supported natively" in cad_res.json()["detail"].lower()
 
         bad_res = client.post(f"/api/files/{corrupt_pdf['id']}/extract")
         assert bad_res.status_code == 422

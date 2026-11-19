@@ -26,7 +26,7 @@ const COPY: Record<
 > = {
   ar: {
     title: "الوكيل الهندسي الاستشاري المحلي",
-    subtitle: "الخطوة 06 — استخراج البيانات من المستندات والجداول والصور (RTL)",
+    subtitle: "الخطوة 07 — استخراج الرسومات والنماذج والمستندات (DXF / DWG / IFC / PDF / Office)",
     classificationLabel: "التصنيف: أولي (Preliminary)",
     toggleLang: "Switch to English (LTR)",
     refreshHealth: "تحديث فحص الخادم",
@@ -40,7 +40,7 @@ const COPY: Record<
   },
   en: {
     title: "Local AI Engineering Consultancy Agent",
-    subtitle: "Step 06 — Document, Spreadsheet & Image Extraction",
+    subtitle: "Step 07 — CAD/BIM Drawing (DXF, DWG, IFC) & Document Extraction",
     classificationLabel: "Classification: Preliminary",
     toggleLang: "التبديل إلى العربية (RTL)",
     refreshHealth: "Refresh Health Check",

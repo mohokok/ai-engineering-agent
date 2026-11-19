@@ -20,6 +20,7 @@ import {
   listTasks,
   refreshProviderModels,
   saveProviderApiKey,
+  summarizeDrawingVision,
   testProviderConnection,
   updateProviderSettings,
   uploadProjectFiles,
@@ -792,5 +793,175 @@ describe("Step 06 ProjectFilesPanel Extraction UI & API client", () => {
     expect(fetchMock).toHaveBeenNthCalledWith(3, "/api/files/f-1/extractions", undefined);
     expect(fetchMock).toHaveBeenNthCalledWith(4, "/api/extractions/ext-1", undefined);
     expect(getExtractionPageImageUrl("ext-1", 2)).toBe("/api/extractions/ext-1/pages/2");
+  });
+});
+
+describe("Step 07 CAD/BIM inventory, ODA status, and Vision Summary disclaimer UI", () => {
+  it("renders ODA converter status, format support matrix, CAD inventory tables, and vision non-measurement disclaimer", () => {
+    const capabilities: ExtractionCapabilitiesOut = {
+      ocr: {
+        installed: true,
+        status: "installed",
+        version: "tesseract 5.5.3",
+        languages: ["ara", "eng"],
+        ara_installed: true,
+        eng_installed: true,
+        install_url: "https://github.com/UB-Mannheim/tesseract/wiki",
+        message: "OCR ready",
+      },
+      oda: {
+        installed: false,
+        status: "not installed - pending owner",
+        version: null,
+        install_url: "https://www.opendesign.com/guestfiles/oda_file_converter",
+        message: "ODA File Converter is not installed - pending owner.",
+      },
+      format_support_matrix: [
+        {
+          extension: ".dxf",
+          category: "CAD Drawing",
+          support_level: "native",
+          provider_or_tool: "ezdxf",
+          notes: "Native DXF extraction",
+        },
+        {
+          extension: ".dwg",
+          category: "CAD Binary",
+          support_level: "converted_via_oda",
+          provider_or_tool: "ODA -> DXF",
+          notes: "Requires ODA File Converter",
+        },
+      ],
+      supported_extensions: [".dxf", ".dwg", ".ifc", ".pdf"],
+      cad_bim_deferred_extensions: [".rvt"],
+      classification: "Preliminary",
+    };
+
+    const cadExtraction: FileExtractionDetailOut = {
+      id: "ext-dxf-1",
+      project_id: "proj-7",
+      file_id: "f-dxf-1",
+      source_file: "clinic_plan.dxf",
+      folder_name: "02_Original_Drawings",
+      extension: ".dxf",
+      version_number: 1,
+      extraction_version: 1,
+      source_sha256: "b".repeat(64),
+      sha256_before: "b".repeat(64),
+      sha256_after: "b".repeat(64),
+      original_unchanged: true,
+      status: "extracted",
+      ocr_status: "not_needed",
+      cad_units: "m ($INSUNITS=6)",
+      drawing_inventory: {
+        kind: "cad_dxf",
+        layers: [
+          {
+            name: "جدران-معمارية",
+            color: 3,
+            linetype: "Continuous",
+            modelspace_entities: 4,
+            paperspace_entities: 0,
+            total_entities: 4,
+          },
+        ],
+        blocks: [
+          { name: "DOOR_باب_D1", insert_count: 2, definition_entities: 1, is_xref: false },
+        ],
+        closed_areas: [
+          {
+            handle: "1A0",
+            layer: "جدران-معمارية",
+            type: "LWPOLYLINE",
+            area_native: 24.0,
+            area_native_unit: "m2",
+            area_m2: 24.0,
+            perimeter_native: 20.0,
+          },
+        ],
+      },
+      vision_summaries: [
+        {
+          extraction_id: "ext-dxf-1",
+          page_number: 1,
+          ai_interpretation_only: true,
+          disclaimer: "AI visual interpretation only — NOT a verified engineering measurement.",
+          provider_name: "gemini",
+          model_name: "gemini-3.8-flash",
+          drawing_title: "Clinic Plan Sheet A-101",
+          discipline_guess: "Architectural",
+          visible_labels_and_notes: ["Operating Room"],
+          key_elements_observed: ["Closed room perimeter"],
+          uncertainty_notes: ["Scale bar not checked visually"],
+          token_usage: { prompt_tokens: 100, output_tokens: 40, total_tokens: 140 },
+          artifact_relative_path: "03_Analysis/extractions/f-dxf-1/v1/r1/vision_page_001_s1.json",
+          classification: "Preliminary",
+        },
+      ],
+      classification: "Preliminary",
+      counts: {
+        pages: 0,
+        sheets: 0,
+        slides: 0,
+        tables: 0,
+        formulas: 0,
+        text_items: 1,
+        ocr_items: 0,
+        rendered_page_images: 1,
+        layers: 1,
+        blocks: 1,
+        block_inserts: 2,
+        entities: 6,
+        dimensions: 1,
+        polylines: 1,
+        closed_areas: 1,
+        total_items: 4,
+      },
+      warnings: [],
+      rendered_page_images: ["03_Analysis/extractions/f-dxf-1/v1/r1/pages/page_001.png"],
+      artifact_relative_path: "03_Analysis/extractions/f-dxf-1/v1/r1/extraction.json",
+      error_message: null,
+      created_at: "2026-11-19T00:00:00Z",
+      ocr: capabilities.ocr,
+      oda: capabilities.oda,
+      items: [],
+    };
+
+    const html = renderToStaticMarkup(
+      <ProjectFilesPanel
+        lang="en"
+        projectId="proj-7"
+        initialFiles={[]}
+        initialCapabilities={capabilities}
+        initialExtraction={cadExtraction}
+      />
+    );
+
+    expect(html).toContain("ODA File Converter Status");
+    expect(html).toContain("not installed - pending owner");
+    expect(html).toContain("Format Support Matrix");
+    expect(html).toContain("converted_via_oda");
+    expect(html).toContain("جدران-معمارية");
+    expect(html).toContain("DOOR_باب_D1");
+    expect(html).toContain("24 m2");
+    expect(html).toContain("AI INTERPRETATION ONLY — NOT MEASUREMENT");
+    expect(html).toContain("Clinic Plan Sheet A-101");
+  });
+
+  it("posts vision summary requests cleanly via API client", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ extraction_id: "ext-1", page_number: 1, ai_interpretation_only: true }),
+        { status: 201 }
+      )
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const out = await summarizeDrawingVision("ext-1", { page_number: 1, complexity: "fast" });
+    expect(out.ai_interpretation_only).toBe(true);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/extractions/ext-1/vision-summary",
+      expect.objectContaining({ method: "POST" })
+    );
   });
 });

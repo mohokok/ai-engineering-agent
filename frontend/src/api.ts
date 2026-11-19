@@ -1,5 +1,6 @@
 import type {
   ConnectionTestOut,
+  DrawingVisionSummaryOut,
   ExtractionCapabilitiesOut,
   FileExtractionDetailOut,
   FileExtractionListResponse,
@@ -207,4 +208,18 @@ export function getExtractionDetail(extractionId: string): Promise<FileExtractio
 
 export function getExtractionPageImageUrl(extractionId: string, pageNumber: number): string {
   return `/api/extractions/${encodeURIComponent(extractionId)}/pages/${encodeURIComponent(String(pageNumber))}`;
+}
+
+export function summarizeDrawingVision(
+  extractionId: string,
+  payload?: { page_number?: number; complexity?: "fast" | "deep" }
+): Promise<DrawingVisionSummaryOut> {
+  return requestJson<DrawingVisionSummaryOut>(
+    `/api/extractions/${encodeURIComponent(extractionId)}/vision-summary`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload ?? {}),
+    }
+  );
 }
