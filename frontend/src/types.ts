@@ -248,7 +248,7 @@ export interface OrchestratorUnderstanding {
   clarification_needed: boolean;
   clarifying_questions: string[];
   recommended_next_steps: string[];
-  classification: ProjectClassification;
+  suggested_classification: ProjectClassification;
 }
 
 export interface AttachedFileSummary {

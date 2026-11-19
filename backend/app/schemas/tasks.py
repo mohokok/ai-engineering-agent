@@ -41,7 +41,12 @@ class OrchestratorUnderstanding(BaseModel):
     clarification_needed: bool
     clarifying_questions: list[str] = Field(default_factory=list)
     recommended_next_steps: list[str] = Field(default_factory=list)
-    classification: ProjectClassification = "Preliminary"
+    suggested_classification: ProjectClassification = Field(
+        default="Preliminary",
+        description=(
+            "Advisory classification suggestion only; the owner's chosen task classification always controls."
+        ),
+    )
 
 
 class AttachedFileSummary(BaseModel):

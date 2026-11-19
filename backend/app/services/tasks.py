@@ -1,7 +1,7 @@
 """Task engine service: assignment intake, Orchestrator v0 execution, history, and failure logging."""
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, selectinload, sessionmaker
 
 from app.agents.orchestrator import run_orchestrator_v0
 from app.db.base import utc_now
@@ -308,7 +308,7 @@ def create_and_run_assignment_task(
     orchestrator_step.completed_at = finished_at
 
     task.status = "awaiting_clarification" if understanding.clarification_needed else "completed"
-    task.classification = understanding.classification
+    # Preserve the owner's explicit classification label regardless of model suggestion.
     task.provider_name = response.provider
     task.model_name = response.model
     task.structured_output_json = structured_dict
@@ -400,7 +400,7 @@ def get_task_detail(db: Session, task_id: str) -> TaskDetailOut:
             _to_attached_file_summary(by_id[fid]) for fid in file_ids if fid in by_id
         ]
 
-    # Collect task lifecycle logs and any provider usage ledger entries tied to this task.
+    # Collect task lifecycle logs and provider usage ledger entries tied to this task in SQL.
     task_audits = db.scalars(
         select(AuditLog)
         .where(
@@ -411,27 +411,23 @@ def get_task_detail(db: Session, task_id: str) -> TaskDetailOut:
             | (
                 (AuditLog.entity_type == "provider_usage")
                 & (AuditLog.project_id == task.project_id)
+                & (AuditLog.details_json["task_id"].as_string() == task.id)
             )
         )
         .order_by(AuditLog.created_at.asc())
     ).all()
 
-    filtered_logs: list[TaskLogEntryOut] = []
-    for entry in task_audits:
-        if entry.entity_type == "provider_usage":
-            details = entry.details_json if isinstance(entry.details_json, dict) else {}
-            if details.get("task_id") != task.id:
-                continue
-        filtered_logs.append(
-            TaskLogEntryOut(
-                id=entry.id,
-                action=entry.action,
-                entity_type=entry.entity_type,
-                actor=entry.actor,
-                details_json=entry.details_json,
-                created_at=entry.created_at,
-            )
+    filtered_logs = [
+        TaskLogEntryOut(
+            id=entry.id,
+            action=entry.action,
+            entity_type=entry.entity_type,
+            actor=entry.actor,
+            details_json=entry.details_json,
+            created_at=entry.created_at,
         )
+        for entry in task_audits
+    ]
 
     summary = _to_task_summary(
         task,
@@ -461,3 +457,47 @@ def get_task_detail(db: Session, task_id: str) -> TaskDetailOut:
         ],
         logs=filtered_logs,
     )
+
+
+def mark_stale_running_tasks_interrupted(
+    session_factory: sessionmaker[Session],
+) -> int:
+    """Mark any tasks still in 'running' status from a prior process as interrupted failures."""
+    with session_factory() as db:
+        stale_tasks = db.scalars(
+            select(Task)
+            .options(selectinload(Task.steps))
+            .where(Task.status == "running")
+        ).all()
+        if not stale_tasks:
+            return 0
+
+        now = utc_now()
+        reason_msg = (
+            "Task was interrupted because the server stopped or restarted before execution completed."
+        )
+        for task in stale_tasks:
+            task.status = "failed"
+            task.error_message = reason_msg
+            task.completed_at = now
+            for step in task.steps:
+                if step.status == "running":
+                    step.status = "failed"
+                    step.notes = "Interrupted before completion due to server restart."
+                    step.completed_at = now
+            db.add(
+                AuditLog(
+                    project_id=task.project_id,
+                    action="task.failed",
+                    entity_type="task",
+                    entity_id=task.id,
+                    actor="system",
+                    details_json={
+                        "stage": "startup_recovery",
+                        "reason": "interrupted_running_task",
+                        "error": reason_msg,
+                    },
+                )
+            )
+        db.commit()
+        return len(stale_tasks)

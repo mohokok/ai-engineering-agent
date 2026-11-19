@@ -551,6 +551,14 @@ export function AssignmentsView({
                 {statusDisplayLabel(selectedTask.status, lang)}
               </span>
               <span className="badge">{selectedTask.classification}</span>
+              {understanding &&
+                understanding.suggested_classification !== selectedTask.classification && (
+                  <span className="badge badge-warn">
+                    {lang === "ar"
+                      ? `اقتراح النموذج: ${understanding.suggested_classification}`
+                      : `Model suggestion: ${understanding.suggested_classification}`}
+                  </span>
+                )}
             </div>
           </div>
 

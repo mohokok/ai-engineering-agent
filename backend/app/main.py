@@ -19,6 +19,7 @@ from app.db.migrations import upgrade_database
 from app.db.session import create_db_engine, create_session_factory
 from app.providers.secrets import KeyringSecretStore, SecretStore
 from app.services.provider_settings import refresh_models_on_startup
+from app.services.tasks import mark_stale_running_tasks_interrupted
 
 _PROJECT_FILES_UPLOAD_PATH_RE = re.compile(r"^/api/projects/[^/]+/files/?$")
 
@@ -75,6 +76,7 @@ def create_app(
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         application.state.settings.workspaces_dir.mkdir(parents=True, exist_ok=True)
         upgrade_database(application.state.settings.database_url)
+        mark_stale_running_tasks_interrupted(application.state.session_factory)
         refresh_models_on_startup(
             application.state.session_factory,
             application.state.secret_store,

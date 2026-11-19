@@ -476,11 +476,11 @@ describe("Step 05 AssignmentsView & Task Engine API client", () => {
         ],
         applicable_standards_to_verify: ["NFPA 101 Life Safety Code"],
         missing_information: ["السعة التصميمية للعيادة"],
-        assumptions: ["استخدام عيادة رعاية نهارية"],
+        assumptions: ["التحقق من سعة العيادة في الخطوة اللاحقة"],
         clarification_needed: true,
         clarifying_questions: ["ما هي السعة التصميمية المتوقعة للمرضى؟"],
         recommended_next_steps: ["استخراج بيانات ملف clinic.pdf"],
-        classification: "Preliminary",
+        suggested_classification: "For Approval",
       },
       token_usage: {
         prompt_tokens: 200,
@@ -585,6 +585,8 @@ describe("Step 05 AssignmentsView & Task Engine API client", () => {
     expect(viewHtml).toContain("ما هي السعة التصميمية المتوقعة للمرضى؟");
     expect(viewHtml).toContain("orchestrator_v0");
     expect(viewHtml).toContain("300 tokens");
+    expect(viewHtml).toContain("Preliminary");
+    expect(viewHtml).toContain("اقتراح النموذج: For Approval");
     expect(viewHtml).toContain("مهمة فاشلة لاختبار السجل");
     expect(viewHtml).toContain("No Gemini API key is saved in Windows Credential Manager.");
   });
