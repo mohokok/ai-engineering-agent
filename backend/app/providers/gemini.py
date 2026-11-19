@@ -1,8 +1,9 @@
 """Google Gemini LLM provider implementation using the official google-genai SDK."""
 
 import json
+import logging
 import time
-from typing import Any, Callable
+from typing import Any, Callable, TypeVar
 
 from google import genai
 from google.genai import errors as genai_errors
@@ -21,14 +22,21 @@ from app.providers.base import (
     ProviderModelNotFoundError,
     ProviderQuotaError,
     ProviderResponseError,
+    ProviderServiceUnavailableError,
     TaskComplexity,
     TokenUsage,
     ToolCallResult,
     sanitize_secret_text,
 )
 
+logger = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
+
 DEFAULT_GEMINI_FAST_MODEL = "gemini-3.8-flash"
 DEFAULT_GEMINI_DEEP_MODEL = "gemini-4-argon"
+DEFAULT_503_MAX_ATTEMPTS = 3
+DEFAULT_503_BACKOFF_SECONDS = 0.5
 
 AVAILABLE_GEMINI_MODELS: tuple[dict[str, str], ...] = (
     {
@@ -78,6 +86,9 @@ class GeminiProvider(LLMProvider):
         fast_model: str = DEFAULT_GEMINI_FAST_MODEL,
         deep_model: str = DEFAULT_GEMINI_DEEP_MODEL,
         client_factory: Callable[[str], Any] | None = None,
+        retry_max_attempts: int = DEFAULT_503_MAX_ATTEMPTS,
+        retry_base_delay_seconds: float = DEFAULT_503_BACKOFF_SECONDS,
+        sleep_fn: Callable[[float], None] | None = None,
     ) -> None:
         cleaned_key = api_key.strip()
         if not cleaned_key:
@@ -88,6 +99,9 @@ class GeminiProvider(LLMProvider):
             "deep": deep_model.strip() or DEFAULT_GEMINI_DEEP_MODEL,
         }
         self._client_factory = client_factory or (lambda key: genai.Client(api_key=key))
+        self._retry_max_attempts = max(1, int(retry_max_attempts))
+        self._retry_base_delay_seconds = max(0.0, float(retry_base_delay_seconds))
+        self._sleep_fn = sleep_fn or time.sleep
 
     def resolve_model(self, request: LLMRequest) -> str:
         """Select model based on explicit override or task complexity."""
@@ -127,6 +141,52 @@ class GeminiProvider(LLMProvider):
             config_kwargs["tools"] = [genai_types.Tool(function_declarations=declarations)]
         return genai_types.GenerateContentConfig(**config_kwargs)
 
+    @staticmethod
+    def _is_unavailable_503(exc: Exception) -> bool:
+        """Return True when the upstream SDK exception represents a transient HTTP 503 UNAVAILABLE."""
+        status_code = getattr(exc, "code", None)
+        if status_code == 503:
+            return True
+        if status_code in (400, 401, 403, 404, 429):
+            return False
+        status_label = str(getattr(exc, "status", "") or "").strip().upper()
+        if status_label == "UNAVAILABLE":
+            return True
+        lowered = str(exc).lower()
+        return (
+            "503 unavailable" in lowered
+            or "service unavailable" in lowered
+            or "currently experiencing high demand" in lowered
+        )
+
+    def _call_with_503_retry(
+        self,
+        operation: Callable[[], _T],
+        *,
+        model_name: str | None = None,
+    ) -> _T:
+        """Execute an SDK operation with short exponential backoff on HTTP 503 UNAVAILABLE."""
+        for attempt in range(1, self._retry_max_attempts + 1):
+            try:
+                return operation()
+            except ProviderError:
+                raise
+            except Exception as exc:
+                if self._is_unavailable_503(exc) and attempt < self._retry_max_attempts:
+                    delay = self._retry_base_delay_seconds * (2 ** (attempt - 1))
+                    logger.warning(
+                        "Gemini HTTP 503 UNAVAILABLE on attempt %d/%d (model=%s); retrying in %.2fs",
+                        attempt,
+                        self._retry_max_attempts,
+                        model_name or "models.list",
+                        delay,
+                    )
+                    if delay > 0:
+                        self._sleep_fn(delay)
+                    continue
+                raise self._translate_api_error(exc, model_name=model_name) from exc
+        raise ProviderError("Unreachable retry loop state.")
+
     def _translate_api_error(
         self,
         exc: Exception,
@@ -137,6 +197,20 @@ class GeminiProvider(LLMProvider):
         usage = _extract_usage(getattr(exc, "usage_metadata", None))
         status_code = getattr(exc, "code", None)
         lowered = message.lower()
+
+        if self._is_unavailable_503(exc):
+            if model_name:
+                target_desc = f"Gemini model '{model_name}'"
+            else:
+                target_desc = "Gemini API service"
+            return ProviderServiceUnavailableError(
+                sanitize_secret_text(
+                    f"{target_desc} is temporarily unavailable due to high demand (HTTP 503 UNAVAILABLE) "
+                    f"after {self._retry_max_attempts} attempts. Please retry shortly or choose another model such as {DEFAULT_GEMINI_FAST_MODEL}.",
+                    self._api_key,
+                ),
+                usage=usage,
+            )
 
         if status_code == 404 or any(
             marker in lowered
@@ -182,18 +256,14 @@ class GeminiProvider(LLMProvider):
         config = self._build_config(request)
 
         start = time.perf_counter()
-        try:
-            raw_resp = client.models.generate_content(
+        raw_resp = self._call_with_503_retry(
+            lambda: client.models.generate_content(
                 model=model_name,
                 contents=contents,
                 config=config,
-            )
-        except genai_errors.APIError as exc:
-            raise self._translate_api_error(exc, model_name=model_name) from exc
-        except ProviderError:
-            raise
-        except Exception as exc:
-            raise self._translate_api_error(exc, model_name=model_name) from exc
+            ),
+            model_name=model_name,
+        )
 
         latency_ms = max(1, int((time.perf_counter() - start) * 1000))
         usage = _extract_usage(getattr(raw_resp, "usage_metadata", None))
@@ -276,14 +346,7 @@ class GeminiProvider(LLMProvider):
     def list_models(self) -> list[ModelInfo]:
         """List Gemini models available to this API key that support generateContent."""
         client = self._build_client()
-        try:
-            raw_models = list(client.models.list())
-        except genai_errors.APIError as exc:
-            raise self._translate_api_error(exc) from exc
-        except ProviderError:
-            raise
-        except Exception as exc:
-            raise self._translate_api_error(exc) from exc
+        raw_models = self._call_with_503_retry(lambda: list(client.models.list()))
 
         discovered: list[ModelInfo] = []
         seen: set[str] = set()

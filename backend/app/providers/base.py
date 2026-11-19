@@ -42,6 +42,10 @@ class ProviderModelNotFoundError(ProviderError):
     """Raised when the requested model ID is missing or retired (HTTP 404)."""
 
 
+class ProviderServiceUnavailableError(ProviderError):
+    """Raised when the provider remains temporarily unavailable (HTTP 503) after retries."""
+
+
 @dataclass(frozen=True)
 class MediaInput:
     """Binary image or PDF attachment for multimodal LLM requests."""

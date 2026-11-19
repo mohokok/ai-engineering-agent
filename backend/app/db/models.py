@@ -144,6 +144,12 @@ class Task(Base):
     classification: Mapped[str] = mapped_column(
         String(32), default="Preliminary", nullable=False
     )
+    complexity: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    provider_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    model_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    attached_file_ids_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    structured_output_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    token_usage_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     plan_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     result_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)

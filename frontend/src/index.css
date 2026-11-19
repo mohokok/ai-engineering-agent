@@ -417,3 +417,52 @@ body {
   background: #fee2e2;
   color: #991b1b;
 }
+
+.badge-warn {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.assignment-textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 5.5rem;
+}
+
+.file-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.35rem;
+}
+
+.file-checkbox-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.35rem 0.65rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 999px;
+  background: #ffffff;
+  font-size: 0.84rem;
+  cursor: pointer;
+}
+
+.task-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+.json-preview {
+  margin-top: 0.65rem;
+  padding: 0.85rem;
+  border-radius: 8px;
+  border: 1px solid #cbd5e1;
+  background: #0f172a;
+  color: #e2e8f0;
+  font-size: 0.8rem;
+  overflow-x: auto;
+  text-align: left;
+}

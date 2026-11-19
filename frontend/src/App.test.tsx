@@ -3,23 +3,34 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { App } from "./App";
 import {
   createProject,
+  createTask,
   deleteProviderApiKey,
   getFileDownloadUrl,
   getProject,
   getProviderSettings,
   getSupportedExtensions,
+  getTaskDetail,
   listProjectFiles,
   listProjects,
+  listTasks,
   refreshProviderModels,
   saveProviderApiKey,
   testProviderConnection,
   updateProviderSettings,
   uploadProjectFiles,
 } from "./api";
+import { AssignmentsView } from "./components/AssignmentsView";
 import { ProjectFilesPanel } from "./components/ProjectFilesPanel";
 import { ProjectWorkspaceView } from "./components/ProjectWorkspaceView";
 import { ProviderSettingsView } from "./components/ProviderSettingsView";
-import type { ProjectDetail, ProjectFileOut, ProjectSummary, ProviderSettingsOut } from "./types";
+import type {
+  ProjectDetail,
+  ProjectFileOut,
+  ProjectSummary,
+  ProviderSettingsOut,
+  TaskDetailOut,
+  TaskSummaryOut,
+} from "./types";
 
 const TWELVE_FOLDERS = [
   "01_Input_Documents",
@@ -414,5 +425,206 @@ describe("Step 04 ProviderSettingsView & settings API client", () => {
       "/api/settings/provider/api-key",
       expect.objectContaining({ method: "DELETE" })
     );
+  });
+});
+
+describe("Step 05 AssignmentsView & Task Engine API client", () => {
+  it("renders Arabic RTL New Assignment form, Task History, Orchestrator v0 JSON, and failed task banner", () => {
+    const sampleProjects: ProjectSummary[] = [
+      {
+        id: "proj-05",
+        code: "CLN-05",
+        name: "عيادة طرابلس",
+        name_en: "Tripoli Clinic",
+        client_name: "Ministry",
+        location: "Tripoli",
+        description: null,
+        discipline_scope: "Architectural",
+        status: "active",
+        classification: "Preliminary",
+        workspace_slug: "cln-05",
+        created_at: "2026-11-19T00:00:00Z",
+        updated_at: "2026-11-19T00:00:00Z",
+      },
+    ];
+
+    const selectedTask: TaskDetailOut = {
+      id: "task-05-1",
+      project_id: "proj-05",
+      project_code: "CLN-05",
+      project_name: "عيادة طرابلس",
+      title: "مراجعة المخطط المعماري للعيادة",
+      prompt: "مراجعة المخطط المعماري للعيادة والتحقق من المتطلبات.",
+      task_type: "assignment",
+      status: "awaiting_clarification",
+      classification: "Preliminary",
+      complexity: "fast",
+      provider_name: "gemini",
+      model_name: "gemini-3.8-flash",
+      plan_summary: "إعادة صياغة المهمة",
+      result_summary: "Architectural | 1 deliverables | clarification_needed=True",
+      error_message: null,
+      attached_file_ids: ["file-01"],
+      structured_output: {
+        language_detected: "ar",
+        restated_assignment: "مراجعة المخطط المعماري للعيادة وتحديد الملاحظات الأولية.",
+        primary_discipline: "Architectural",
+        secondary_disciplines: ["Fire & Life Safety"],
+        expected_deliverables: ["تقرير مراجعة معمارية"],
+        input_files: [
+          { filename: "clinic.pdf", role: "المخطط المعماري", status: "attached" },
+        ],
+        applicable_standards_to_verify: ["NFPA 101 Life Safety Code"],
+        missing_information: ["السعة التصميمية للعيادة"],
+        assumptions: ["التحقق من سعة العيادة في الخطوة اللاحقة"],
+        clarification_needed: true,
+        clarifying_questions: ["ما هي السعة التصميمية المتوقعة للمرضى؟"],
+        recommended_next_steps: ["استخراج بيانات ملف clinic.pdf"],
+        suggested_classification: "For Approval",
+      },
+      token_usage: {
+        prompt_tokens: 200,
+        output_tokens: 100,
+        total_tokens: 300,
+        thoughts_tokens: 0,
+        cached_tokens: 0,
+        latency_ms: 420,
+      },
+      step_count: 2,
+      created_at: "2026-11-19T00:00:00Z",
+      updated_at: "2026-11-19T00:00:05Z",
+      completed_at: "2026-11-19T00:00:05Z",
+      attached_files: [
+        {
+          file_id: "file-01",
+          filename: "clinic.pdf",
+          folder_name: "01_Input_Documents",
+          extension: ".pdf",
+          mime_type: "application/pdf",
+          size_bytes: 2048,
+          sha256: "abc",
+          current_version: 1,
+        },
+      ],
+      steps: [
+        {
+          id: "step-1",
+          task_id: "task-05-1",
+          step_order: 1,
+          module_name: "assignment_intake",
+          title: "Validate assignment input & attached files",
+          status: "completed",
+          input_payload: null,
+          output_payload: null,
+          notes: null,
+          started_at: "2026-11-19T00:00:00Z",
+          completed_at: "2026-11-19T00:00:00Z",
+          created_at: "2026-11-19T00:00:00Z",
+        },
+        {
+          id: "step-2",
+          task_id: "task-05-1",
+          step_order: 2,
+          module_name: "orchestrator_v0",
+          title: "Orchestrator v0: understand assignment & structure plan",
+          status: "completed",
+          input_payload: null,
+          output_payload: null,
+          notes: "Done",
+          started_at: "2026-11-19T00:00:00Z",
+          completed_at: "2026-11-19T00:00:05Z",
+          created_at: "2026-11-19T00:00:00Z",
+        },
+      ],
+      logs: [
+        {
+          id: "log-1",
+          action: "task.completed",
+          entity_type: "task",
+          actor: "orchestrator_v0",
+          details_json: { model: "gemini-3.8-flash" },
+          created_at: "2026-11-19T00:00:05Z",
+        },
+      ],
+    };
+
+    const failedSummary: TaskSummaryOut = {
+      ...selectedTask,
+      id: "task-05-2",
+      title: "مهمة فاشلة لاختبار السجل",
+      status: "failed",
+      error_message: "No Gemini API key is saved in Windows Credential Manager.",
+      structured_output: null,
+      token_usage: {
+        prompt_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0,
+        thoughts_tokens: 0,
+        cached_tokens: 0,
+        latency_ms: 0,
+      },
+    };
+
+    const shellHtml = renderToStaticMarkup(<App initialLang="ar" initialTab="assignments" />);
+    expect(shellHtml).toContain('dir="rtl"');
+    expect(shellHtml).toContain("المهام والتكليفات");
+    expect(shellHtml).toContain("تكليف هندسي جديد (Orchestrator v0)");
+    expect(shellHtml).toContain("سجل المهام والتكليفات (Task History)");
+
+    const viewHtml = renderToStaticMarkup(
+      <AssignmentsView
+        lang="ar"
+        initialProjects={sampleProjects}
+        initialTasks={[selectedTask, failedSummary]}
+        initialSelectedTask={selectedTask}
+      />
+    );
+    expect(viewHtml).toContain("CLN-05");
+    expect(viewHtml).toContain("مراجعة المخطط المعماري للعيادة وتحديد الملاحظات الأولية.");
+    expect(viewHtml).toContain("NFPA 101 Life Safety Code");
+    expect(viewHtml).toContain("ما هي السعة التصميمية المتوقعة للمرضى؟");
+    expect(viewHtml).toContain("orchestrator_v0");
+    expect(viewHtml).toContain("300 tokens");
+    expect(viewHtml).toContain("Preliminary");
+    expect(viewHtml).toContain("اقتراح النموذج: For Approval");
+    expect(viewHtml).toContain("مهمة فاشلة لاختبار السجل");
+    expect(viewHtml).toContain("No Gemini API key is saved in Windows Credential Manager.");
+  });
+
+  it("calls task creation, history listing, and task detail endpoints cleanly", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ id: "t-1", status: "completed" }), { status: 201 })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ tasks: [], total: 0 }), { status: 200 })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ id: "t-1", steps: [], logs: [] }), { status: 200 })
+      );
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    await createTask({
+      project_id: "proj-1",
+      prompt: "Check slab thickness",
+      attached_file_ids: ["file-1"],
+      complexity: "fast",
+    });
+    await listTasks({ projectId: "proj-1", status: "completed" });
+    await getTaskDetail("t-1");
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "/api/tasks",
+      expect.objectContaining({ method: "POST" })
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/api/tasks?project_id=proj-1&status=completed",
+      undefined
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(3, "/api/tasks/t-1", undefined);
   });
 });
