@@ -127,7 +127,11 @@ def convert_dwg_to_dxf(
             "ODA File Converter is not installed - pending owner; binary .dwg files require external DWG->DXF conversion."
         )
 
-    output_dxf_dir.mkdir(parents=True, exist_ok=True)
+    if output_dxf_dir.exists():
+        raise FileExistsError(
+            f"Refusing to reuse or overwrite existing conversion directory '{output_dxf_dir.name}'."
+        )
+    output_dxf_dir.mkdir(parents=True, exist_ok=False)
     safe_source_name = Path(source_filename).name
     expected_stem = Path(safe_source_name).stem
 

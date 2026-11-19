@@ -9,7 +9,7 @@ from ezdxf.addons.drawing import Frontend, RenderContext, layout
 from ezdxf.addons.drawing.config import BackgroundPolicy, ColorPolicy, Configuration
 from ezdxf.addons.drawing.pymupdf import PyMuPdfBackend
 import ezdxf.math
-from ezdxf.path import from_hatch
+from ezdxf.path import from_hatch, nesting
 
 from app.schemas.extraction import ExtractedItem, ExtractionMethod
 from app.services.extractors.office import ExtractedPayload, _strip_with_raw
@@ -42,6 +42,64 @@ def _polygon_perimeter(points: list[tuple[float, float]], *, closed: bool) -> fl
     if closed and math.hypot(points[0][0] - points[-1][0], points[0][1] - points[-1][1]) > 1e-9:
         total += math.hypot(points[0][0] - points[-1][0], points[0][1] - points[-1][1])
     return total
+
+
+def _path_polygon_area(path_obj: Any) -> float:
+    pts = [(float(p.x), float(p.y)) for p in path_obj.flattening(distance=0.001)]
+    return float(ezdxf.math.area(pts)) if len(pts) >= 3 else 0.0
+
+
+def _compute_hatch_areas(
+    ent: Any,
+    tree_nodes: list[Any],
+    *,
+    hatch_style: int,
+    depth: int = 0,
+) -> tuple[float, float, int]:
+    """Return (net_area, gross_outer_area, island_hole_count) from nested hatch loops."""
+    net = 0.0
+    gross_outer = 0.0
+    holes = 0
+    for node in tree_nodes:
+        if isinstance(node, list):
+            if not node:
+                continue
+            outer_area = _path_polygon_area(node[0])
+            if depth == 0:
+                gross_outer += outer_area
+                net += outer_area
+            elif hatch_style == 2:
+                # hatch_style=2 (IGNORE) fills entire outer region ignoring islands
+                pass
+            elif hatch_style == 1 and depth > 1:
+                # hatch_style=1 (OUTER) ignores islands deeper than level 1
+                pass
+            else:
+                sign = 1.0 if (depth % 2 == 0) else -1.0
+                net += sign * outer_area
+                if depth % 2 == 1:
+                    holes += 1
+            if len(node) > 1:
+                child_net, _, child_holes = _compute_hatch_areas(
+                    ent, node[1:], hatch_style=hatch_style, depth=depth + 1
+                )
+                net += child_net
+                holes += child_holes
+        else:
+            area_val = _path_polygon_area(node)
+            if depth == 0:
+                gross_outer += area_val
+                net += area_val
+            elif hatch_style == 2:
+                pass
+            elif hatch_style == 1 and depth > 1:
+                pass
+            else:
+                sign = 1.0 if (depth % 2 == 0) else -1.0
+                net += sign * area_val
+                if depth % 2 == 1:
+                    holes += 1
+    return net, gross_outer, holes
 
 
 def _render_modelspace_preview(doc: Any, msp: Any, out_png_path: Path) -> bool:
@@ -508,48 +566,75 @@ def extract_dxf(
             elif dxftype == "HATCH":
                 try:
                     sub_paths = list(from_hatch(ent))
-                    loop_areas: list[float] = []
-                    for sub_path in sub_paths:
-                        sub_pts = [(float(p.x), float(p.y)) for p in sub_path.flattening(distance=0.001)]
-                        if len(sub_pts) >= 3:
-                            loop_areas.append(float(ezdxf.math.area(sub_pts)))
-                    if len(loop_areas) > 1:
-                        payload.warnings.append(
-                            f"HATCH entity handle={handle} on layer '{ent_layer}' contains {len(loop_areas)} boundary loops (summed gross area without subtracting nested island holes)."
+                    if sub_paths:
+                        hatch_style = int(getattr(ent.dxf, "hatch_style", 0) or 0)
+                        tree = nesting.make_polygon_structure(sub_paths)
+                        net_raw, gross_raw, hole_count = _compute_hatch_areas(
+                            ent, tree, hatch_style=hatch_style
                         )
-                    native_area = round(sum(loop_areas), 6)
-                    if native_area > 0:
-                        area_m2 = round(native_area * (scale_to_m ** 2), 6) if scale_to_m is not None else None
-                        payload.counts.closed_areas += 1
-                        q_dict = {
-                            "area_native": native_area,
-                            "area_native_unit": area_unit,
-                            "pattern_name": str(getattr(ent.dxf, "pattern_name", "") or ""),
-                            "loop_count": len(loop_areas),
-                        }
-                        if area_m2 is not None:
-                            q_dict["area_m2"] = area_m2
-                        idx += 1
-                        payload.items.append(
-                            ExtractedItem(
-                                item_index=idx,
-                                item_type="cad_polyline_area",
-                                source_file=source_file,
-                                file_id=file_id,
-                                version_number=version_number,
-                                page_or_sheet=page_label,
-                                location=f"handle:{handle}|layer:{ent_layer}|HATCH",
-                                text=f"HATCH Area={native_area} {area_unit}",
-                                unit_or_format=area_unit,
-                                area=native_area,
-                                quantities=q_dict,
-                                layer=ent_layer,
-                                entity_handle=handle,
-                                cad_space=cad_space,
-                                extraction_method=extraction_method,
+                        native_area = round(max(0.0, net_raw), 6)
+                        gross_area = round(max(0.0, gross_raw), 6)
+                        hole_area = round(max(0.0, gross_area - native_area), 6)
+                        if native_area > 0:
+                            area_m2 = (
+                                round(native_area * (scale_to_m ** 2), 6)
+                                if scale_to_m is not None
+                                else None
                             )
-                        )
-                        area_inventory.append({"handle": handle, "layer": ent_layer, "space": cad_space, "type": "HATCH", **q_dict})
+                            payload.counts.closed_areas += 1
+                            area_basis = (
+                                "net_outer_minus_islands"
+                                if hole_count > 0
+                                else "gross_outer_only_style_ignore"
+                                if hatch_style == 2 and len(sub_paths) > 1
+                                else "single_outer_loop"
+                            )
+                            q_dict = {
+                                "area_native": native_area,
+                                "area_native_unit": area_unit,
+                                "gross_area_native": gross_area,
+                                "island_hole_area_native": hole_area,
+                                "island_count": hole_count,
+                                "area_basis": area_basis,
+                                "hatch_style": hatch_style,
+                                "pattern_name": str(getattr(ent.dxf, "pattern_name", "") or ""),
+                                "loop_count": len(sub_paths),
+                            }
+                            if area_m2 is not None:
+                                q_dict["area_m2"] = area_m2
+                            if hole_count > 0:
+                                payload.warnings.append(
+                                    f"HATCH entity handle={handle} on layer '{ent_layer}' contains {hole_count} island hole(s); net area={native_area} {area_unit} (gross={gross_area}, subtracted holes={hole_area})."
+                                )
+                            idx += 1
+                            payload.items.append(
+                                ExtractedItem(
+                                    item_index=idx,
+                                    item_type="cad_polyline_area",
+                                    source_file=source_file,
+                                    file_id=file_id,
+                                    version_number=version_number,
+                                    page_or_sheet=page_label,
+                                    location=f"handle:{handle}|layer:{ent_layer}|HATCH",
+                                    text=f"HATCH Net Area={native_area} {area_unit} (gross={gross_area}, islands={hole_count})",
+                                    unit_or_format=area_unit,
+                                    area=native_area,
+                                    quantities=q_dict,
+                                    layer=ent_layer,
+                                    entity_handle=handle,
+                                    cad_space=cad_space,
+                                    extraction_method=extraction_method,
+                                )
+                            )
+                            area_inventory.append(
+                                {
+                                    "handle": handle,
+                                    "layer": ent_layer,
+                                    "space": cad_space,
+                                    "type": "HATCH",
+                                    **q_dict,
+                                }
+                            )
                 except Exception:
                     payload.warnings.append(
                         f"HATCH entity handle={handle} on layer '{ent_layer}' has complex/island boundaries that could not be polygonized deterministically."

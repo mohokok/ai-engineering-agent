@@ -357,6 +357,10 @@ def _dispatch_extractor(
                 "conversion to .dxf through ODA File Converter (native binary DWG parsing is not claimed)."
             )
         converted_dir = run_dir / "converted"
+        if converted_dir.exists():
+            raise ExtractionRunConflictError(
+                f"Refusing to reuse or overwrite existing conversion directory '{run_rel_dir}/converted'."
+            )
         converted_dxf_path = convert_dwg_to_dxf(
             source_path,
             output_dxf_dir=converted_dir,
@@ -572,6 +576,12 @@ def extract_project_file(
                 f"Original file '{pf.original_filename}' SHA-256 changed during extraction "
                 f"(before={sha256_before}, after={sha256_after})."
             )
+    except ExtractionRunConflictError:
+        raise
+    except FileExistsError as exc:
+        raise ExtractionRunConflictError(
+            f"Refusing to reuse or overwrite existing extraction output directory in '{run_rel_dir}'."
+        ) from exc
     except Exception as exc:
         sha256_after_err = _compute_sha256(source_path)
         error_text = f"{exc.__class__.__name__}: {exc}"

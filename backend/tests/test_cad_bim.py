@@ -405,3 +405,92 @@ def test_drawing_gemini_vision_summary_non_measurement_disclaimer_and_cap(tmp_pa
             ).status_code
             == 404
         )
+
+
+def test_extract_dxf_hatch_with_island_subtracts_hole_area(tmp_path: Path) -> None:
+    """HATCH extractor computes NET area (outermost loop minus island holes) on committed fixture."""
+    settings = _test_settings(tmp_path)
+    app = create_app(settings)
+    hatch_dxf = (FIXTURES_DIR / "sample_hatch_island.dxf").read_bytes()
+
+    with TestClient(app) as client:
+        project_id, _ = _create_project(client)
+        f_dxf = _upload_file(client, project_id, "hatch_island.dxf", hatch_dxf, "application/dxf")
+        res = client.post(f"/api/files/{f_dxf['id']}/extract")
+        assert res.status_code == 201, res.text
+        data = res.json()
+
+        areas = data["drawing_inventory"]["closed_areas"]
+        assert len(areas) == 1
+        h = areas[0]
+        assert h["type"] == "HATCH"
+        assert h["gross_area_native"] == 100.0
+        assert h["island_hole_area_native"] == 20.0
+        assert h["area_native"] == 80.0
+        assert h["area_m2"] == 80.0
+        assert h["island_count"] == 1
+        assert h["area_basis"] == "net_outer_minus_islands"
+        assert any("island hole(s); net area=80.0 m2" in w for w in data["warnings"])
+
+
+def test_dwg_refuses_existing_converted_run_dir_with_409(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pre-existing r{n}/converted directory returns HTTP 409 and leaves its files completely untouched."""
+    from app.services.extractors.oda import OdaProbe, convert_dwg_to_dxf
+    from app.schemas.extraction import OdaCapabilityOut
+
+    fake_oda = tmp_path / "ODAFileConverter.exe"
+    fake_oda.write_bytes(b"stub")
+    dwg_bytes = (FIXTURES_DIR / "sample_clinic_plan.dwg").read_bytes()
+
+    called_subprocess = {"count": 0}
+
+    def fake_convert_run(*_args: Any, **_kw: Any) -> SimpleNamespace:
+        called_subprocess["count"] += 1
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("app.services.extractors.oda.subprocess.run", fake_convert_run)
+
+    settings = _test_settings(tmp_path, oda_path=str(fake_oda))
+    app = create_app(settings)
+    with TestClient(app) as client:
+        project_id, workspace_slug = _create_project(client)
+        f_dwg = _upload_file(client, project_id, "conflict_plan.dwg", dwg_bytes, "application/acad")
+
+        converted_dir = (
+            settings.workspaces_dir
+            / workspace_slug
+            / "03_Analysis"
+            / "extractions"
+            / f_dwg["id"]
+            / "v1"
+            / "r1"
+            / "converted"
+        )
+        converted_dir.mkdir(parents=True, exist_ok=True)
+        existing_file = converted_dir / "existing.dxf"
+        existing_file.write_text("PRESERVE-ME-CONFLICT", encoding="utf-8")
+
+        res = client.post(f"/api/files/{f_dwg['id']}/extract")
+        assert res.status_code == 409
+        assert "refusing to reuse or overwrite" in res.json()["detail"].lower()
+        assert called_subprocess["count"] == 0
+        assert existing_file.read_text(encoding="utf-8") == "PRESERVE-ME-CONFLICT"
+
+    # Also prove direct convert_dwg_to_dxf refuses an existing converted target folder
+    existing_only = tmp_path / "direct_converted"
+    existing_only.mkdir(parents=True)
+    (existing_only / "keep.dxf").write_text("DO-NOT-TOUCH", encoding="utf-8")
+    src_dwg = tmp_path / "dummy.dwg"
+    src_dwg.write_bytes(dwg_bytes)
+    probe = OdaProbe(
+        executable=str(fake_oda),
+        capability=OdaCapabilityOut(
+            installed=True, status="installed", version="27.10.0", message="ok"
+        ),
+    )
+    with pytest.raises(FileExistsError):
+        convert_dwg_to_dxf(src_dwg, output_dxf_dir=existing_only, source_filename="dummy.dwg", oda_probe=probe)
+    assert (existing_only / "keep.dxf").read_text(encoding="utf-8") == "DO-NOT-TOUCH"
