@@ -13,6 +13,10 @@ TaskComplexity = Literal["fast", "deep"]
 class ProviderError(RuntimeError):
     """Base error raised by LLM provider adapters."""
 
+    def __init__(self, message: str, *, usage: "TokenUsage | None" = None) -> None:
+        super().__init__(message)
+        self.usage = usage or TokenUsage()
+
 
 class ProviderConfigError(ProviderError):
     """Raised when provider credentials or configuration are missing or invalid."""
@@ -27,7 +31,7 @@ class ProviderQuotaError(ProviderError):
 
 
 class ProviderUsageLimitError(ProviderError):
-    """Raised when configured local daily usage limits would be exceeded."""
+    """Raised when configured local daily or monthly usage limits would be exceeded."""
 
 
 class ProviderResponseError(ProviderError):

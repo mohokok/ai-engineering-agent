@@ -269,13 +269,26 @@ describe("Step 04 ProviderSettingsView & settings API client", () => {
         },
       ],
       models: { fast: "gemini-2.5-flash", deep: "gemini-2.5-pro" },
-      usage_limits: { daily_request_limit: 200, daily_token_limit: 500000, max_output_tokens: 8192 },
+      usage_limits: {
+        daily_request_limit: 200,
+        daily_token_limit: 500000,
+        monthly_request_limit: 3000,
+        monthly_token_limit: 5000000,
+        max_output_tokens: 8192,
+      },
       daily_usage: {
         date_utc: "2026-11-19",
         requests: 2,
         prompt_tokens: 120,
         output_tokens: 45,
         total_tokens: 165,
+      },
+      monthly_usage: {
+        month_utc: "2026-11",
+        requests: 12,
+        prompt_tokens: 900,
+        output_tokens: 350,
+        total_tokens: 1250,
       },
       api_key_configured: true,
       credential_backend: "WinVaultKeyring",
@@ -304,6 +317,8 @@ describe("Step 04 ProviderSettingsView & settings API client", () => {
     expect(settingsHtml).toContain("WinVaultKeyring");
     expect(settingsHtml).toContain("gemini-2.5-flash");
     expect(settingsHtml).toContain("gemini-2.5-pro");
+    expect(settingsHtml).toContain("12 / 3000");
+    expect(settingsHtml).toContain("1250 / 5000000");
     expect(settingsHtml).toContain("اختبار الاتصال بـ Gemini");
     expect(settingsHtml).toContain("متصل بنجاح");
   });
@@ -344,7 +359,13 @@ describe("Step 04 ProviderSettingsView & settings API client", () => {
     await updateProviderSettings({
       active_provider: "gemini",
       models: { fast: "gemini-2.5-flash", deep: "gemini-2.5-pro" },
-      usage_limits: { daily_request_limit: 100, daily_token_limit: 250000, max_output_tokens: 4096 },
+      usage_limits: {
+        daily_request_limit: 100,
+        daily_token_limit: 250000,
+        monthly_request_limit: 2000,
+        monthly_token_limit: 3000000,
+        max_output_tokens: 4096,
+      },
     });
     await testProviderConnection("fast");
     await deleteProviderApiKey();

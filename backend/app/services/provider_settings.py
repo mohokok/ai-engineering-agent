@@ -1,8 +1,9 @@
-"""Non-secret DB settings, daily usage budgets, keyring coordination, and provider runner."""
+"""Non-secret DB settings, append-only usage tracking, keyring coordination, and runner."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db.models import AuditLog, Setting
@@ -25,6 +26,7 @@ from app.schemas.settings import (
     ConnectionTestOut,
     DailyUsageOut,
     ModelSelectionSchema,
+    MonthlyUsageOut,
     ProviderSettingsOut,
     ProviderSettingsUpdate,
     TokenUsageOut,
@@ -33,6 +35,7 @@ from app.schemas.settings import (
 
 PROVIDER_CONFIG_KEY = "provider.config"
 PROVIDER_LAST_CHECK_KEY = "provider.last_check"
+USAGE_LEDGER_ENTITY_TYPE = "provider_usage"
 CONSUMER_SUBSCRIPTION_NOTICE = (
     "Note: A consumer Gemini web subscription (Gemini Advanced / Google One) does NOT "
     "automatically include Gemini API access. Generate an authorized Gemini API key in "
@@ -44,8 +47,8 @@ def _today_utc() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
-def _usage_key(date_utc: str) -> str:
-    return f"provider.daily_usage.{date_utc}"
+def _month_utc() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m")
 
 
 def _upsert_setting(
@@ -84,14 +87,50 @@ def _load_provider_config(db: Session) -> ProviderSettingsUpdate:
     return ProviderSettingsUpdate.model_validate(row.value_json)
 
 
-def _load_daily_usage(db: Session, date_utc: str | None = None) -> DailyUsageOut:
-    target_date = date_utc or _today_utc()
-    row = db.get(Setting, _usage_key(target_date))
-    if row is None or not isinstance(row.value_json, dict):
-        return DailyUsageOut(date_utc=target_date)
-    data = dict(row.value_json)
-    data.setdefault("date_utc", target_date)
-    return DailyUsageOut.model_validate(data)
+def _summarize_usage(
+    db: Session,
+    *,
+    date_utc: str | None = None,
+    month_utc: str | None = None,
+) -> tuple[DailyUsageOut, MonthlyUsageOut]:
+    """Sum append-only provider_usage AuditLog rows for daily and monthly totals."""
+    target_day = date_utc or _today_utc()
+    target_month = month_utc or _month_utc()
+    month_start = datetime.strptime(f"{target_month}-01", "%Y-%m-%d").replace(tzinfo=timezone.utc)
+
+    rows = db.scalars(
+        select(AuditLog).where(
+            AuditLog.entity_type == USAGE_LEDGER_ENTITY_TYPE,
+            AuditLog.created_at >= month_start - timedelta(days=1),
+        )
+    ).all()
+
+    day_totals = {"requests": 0, "prompt_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+    month_totals = {"requests": 0, "prompt_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+
+    for row in rows:
+        details = row.details_json or {}
+        req_count = int(details.get("requests", 1) or 0)
+        prompt_tokens = int(details.get("prompt_tokens", 0) or 0)
+        output_tokens = int(details.get("output_tokens", 0) or 0)
+        total_tokens = int(details.get("total_tokens", 0) or 0)
+
+        if details.get("month_utc") == target_month:
+            month_totals["requests"] += req_count
+            month_totals["prompt_tokens"] += prompt_tokens
+            month_totals["output_tokens"] += output_tokens
+            month_totals["total_tokens"] += total_tokens
+
+        if details.get("date_utc") == target_day:
+            day_totals["requests"] += req_count
+            day_totals["prompt_tokens"] += prompt_tokens
+            day_totals["output_tokens"] += output_tokens
+            day_totals["total_tokens"] += total_tokens
+
+    return (
+        DailyUsageOut(date_utc=target_day, **day_totals),
+        MonthlyUsageOut(month_utc=target_month, **month_totals),
+    )
 
 
 def _load_last_check(db: Session) -> ConnectionCheckStatusOut:
@@ -128,7 +167,7 @@ def _save_last_check(
 def get_provider_settings(db: Session, secret_store: SecretStore) -> ProviderSettingsOut:
     """Return full non-secret provider settings along with boolean key status."""
     cfg = _load_provider_config(db)
-    daily_usage = _load_daily_usage(db)
+    daily_usage, monthly_usage = _summarize_usage(db)
     last_check = _load_last_check(db)
     api_key_configured = secret_store.has_api_key(cfg.active_provider)
     return ProviderSettingsOut(
@@ -137,6 +176,7 @@ def get_provider_settings(db: Session, secret_store: SecretStore) -> ProviderSet
         models=cfg.models,
         usage_limits=cfg.usage_limits,
         daily_usage=daily_usage,
+        monthly_usage=monthly_usage,
         api_key_configured=api_key_configured,
         credential_backend=secret_store.backend_name,
         last_connection_check=last_check,
@@ -228,60 +268,67 @@ def delete_provider_api_key(
     return get_provider_settings(db, secret_store)
 
 
-def _check_usage_budget(db: Session, limits: UsageLimitsSchema) -> DailyUsageOut:
-    usage = _load_daily_usage(db)
-    if usage.requests >= limits.daily_request_limit:
+def _check_usage_budget(db: Session, limits: UsageLimitsSchema) -> tuple[DailyUsageOut, MonthlyUsageOut]:
+    daily, monthly = _summarize_usage(db)
+    if daily.requests >= limits.daily_request_limit:
         raise ProviderUsageLimitError(
-            f"Daily request limit reached ({usage.requests}/{limits.daily_request_limit})."
+            f"Daily request limit reached ({daily.requests}/{limits.daily_request_limit})."
         )
-    if usage.total_tokens >= limits.daily_token_limit:
+    if daily.total_tokens >= limits.daily_token_limit:
         raise ProviderUsageLimitError(
-            f"Daily token limit reached ({usage.total_tokens}/{limits.daily_token_limit})."
+            f"Daily token limit reached ({daily.total_tokens}/{limits.daily_token_limit})."
         )
-    return usage
+    if monthly.requests >= limits.monthly_request_limit:
+        raise ProviderUsageLimitError(
+            f"Monthly request limit reached ({monthly.requests}/{limits.monthly_request_limit})."
+        )
+    if monthly.total_tokens >= limits.monthly_token_limit:
+        raise ProviderUsageLimitError(
+            f"Monthly token limit reached ({monthly.total_tokens}/{limits.monthly_token_limit})."
+        )
+    return daily, monthly
 
 
-def _record_usage(
+def _append_usage_event(
     db: Session,
     *,
     provider: str,
     model: str,
     usage: TokenUsage,
     action: str,
-) -> DailyUsageOut:
-    today = _today_utc()
-    current = _load_daily_usage(db, today)
-    updated = DailyUsageOut(
-        date_utc=today,
-        requests=current.requests + 1,
-        prompt_tokens=current.prompt_tokens + usage.prompt_tokens,
-        output_tokens=current.output_tokens + usage.output_tokens,
-        total_tokens=current.total_tokens + usage.total_tokens,
-    )
-    _upsert_setting(
-        db,
-        key=_usage_key(today),
-        value_json=updated.model_dump(),
-        category="ai_usage",
-        description=f"Daily AI usage totals for {today}",
-    )
+    status_label: str,
+    error_message: str | None = None,
+) -> tuple[DailyUsageOut, MonthlyUsageOut]:
+    """Append one immutable usage ledger entry and return updated daily/monthly sums."""
+    now = datetime.now(timezone.utc)
+    today = now.strftime("%Y-%m-%d")
+    month = now.strftime("%Y-%m")
+    details: dict[str, Any] = {
+        "provider": provider,
+        "model": model,
+        "date_utc": today,
+        "month_utc": month,
+        "requests": 1,
+        "prompt_tokens": usage.prompt_tokens,
+        "output_tokens": usage.output_tokens,
+        "total_tokens": usage.total_tokens,
+        "status": status_label,
+    }
+    if error_message is not None:
+        details["error"] = error_message
+
     db.add(
         AuditLog(
             project_id=None,
             action=action,
-            entity_type="provider",
+            entity_type=USAGE_LEDGER_ENTITY_TYPE,
             entity_id=provider,
             actor="owner",
-            details_json={
-                "provider": provider,
-                "model": model,
-                "prompt_tokens": usage.prompt_tokens,
-                "output_tokens": usage.output_tokens,
-                "total_tokens": usage.total_tokens,
-            },
+            details_json=details,
         )
     )
-    return updated
+    db.flush()
+    return _summarize_usage(db, date_utc=today, month_utc=month)
 
 
 def build_active_provider(
@@ -310,18 +357,48 @@ def execute_provider_request(
     *,
     client_factory: Callable[[str], Any] | None = None,
 ) -> LLMResponse:
-    """Enforce daily usage budgets, invoke active LLMProvider, and persist token usage."""
-    provider, cfg = build_active_provider(db, secret_store, client_factory=client_factory)
+    """Enforce daily/monthly usage budgets, invoke LLMProvider, and log every attempt."""
+    cfg = _load_provider_config(db)
+    api_key = secret_store.get_api_key(cfg.active_provider)
+    provider = create_provider(
+        cfg.active_provider,
+        api_key,
+        fast_model=cfg.models.fast,
+        deep_model=cfg.models.deep,
+        client_factory=client_factory,
+    )
     _check_usage_budget(db, cfg.usage_limits)
     if request.max_output_tokens is None:
         request.max_output_tokens = cfg.usage_limits.max_output_tokens
-    response = provider.generate(request)
-    _record_usage(
+
+    resolved_model = (
+        request.model_override.strip()
+        if request.model_override and request.model_override.strip()
+        else (cfg.models.deep if request.complexity == "deep" else cfg.models.fast)
+    )
+    try:
+        response = provider.generate(request)
+    except ProviderError as exc:
+        safe_msg = sanitize_secret_text(str(exc), api_key)
+        _append_usage_event(
+            db,
+            provider=cfg.active_provider,
+            model=resolved_model,
+            usage=exc.usage,
+            action="provider.usage_failed",
+            status_label="failed",
+            error_message=safe_msg,
+        )
+        db.commit()
+        raise
+
+    _append_usage_event(
         db,
         provider=response.provider,
         model=response.model,
         usage=response.usage,
         action="provider.usage_recorded",
+        status_label="ok",
     )
     db.commit()
     return response
@@ -343,15 +420,16 @@ def test_provider_connection(
         else (cfg.models.deep if complexity == "deep" else cfg.models.fast)
     )
     api_key = secret_store.get_api_key(cfg.active_provider)
+    provider = create_provider(
+        cfg.active_provider,
+        api_key,
+        fast_model=cfg.models.fast,
+        deep_model=cfg.models.deep,
+        client_factory=client_factory,
+    )
+    _check_usage_budget(db, cfg.usage_limits)
+
     try:
-        provider = create_provider(
-            cfg.active_provider,
-            api_key,
-            fast_model=cfg.models.fast,
-            deep_model=cfg.models.deep,
-            client_factory=client_factory,
-        )
-        _check_usage_budget(db, cfg.usage_limits)
         result = provider.test_connection(model=selected_model)
     except ProviderError as exc:
         safe_msg = sanitize_secret_text(str(exc), api_key)
@@ -362,25 +440,25 @@ def test_provider_connection(
             message=safe_msg,
             latency_ms=None,
         )
-        db.add(
-            AuditLog(
-                project_id=None,
-                action="provider.connection_failed",
-                entity_type="provider",
-                entity_id=cfg.active_provider,
-                actor="owner",
-                details_json={"provider": cfg.active_provider, "model": selected_model, "error": safe_msg},
-            )
+        _append_usage_event(
+            db,
+            provider=cfg.active_provider,
+            model=selected_model,
+            usage=exc.usage,
+            action="provider.connection_failed",
+            status_label="failed",
+            error_message=safe_msg,
         )
         db.commit()
         raise
 
-    daily_usage = _record_usage(
+    daily_usage, monthly_usage = _append_usage_event(
         db,
         provider=result.provider,
         model=result.model,
         usage=result.usage,
         action="provider.connection_tested",
+        status_label="ok",
     )
     _save_last_check(
         db,
@@ -405,5 +483,6 @@ def test_provider_connection(
             cached_tokens=result.usage.cached_tokens,
         ),
         daily_usage=daily_usage,
+        monthly_usage=monthly_usage,
         api_key_configured=True,
     )

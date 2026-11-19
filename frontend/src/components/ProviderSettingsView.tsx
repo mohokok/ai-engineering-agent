@@ -34,12 +34,16 @@ interface SettingsCopy {
   deepModelLabel: string;
   dailyReqLimitLabel: string;
   dailyTokenLimitLabel: string;
+  monthlyReqLimitLabel: string;
+  monthlyTokenLimitLabel: string;
   maxOutputTokensLabel: string;
   saveConfigBtn: string;
   savingConfigBtn: string;
   usageSectionHeading: string;
   requestsTodayLabel: string;
   tokensTodayLabel: string;
+  requestsMonthLabel: string;
+  tokensMonthLabel: string;
   promptTokensLabel: string;
   outputTokensLabel: string;
   connectionHeading: string;
@@ -78,12 +82,16 @@ const SETTINGS_COPY: Record<Lang, SettingsCopy> = {
     deepModelLabel: "النموذج للتحليل العميق (Deep)",
     dailyReqLimitLabel: "الحد اليومي للطلبات",
     dailyTokenLimitLabel: "الحد اليومي للرموز (Tokens)",
+    monthlyReqLimitLabel: "الحد الشهري للطلبات",
+    monthlyTokenLimitLabel: "الحد الشهري للرموز (Tokens)",
     maxOutputTokensLabel: "الحد الأقصى لرموز الإخراج في الطلب",
     saveConfigBtn: "حفظ تفضيلات النماذج والحدود",
     savingConfigBtn: "جاري الحفظ...",
     usageSectionHeading: "الاستخدام اليومي المسجل (UTC)",
     requestsTodayLabel: "الطلبات اليوم",
     tokensTodayLabel: "إجمالي الرموز اليوم",
+    requestsMonthLabel: "الطلبات هذا الشهر",
+    tokensMonthLabel: "إجمالي الرموز هذا الشهر",
     promptTokensLabel: "رموز الإدخال",
     outputTokensLabel: "رموز الإخراج",
     connectionHeading: "حالة الاتصال واختبار التكامل",
@@ -119,12 +127,16 @@ const SETTINGS_COPY: Record<Lang, SettingsCopy> = {
     deepModelLabel: "Deep Complexity Model",
     dailyReqLimitLabel: "Daily Request Limit",
     dailyTokenLimitLabel: "Daily Token Limit",
+    monthlyReqLimitLabel: "Monthly Request Limit",
+    monthlyTokenLimitLabel: "Monthly Token Limit",
     maxOutputTokensLabel: "Max Output Tokens per Call",
     saveConfigBtn: "Save Model & Limit Preferences",
     savingConfigBtn: "Saving preferences...",
     usageSectionHeading: "Recorded Today's Usage (UTC)",
     requestsTodayLabel: "Requests Today",
     tokensTodayLabel: "Total Tokens Today",
+    requestsMonthLabel: "Requests This Month",
+    tokensMonthLabel: "Total Tokens This Month",
     promptTokensLabel: "Prompt Tokens",
     outputTokensLabel: "Output Tokens",
     connectionHeading: "Connection Status & Live Check",
@@ -176,6 +188,12 @@ export function ProviderSettingsView({
   const [dailyTokenLimit, setDailyTokenLimit] = useState<number>(
     initialSettings?.usage_limits.daily_token_limit ?? 500000
   );
+  const [monthlyReqLimit, setMonthlyReqLimit] = useState<number>(
+    initialSettings?.usage_limits.monthly_request_limit ?? 3000
+  );
+  const [monthlyTokenLimit, setMonthlyTokenLimit] = useState<number>(
+    initialSettings?.usage_limits.monthly_token_limit ?? 5000000
+  );
   const [maxOutputTokens, setMaxOutputTokens] = useState<number>(
     initialSettings?.usage_limits.max_output_tokens ?? 8192
   );
@@ -187,6 +205,8 @@ export function ProviderSettingsView({
     setDeepModel(loaded.models.deep);
     setDailyReqLimit(loaded.usage_limits.daily_request_limit);
     setDailyTokenLimit(loaded.usage_limits.daily_token_limit);
+    setMonthlyReqLimit(loaded.usage_limits.monthly_request_limit);
+    setMonthlyTokenLimit(loaded.usage_limits.monthly_token_limit);
     setMaxOutputTokens(loaded.usage_limits.max_output_tokens);
   }, []);
 
@@ -255,6 +275,8 @@ export function ProviderSettingsView({
         usage_limits: {
           daily_request_limit: Number(dailyReqLimit),
           daily_token_limit: Number(dailyTokenLimit),
+          monthly_request_limit: Number(monthlyReqLimit),
+          monthly_token_limit: Number(monthlyTokenLimit),
           max_output_tokens: Number(maxOutputTokens),
         },
       });
@@ -369,6 +391,18 @@ export function ProviderSettingsView({
             <dt>{copy.tokensTodayLabel}</dt>
             <dd dir="ltr">
               {settings?.daily_usage.total_tokens ?? 0} / {dailyTokenLimit}
+            </dd>
+          </div>
+          <div>
+            <dt>{copy.requestsMonthLabel}</dt>
+            <dd dir="ltr">
+              {settings?.monthly_usage.requests ?? 0} / {monthlyReqLimit}
+            </dd>
+          </div>
+          <div>
+            <dt>{copy.tokensMonthLabel}</dt>
+            <dd dir="ltr">
+              {settings?.monthly_usage.total_tokens ?? 0} / {monthlyTokenLimit}
             </dd>
           </div>
         </dl>
@@ -514,6 +548,30 @@ export function ProviderSettingsView({
                 dir="ltr"
                 value={dailyTokenLimit}
                 onChange={(e) => setDailyTokenLimit(Number(e.target.value))}
+              />
+            </label>
+
+            <label className="field">
+              <span>{copy.monthlyReqLimitLabel}</span>
+              <input
+                type="number"
+                min={1}
+                max={5000000}
+                dir="ltr"
+                value={monthlyReqLimit}
+                onChange={(e) => setMonthlyReqLimit(Number(e.target.value))}
+              />
+            </label>
+
+            <label className="field">
+              <span>{copy.monthlyTokenLimitLabel}</span>
+              <input
+                type="number"
+                min={1000}
+                max={5000000000}
+                dir="ltr"
+                value={monthlyTokenLimit}
+                onChange={(e) => setMonthlyTokenLimit(Number(e.target.value))}
               />
             </label>
 

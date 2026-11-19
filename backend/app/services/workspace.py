@@ -57,14 +57,18 @@ def build_workspace_slug(project_name: str, project_id: str) -> str:
     return f"{stem}_{short_id}"
 
 
+class WorkspacePathError(ValueError):
+    """Raised when a workspace slug or file path violates containment rules."""
+
+
 def resolve_project_dir(workspaces_dir: Path, workspace_slug: str) -> Path:
     """Resolve and validate that a project workspace stays inside workspaces_dir."""
     if not workspace_slug or "/" in workspace_slug or "\\" in workspace_slug or ".." in workspace_slug:
-        raise ValueError(f"Invalid workspace slug: {workspace_slug!r}")
+        raise WorkspacePathError(f"Invalid workspace slug: {workspace_slug!r}")
     root = workspaces_dir.resolve()
     project_dir = (root / workspace_slug).resolve()
     if project_dir == root or not project_dir.is_relative_to(root):
-        raise ValueError("Workspace path escaped base workspaces directory")
+        raise WorkspacePathError("Workspace path escaped base workspaces directory")
     return project_dir
 
 
@@ -76,13 +80,13 @@ def resolve_project_file_path(
     """Resolve a project-relative file path and verify it stays inside project_dir."""
     project_dir = resolve_project_dir(workspaces_dir, workspace_slug)
     if not relative_path or "\\" in relative_path:
-        raise ValueError(f"Invalid relative project file path: {relative_path!r}")
+        raise WorkspacePathError(f"Invalid relative project file path: {relative_path!r}")
     rel = PurePosixPath(relative_path)
     if rel.is_absolute() or ".." in rel.parts or any(part in ("", ".") for part in rel.parts):
-        raise ValueError(f"Invalid relative project file path: {relative_path!r}")
+        raise WorkspacePathError(f"Invalid relative project file path: {relative_path!r}")
     candidate = (project_dir / rel).resolve()
     if candidate == project_dir or not candidate.is_relative_to(project_dir):
-        raise ValueError("File path escaped project workspace directory")
+        raise WorkspacePathError("File path escaped project workspace directory")
     return candidate
 
 

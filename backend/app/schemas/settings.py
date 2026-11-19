@@ -25,10 +25,12 @@ class ModelSelectionSchema(BaseModel):
 
 
 class UsageLimitsSchema(BaseModel):
-    """Cost and rate safety caps enforced before external LLM calls."""
+    """Daily and monthly cost/rate safety caps enforced before external LLM calls."""
 
     daily_request_limit: int = Field(default=200, ge=1, le=100_000)
     daily_token_limit: int = Field(default=500_000, ge=1_000, le=100_000_000)
+    monthly_request_limit: int = Field(default=3_000, ge=1, le=5_000_000)
+    monthly_token_limit: int = Field(default=5_000_000, ge=1_000, le=5_000_000_000)
     max_output_tokens: int = Field(default=8192, ge=64, le=65_536)
 
 
@@ -64,14 +66,23 @@ class ApiKeySaveRequest(BaseModel):
         return cleaned
 
 
-class DailyUsageOut(BaseModel):
-    """Tracked daily token and request usage counters."""
-
-    date_utc: str
+class _UsageTotalsBase(BaseModel):
     requests: int = 0
     prompt_tokens: int = 0
     output_tokens: int = 0
     total_tokens: int = 0
+
+
+class DailyUsageOut(_UsageTotalsBase):
+    """Tracked daily token and request usage counters summed from append-only logs."""
+
+    date_utc: str
+
+
+class MonthlyUsageOut(_UsageTotalsBase):
+    """Tracked monthly token and request usage counters summed from append-only logs."""
+
+    month_utc: str
 
 
 class ConnectionCheckStatusOut(BaseModel):
@@ -92,6 +103,7 @@ class ProviderSettingsOut(BaseModel):
     models: ModelSelectionSchema
     usage_limits: UsageLimitsSchema
     daily_usage: DailyUsageOut
+    monthly_usage: MonthlyUsageOut
     api_key_configured: bool
     credential_backend: str
     last_connection_check: ConnectionCheckStatusOut
@@ -126,5 +138,6 @@ class ConnectionTestOut(BaseModel):
     latency_ms: int
     usage: TokenUsageOut
     daily_usage: DailyUsageOut
+    monthly_usage: MonthlyUsageOut
     api_key_configured: bool
     classification: str = "Preliminary"

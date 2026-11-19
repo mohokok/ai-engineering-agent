@@ -127,6 +127,7 @@ class GeminiProvider(LLMProvider):
 
     def _translate_api_error(self, exc: Exception) -> ProviderError:
         message = sanitize_secret_text(str(exc), self._api_key)
+        usage = _extract_usage(getattr(exc, "usage_metadata", None))
         status_code = getattr(exc, "code", None)
         lowered = message.lower()
 
@@ -136,15 +137,17 @@ class GeminiProvider(LLMProvider):
         ):
             return ProviderAuthError(
                 "Gemini API authentication failed. Verify your Gemini API key in Settings "
-                "(note: a Gemini consumer subscription does not include Gemini API access)."
+                "(note: a Gemini consumer subscription does not include Gemini API access).",
+                usage=usage,
             )
         if status_code == 429 or any(
             marker in lowered for marker in ("resource_exhausted", "quota", "rate limit")
         ):
             return ProviderQuotaError(
-                "Gemini API quota or rate limit exceeded. Wait and retry or check your Google AI Studio quota."
+                "Gemini API quota or rate limit exceeded. Wait and retry or check your Google AI Studio quota.",
+                usage=usage,
             )
-        return ProviderError(f"Gemini API request failed: {message}")
+        return ProviderError(f"Gemini API request failed: {message}", usage=usage)
 
     def generate(self, request: LLMRequest) -> LLMResponse:
         """Call Gemini generate_content supporting text, JSON schema, media, and tools."""
@@ -180,16 +183,18 @@ class GeminiProvider(LLMProvider):
                 parsed_json = parsed_attr
             else:
                 if not text.strip():
-                    raise ProviderResponseError("Gemini returned empty structured output.")
+                    raise ProviderResponseError("Gemini returned empty structured output.", usage=usage)
                 try:
                     decoded = json.loads(text)
                 except json.JSONDecodeError as exc:
                     raise ProviderResponseError(
-                        f"Gemini returned invalid JSON for structured schema: {exc.msg}"
+                        f"Gemini returned invalid JSON for structured schema: {exc.msg}",
+                        usage=usage,
                     ) from exc
                 if not isinstance(decoded, (dict, list)):
                     raise ProviderResponseError(
-                        "Structured output must decode to a JSON object or array."
+                        "Structured output must decode to a JSON object or array.",
+                        usage=usage,
                     )
                 parsed_json = decoded
 
@@ -202,7 +207,10 @@ class GeminiProvider(LLMProvider):
                 tool_calls.append(ToolCallResult(name=str(name), arguments=dict(raw_args)))
 
         if not text and parsed_json is None and not tool_calls:
-            raise ProviderResponseError("Gemini returned an empty response with no text or tool calls.")
+            raise ProviderResponseError(
+                "Gemini returned an empty response with no text or tool calls.",
+                usage=usage,
+            )
 
         finish_reason = None
         candidates = getattr(raw_resp, "candidates", None) or []

@@ -349,3 +349,22 @@ def test_pr9_hardening_early_content_length_mime_hint_double_dot_and_error_maps(
 
         bad_path_dl = client.get(f"/api/files/{rev_file['id']}/download")
         assert bad_path_dl.status_code == 400
+
+        # 6. Chunked upload without Content-Length skips early middleware and still fails per-file 413
+        boundary = "chunkedboundary"
+        raw_part = (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="files"; filename="chunked_big.pdf"\r\n'
+            f"Content-Type: application/pdf\r\n\r\n"
+        ).encode("ascii") + (b"x" * 700) + f"\r\n--{boundary}--\r\n".encode("ascii")
+
+        def chunk_stream():
+            for start in range(0, len(raw_part), 128):
+                yield raw_part[start : start + 128]
+
+        chunked_resp = client.post(
+            f"/api/projects/{project_id}/files",
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+            content=chunk_stream(),
+        )
+        assert chunked_resp.status_code == 413

@@ -1,6 +1,9 @@
 """Tests for swappable LLMProvider, GeminiProvider, keyring storage, and settings API."""
 
+from datetime import datetime, timezone
+import logging
 from pathlib import Path
+import sys
 from types import SimpleNamespace
 from typing import Any
 
@@ -25,6 +28,7 @@ from app.providers import (
     ProviderError,
     ProviderQuotaError,
     ProviderResponseError,
+    ProviderUsageLimitError,
     SecretStore,
     ToolDefinition,
     create_provider,
@@ -360,12 +364,15 @@ def test_settings_api_keyring_swappability_usage_limits_and_zero_secret_leak(
                 "usage_limits": {
                     "daily_request_limit": 1,
                     "daily_token_limit": 500000,
+                    "monthly_request_limit": 3000,
+                    "monthly_token_limit": 5000000,
                     "max_output_tokens": 4096,
                 },
             },
         )
         assert upd.status_code == 200
         assert upd.json()["models"]["fast"] == "gemini-2.5-flash-lite"
+        assert upd.json()["monthly_usage"]["requests"] == 1
 
         capped_test = client.post("/api/settings/provider/test")
         assert capped_test.status_code == 429
@@ -379,6 +386,8 @@ def test_settings_api_keyring_swappability_usage_limits_and_zero_secret_leak(
                 "usage_limits": {
                     "daily_request_limit": 100,
                     "daily_token_limit": 500000,
+                    "monthly_request_limit": 3000,
+                    "monthly_token_limit": 5000000,
                     "max_output_tokens": 4096,
                 },
             },
@@ -413,3 +422,326 @@ def test_settings_api_keyring_swappability_usage_limits_and_zero_secret_leak(
         assert del_resp.json()["api_key_configured"] is False
         assert del_resp.json()["last_connection_check"]["status"] == "untested"
         assert secret_store.has_api_key("gemini") is False
+
+
+def test_monthly_usage_limits_and_failed_attempt_counting(tmp_path: Path) -> None:
+    """Monthly caps block calls before Google; failed remote attempts count requests and tokens."""
+    secret_store = _InMemorySecretStore()
+    secret_store.set_api_key("gemini", "mock-monthly-test-key")
+    calls = {"count": 0, "mode": "ok"}
+
+    def client_factory(_key: str) -> Any:
+        class _Models:
+            def generate_content(self, **_kwargs: Any) -> Any:
+                calls["count"] += 1
+                if calls["mode"] == "auth_fail":
+                    raise genai_errors.APIError(
+                        401, {"error": {"message": "API_KEY_INVALID"}}
+                    )
+                if calls["mode"] == "bad_json_with_usage":
+                    return SimpleNamespace(
+                        text="{broken",
+                        parsed=None,
+                        function_calls=[],
+                        candidates=[],
+                        usage_metadata=_fake_usage(40, 20),
+                    )
+                return SimpleNamespace(
+                    text="OK",
+                    parsed=None,
+                    function_calls=[],
+                    candidates=[SimpleNamespace(finish_reason="STOP")],
+                    usage_metadata=_fake_usage(10, 5),
+                )
+
+        return SimpleNamespace(models=_Models())
+
+    app = create_app(
+        _test_settings(tmp_path),
+        secret_store=secret_store,
+        provider_client_factory=client_factory,
+    )
+
+    with TestClient(app) as client:
+        # 1. Pre-populate a prior-day append-only row within the CURRENT UTC month
+        #    so daily usage stays low while monthly usage triggers first.
+        now = datetime.now(timezone.utc)
+        month_str = now.strftime("%Y-%m")
+        with app.state.session_factory() as db:
+            db.add(
+                AuditLog(
+                    project_id=None,
+                    action="provider.usage_recorded",
+                    entity_type="provider_usage",
+                    entity_id="gemini",
+                    actor="owner",
+                    details_json={
+                        "provider": "gemini",
+                        "model": "gemini-2.5-flash",
+                        "date_utc": "1999-01-01",
+                        "month_utc": month_str,
+                        "requests": 2,
+                        "prompt_tokens": 500,
+                        "output_tokens": 200,
+                        "total_tokens": 700,
+                        "status": "ok",
+                    },
+                )
+            )
+            db.commit()
+
+        # Set high daily caps (100 / 500k) and tight monthly request cap (2, already hit!)
+        upd1 = client.put(
+            "/api/settings/provider",
+            json={
+                "active_provider": "gemini",
+                "models": {"fast": "gemini-2.5-flash", "deep": "gemini-2.5-pro"},
+                "usage_limits": {
+                    "daily_request_limit": 100,
+                    "daily_token_limit": 500000,
+                    "monthly_request_limit": 2,
+                    "monthly_token_limit": 5000000,
+                    "max_output_tokens": 4096,
+                },
+            },
+        )
+        assert upd1.status_code == 200
+        assert upd1.json()["daily_usage"]["requests"] == 0
+        assert upd1.json()["monthly_usage"]["requests"] == 2
+
+        calls_before = calls["count"]
+        blocked_req = client.post("/api/settings/provider/test")
+        assert blocked_req.status_code == 429
+        assert "monthly request limit" in blocked_req.json()["detail"].lower()
+        assert calls["count"] == calls_before  # blocked before calling Google SDK!
+
+        # Locally blocked attempt must NOT increment counters
+        after_blocked = client.get("/api/settings/provider").json()
+        assert after_blocked["monthly_usage"]["requests"] == 2
+
+        # 2. Allow monthly requests=100, test tight monthly token cap (limit=700 already hit!)
+        client.put(
+            "/api/settings/provider",
+            json={
+                "active_provider": "gemini",
+                "models": {"fast": "gemini-2.5-flash", "deep": "gemini-2.5-pro"},
+                "usage_limits": {
+                    "daily_request_limit": 100,
+                    "daily_token_limit": 500000,
+                    "monthly_request_limit": 100,
+                    "monthly_token_limit": 1000,
+                    "max_output_tokens": 4096,
+                },
+            },
+        )
+        # Seed 300 more tokens in current month -> total 1000 == monthly_token_limit
+        with app.state.session_factory() as db:
+            db.add(
+                AuditLog(
+                    project_id=None,
+                    action="provider.usage_recorded",
+                    entity_type="provider_usage",
+                    entity_id="gemini",
+                    actor="owner",
+                    details_json={
+                        "provider": "gemini",
+                        "model": "gemini-2.5-flash",
+                        "date_utc": "1999-01-01",
+                        "month_utc": month_str,
+                        "requests": 1,
+                        "prompt_tokens": 200,
+                        "output_tokens": 100,
+                        "total_tokens": 300,
+                        "status": "ok",
+                    },
+                )
+            )
+            db.commit()
+
+        calls_before = calls["count"]
+        blocked_tok = client.post("/api/settings/provider/test")
+        assert blocked_tok.status_code == 429
+        assert "monthly token limit" in blocked_tok.json()["detail"].lower()
+        with app.state.session_factory() as db:
+            with pytest.raises(ProviderUsageLimitError):
+                execute_provider_request(
+                    db,
+                    secret_store,
+                    LLMRequest(prompt="Should be blocked by monthly token cap"),
+                    client_factory=client_factory,
+                )
+        assert calls["count"] == calls_before
+
+        # 3. Raise monthly caps and verify FAILED attempts reaching Google ARE counted
+        client.put(
+            "/api/settings/provider",
+            json={
+                "active_provider": "gemini",
+                "models": {"fast": "gemini-2.5-flash", "deep": "gemini-2.5-pro"},
+                "usage_limits": {
+                    "daily_request_limit": 100,
+                    "daily_token_limit": 500000,
+                    "monthly_request_limit": 100,
+                    "monthly_token_limit": 5000000,
+                    "max_output_tokens": 4096,
+                },
+            },
+        )
+        calls["mode"] = "auth_fail"
+        fail_conn = client.post("/api/settings/provider/test")
+        assert fail_conn.status_code == 401
+        state_after_fail = client.get("/api/settings/provider").json()
+        assert state_after_fail["daily_usage"]["requests"] == 1
+        assert state_after_fail["monthly_usage"]["requests"] == 4  # 2 + 1 seeded + 1 failed
+
+        # 4. Failed structured output with reported usage_metadata counts BOTH request and tokens
+        calls["mode"] = "bad_json_with_usage"
+        with app.state.session_factory() as db:
+            with pytest.raises(ProviderResponseError):
+                execute_provider_request(
+                    db,
+                    secret_store,
+                    LLMRequest(prompt="return json", response_schema=_DummyStructuredSchema),
+                    client_factory=client_factory,
+                )
+        state_after_bad_json = client.get("/api/settings/provider").json()
+        assert state_after_bad_json["daily_usage"]["requests"] == 2
+        assert state_after_bad_json["daily_usage"]["prompt_tokens"] == 40
+        assert state_after_bad_json["daily_usage"]["output_tokens"] == 20
+        assert state_after_bad_json["daily_usage"]["total_tokens"] == 60
+        assert state_after_bad_json["monthly_usage"]["total_tokens"] == 1060
+
+
+def test_debug_logging_never_leaks_api_key(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Capture DEBUG logs across root, httpx, httpx2, google_genai, uvicorn and assert key absent."""
+    fake_secret = "mock-debug-log-guard-secret-9988"
+    secret_store = _InMemorySecretStore()
+    fail_mode = {"fail": False}
+
+    def client_factory(_key: str) -> Any:
+        logging.getLogger("google_genai").debug("google_genai synthetic debug call")
+        logging.getLogger("httpx2").debug("httpx2 synthetic debug transport")
+
+        class _Models:
+            def generate_content(self, **_kwargs: Any) -> Any:
+                if fail_mode["fail"]:
+                    raise genai_errors.APIError(
+                        401,
+                        {"error": {"message": f"Invalid key at ?key={fake_secret}"}},
+                    )
+                return SimpleNamespace(
+                    text="OK",
+                    parsed=None,
+                    function_calls=[],
+                    candidates=[SimpleNamespace(finish_reason="STOP")],
+                    usage_metadata=_fake_usage(8, 2),
+                )
+
+        return SimpleNamespace(models=_Models())
+
+    app = create_app(
+        _test_settings(tmp_path),
+        secret_store=secret_store,
+        provider_client_factory=client_factory,
+    )
+
+    watched_loggers = ("", "httpx", "httpx2", "google_genai", "uvicorn", "uvicorn.access", "uvicorn.error")
+    saved_propagate: dict[str, bool] = {}
+    for name in watched_loggers:
+        if name:
+            lg = logging.getLogger(name)
+            saved_propagate[name] = lg.propagate
+            lg.propagate = True
+
+    try:
+        with (
+            caplog.at_level(logging.DEBUG),
+            caplog.at_level(logging.DEBUG, logger="httpx"),
+            caplog.at_level(logging.DEBUG, logger="httpx2"),
+            caplog.at_level(logging.DEBUG, logger="google_genai"),
+            caplog.at_level(logging.DEBUG, logger="uvicorn"),
+            TestClient(app) as client,
+        ):
+            r_save = client.put("/api/settings/provider/api-key", json={"api_key": fake_secret})
+            assert r_save.status_code == 200
+
+            r_ok = client.post("/api/settings/provider/test")
+            assert r_ok.status_code == 200
+
+            fail_mode["fail"] = True
+            r_fail = client.post("/api/settings/provider/test")
+            assert r_fail.status_code == 401
+    finally:
+        for name, prop in saved_propagate.items():
+            logging.getLogger(name).propagate = prop
+
+    assert len(caplog.records) > 0
+    assert fake_secret not in caplog.text
+    for record in caplog.records:
+        assert fake_secret not in record.getMessage()
+
+
+def test_verify_gemini_live_script_with_mocked_provider(tmp_path: Path) -> None:
+    """Owner verification script runs all 5 checks cleanly and emits zero secret strings."""
+    scripts_dir = Path(__file__).resolve().parents[2] / "scripts"
+    if str(scripts_dir) not in sys.path:
+        sys.path.insert(0, str(scripts_dir))
+    import verify_gemini_live  # type: ignore[import-not-found]
+
+    pdf_bytes = verify_gemini_live.build_minimal_valid_pdf()
+    png_bytes = verify_gemini_live.build_minimal_valid_png()
+    assert pdf_bytes.startswith(b"%PDF-1.4") and b"%%EOF" in pdf_bytes
+    assert png_bytes.startswith(b"\x89PNG\r\n\x1a\n")
+
+    owner_fake_key = "mock-owner-keyring-secret-777"
+    store = _InMemorySecretStore()
+    store.set_api_key("gemini", owner_fake_key)
+
+    def mock_client_factory(key: str) -> Any:
+        class _Models:
+            def generate_content(self, *, contents: Any, config: Any, **_kwargs: Any) -> Any:
+                if key != owner_fake_key:
+                    raise genai_errors.APIError(
+                        400, {"error": {"message": f"API key not valid: ?key={key}"}}
+                    )
+                if getattr(config, "response_mime_type", None) == "application/json":
+                    return SimpleNamespace(
+                        text='{"discipline":"Civil","classification":"Preliminary","note":"OK"}',
+                        parsed=verify_gemini_live.LiveStructuredCheckSchema(
+                            discipline="Civil", classification="Preliminary", note="OK"
+                        ),
+                        function_calls=[],
+                        candidates=[SimpleNamespace(finish_reason="STOP")],
+                        usage_metadata=_fake_usage(20, 12),
+                    )
+                return SimpleNamespace(
+                    text="Beam span 6.0m verified" if len(contents) > 1 else "OK",
+                    parsed=None,
+                    function_calls=[],
+                    candidates=[SimpleNamespace(finish_reason="STOP")],
+                    usage_metadata=_fake_usage(15, 8),
+                )
+
+        return SimpleNamespace(models=_Models())
+
+    db_url = f"sqlite:///{(tmp_path / 'live_verify.db').as_posix()}"
+    summary = verify_gemini_live.run_live_checks(
+        secret_store=store,
+        client_factory=mock_client_factory,
+        database_url=db_url,
+    )
+    assert summary["check_1_test_connection"]["connected"] is True
+    assert summary["check_2_invalid_key"]["rejected_cleanly"] is True
+    assert set(summary["check_3_structured_json"]["parsed_keys"]) == {
+        "classification",
+        "discipline",
+        "note",
+    }
+    assert summary["check_4_pdf_analysis"]["total_tokens"] == 23
+    assert summary["check_5_image_analysis"]["total_tokens"] == 23
+    serialized = repr(summary)
+    assert owner_fake_key not in serialized
+    assert "invalid-key-live-verification-probe" not in serialized

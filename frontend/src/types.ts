@@ -152,11 +152,21 @@ export interface ModelSelection {
 export interface UsageLimits {
   daily_request_limit: number;
   daily_token_limit: number;
+  monthly_request_limit: number;
+  monthly_token_limit: number;
   max_output_tokens: number;
 }
 
 export interface DailyUsageOut {
   date_utc: string;
+  requests: number;
+  prompt_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+}
+
+export interface MonthlyUsageOut {
+  month_utc: string;
   requests: number;
   prompt_tokens: number;
   output_tokens: number;
@@ -177,6 +187,7 @@ export interface ProviderSettingsOut {
   models: ModelSelection;
   usage_limits: UsageLimits;
   daily_usage: DailyUsageOut;
+  monthly_usage: MonthlyUsageOut;
   api_key_configured: boolean;
   credential_backend: string;
   last_connection_check: ConnectionCheckStatus;
@@ -206,6 +217,7 @@ export interface ConnectionTestOut {
   latency_ms: number;
   usage: TokenUsageOut;
   daily_usage: DailyUsageOut;
+  monthly_usage: MonthlyUsageOut;
   api_key_configured: boolean;
   classification: string;
 }
