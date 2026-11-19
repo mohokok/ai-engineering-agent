@@ -10,6 +10,7 @@ from app.providers.base import (
     ProviderAuthError,
     ProviderConfigError,
     ProviderError,
+    ProviderModelNotFoundError,
     ProviderQuotaError,
     ProviderUsageLimitError,
 )
@@ -24,6 +25,7 @@ from app.schemas.settings import (
 from app.services.provider_settings import (
     delete_provider_api_key,
     get_provider_settings,
+    refresh_provider_models,
     save_provider_api_key,
     test_provider_connection,
     update_provider_settings,
@@ -93,6 +95,32 @@ def delete_api_key_endpoint(
         ) from exc
 
 
+def _raise_provider_http_error(exc: ProviderError) -> None:
+    if isinstance(exc, ProviderAuthError):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
+    if isinstance(exc, (ProviderQuotaError, ProviderUsageLimitError)):
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc)) from exc
+    if isinstance(exc, (ProviderConfigError, ProviderModelNotFoundError)):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+
+
+@router.post("/models/refresh", response_model=ProviderSettingsOut)
+def refresh_provider_models_endpoint(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> ProviderSettingsOut:
+    """Query the active provider SDK for live generateContent models and cache them."""
+    try:
+        return refresh_provider_models(
+            db,
+            _get_secret_store(request),
+            client_factory=_get_client_factory(request),
+        )
+    except ProviderError as exc:
+        _raise_provider_http_error(exc)
+
+
 @router.post("/test", response_model=ConnectionTestOut)
 def test_provider_connection_endpoint(
     request: Request,
@@ -109,13 +137,5 @@ def test_provider_connection_endpoint(
             model_override=body.model_override,
             client_factory=_get_client_factory(request),
         )
-    except ProviderAuthError as exc:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
-    except (ProviderQuotaError, ProviderUsageLimitError) as exc:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc)
-        ) from exc
-    except ProviderConfigError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except ProviderError as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+        _raise_provider_http_error(exc)

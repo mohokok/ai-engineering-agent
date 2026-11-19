@@ -38,6 +38,10 @@ class ProviderResponseError(ProviderError):
     """Raised when the provider returns empty or unparseable output."""
 
 
+class ProviderModelNotFoundError(ProviderError):
+    """Raised when the requested model ID is missing or retired (HTTP 404)."""
+
+
 @dataclass(frozen=True)
 class MediaInput:
     """Binary image or PDF attachment for multimodal LLM requests."""
@@ -105,6 +109,16 @@ class LLMResponse:
 
 
 @dataclass(frozen=True)
+class ModelInfo:
+    """Discovered model capability metadata returned by an LLM provider."""
+
+    id: str
+    label: str
+    tier: TaskComplexity = "fast"
+    supported_actions: tuple[str, ...] = ("generateContent",)
+
+
+@dataclass(frozen=True)
 class ConnectionCheckResult:
     """Result returned by LLMProvider.test_connection."""
 
@@ -139,6 +153,10 @@ class LLMProvider(ABC):
     @abstractmethod
     def test_connection(self, model: str | None = None) -> ConnectionCheckResult:
         """Verify live API credentials and model reachability with a minimal prompt."""
+
+    def list_models(self) -> list[ModelInfo]:
+        """Return available models capable of text/multimodal generation."""
+        return []
 
     def generate_text(
         self,

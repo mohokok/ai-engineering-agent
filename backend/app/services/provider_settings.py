@@ -1,10 +1,11 @@
 """Non-secret DB settings, append-only usage tracking, keyring coordination, and runner."""
 
 from datetime import datetime, timedelta, timezone
+import logging
 from typing import Any, Callable
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.models import AuditLog, Setting
 from app.providers.base import (
@@ -35,7 +36,9 @@ from app.schemas.settings import (
 
 PROVIDER_CONFIG_KEY = "provider.config"
 PROVIDER_LAST_CHECK_KEY = "provider.last_check"
+PROVIDER_DISCOVERED_MODELS_KEY = "provider.discovered_models"
 USAGE_LEDGER_ENTITY_TYPE = "provider_usage"
+logger = logging.getLogger(__name__)
 CONSUMER_SUBSCRIPTION_NOTICE = (
     "Note: A consumer Gemini web subscription (Gemini Advanced / Google One) does NOT "
     "automatically include Gemini API access. Generate an authorized Gemini API key in "
@@ -164,16 +167,62 @@ def _save_last_check(
     )
 
 
+def _load_discovered_models(db: Session, provider_id: str) -> tuple[list[dict[str, str]] | None, str | None]:
+    row = db.get(Setting, PROVIDER_DISCOVERED_MODELS_KEY)
+    if row is None or not isinstance(row.value_json, dict):
+        return None, None
+    data = row.value_json
+    if data.get("provider") != provider_id:
+        return None, None
+    raw_models = data.get("models")
+    if not isinstance(raw_models, list) or not raw_models:
+        return None, None
+    return raw_models, data.get("refreshed_at")
+
+
+def _build_available_providers(
+    db: Session,
+    cfg: ProviderSettingsUpdate,
+) -> tuple[list[dict[str, Any]], str, str | None, str | None]:
+    discovered, refreshed_at = _load_discovered_models(db, cfg.active_provider)
+    providers = [dict(item) for item in PROVIDER_CATALOG]
+    if discovered is None:
+        return providers, "fallback_catalog", None, None
+
+    for item in providers:
+        if item.get("id") == cfg.active_provider:
+            item["models"] = discovered
+
+    live_ids = {str(m.get("id", "")) for m in discovered}
+    missing = [
+        m_id
+        for m_id in (cfg.models.fast, cfg.models.deep)
+        if m_id not in live_ids
+    ]
+    warning = None
+    if missing:
+        unique_missing = list(dict.fromkeys(missing))
+        warning = (
+            f"Configured model(s) ({', '.join(unique_missing)}) were not returned in the "
+            "refreshed generateContent list for your API key. Pick an available model below or click Refresh models."
+        )
+    return providers, "live_api", refreshed_at, warning
+
+
 def get_provider_settings(db: Session, secret_store: SecretStore) -> ProviderSettingsOut:
     """Return full non-secret provider settings along with boolean key status."""
     cfg = _load_provider_config(db)
     daily_usage, monthly_usage = _summarize_usage(db)
     last_check = _load_last_check(db)
     api_key_configured = secret_store.has_api_key(cfg.active_provider)
+    providers, models_source, refreshed_at, model_warning = _build_available_providers(db, cfg)
     return ProviderSettingsOut(
         active_provider=cfg.active_provider,
-        available_providers=list(PROVIDER_CATALOG),
+        available_providers=providers,
         models=cfg.models,
+        models_source=models_source,  # type: ignore[arg-type]
+        models_refreshed_at=refreshed_at,
+        model_warning=model_warning,
         usage_limits=cfg.usage_limits,
         daily_usage=daily_usage,
         monthly_usage=monthly_usage,
@@ -244,9 +293,12 @@ def delete_provider_api_key(
     db: Session,
     secret_store: SecretStore,
 ) -> ProviderSettingsOut:
-    """Remove stored API key from OS keyring and reset connection check state."""
+    """Remove stored API key from OS keyring and reset connection check and live model cache."""
     cfg = _load_provider_config(db)
     secret_store.delete_api_key(cfg.active_provider)
+    cached_row = db.get(Setting, PROVIDER_DISCOVERED_MODELS_KEY)
+    if cached_row is not None:
+        db.delete(cached_row)
     _save_last_check(
         db,
         status_value="untested",
@@ -486,3 +538,74 @@ def test_provider_connection(
         monthly_usage=monthly_usage,
         api_key_configured=True,
     )
+
+
+def refresh_provider_models(
+    db: Session,
+    secret_store: SecretStore,
+    *,
+    client_factory: Callable[[str], Any] | None = None,
+) -> ProviderSettingsOut:
+    """Query active provider SDK for generateContent-capable models and cache non-secret metadata."""
+    cfg = _load_provider_config(db)
+    api_key = secret_store.get_api_key(cfg.active_provider)
+    provider = create_provider(
+        cfg.active_provider,
+        api_key,
+        fast_model=cfg.models.fast,
+        deep_model=cfg.models.deep,
+        client_factory=client_factory,
+    )
+    models = provider.list_models()
+    serialized = [
+        {"id": item.id, "label": item.label, "tier": item.tier}
+        for item in models
+    ]
+    refreshed_at = datetime.now(timezone.utc).isoformat()
+    _upsert_setting(
+        db,
+        key=PROVIDER_DISCOVERED_MODELS_KEY,
+        value_json={
+            "provider": cfg.active_provider,
+            "refreshed_at": refreshed_at,
+            "models": serialized,
+        },
+        category="ai_provider",
+        description="Cached generateContent-capable models discovered for the active provider",
+    )
+    db.add(
+        AuditLog(
+            project_id=None,
+            action="provider.models_refreshed",
+            entity_type="provider",
+            entity_id=cfg.active_provider,
+            actor="owner",
+            details_json={
+                "provider": cfg.active_provider,
+                "count": len(serialized),
+                "model_ids": [item["id"] for item in serialized],
+            },
+        )
+    )
+    db.commit()
+    return get_provider_settings(db, secret_store)
+
+
+def refresh_models_on_startup(
+    session_factory: sessionmaker[Session],
+    secret_store: SecretStore,
+    *,
+    client_factory: Callable[[str], Any] | None = None,
+) -> None:
+    """Best-effort startup model discovery when an API key is already saved in keyring."""
+    try:
+        with session_factory() as db:
+            cfg = _load_provider_config(db)
+            if not secret_store.has_api_key(cfg.active_provider):
+                return
+            refresh_provider_models(db, secret_store, client_factory=client_factory)
+    except Exception as exc:
+        logger.warning(
+            "Startup AI model list refresh skipped: %s",
+            sanitize_secret_text(str(exc)),
+        )

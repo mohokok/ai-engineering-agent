@@ -42,6 +42,7 @@ from app.providers.base import sanitize_secret_text  # noqa: E402
 from app.services.provider_settings import (  # noqa: E402
     execute_provider_request,
     get_provider_settings,
+    refresh_provider_models,
     test_provider_connection,
 )
 
@@ -144,8 +145,17 @@ def run_live_checks(
 
     try:
         with SessionLocal() as db:
-            cfg = get_provider_settings(db, store)
+            cfg = refresh_provider_models(db, store, client_factory=client_factory)
             results["credential_backend"] = cfg.credential_backend
+            results["models_source"] = cfg.models_source
+            active_models = next(
+                (p.get("models", []) for p in cfg.available_providers if p.get("id") == cfg.active_provider),
+                [],
+            )
+            results["refreshed_generate_content_models_count"] = len(active_models)
+            results["configured_models"] = {"fast": cfg.models.fast, "deep": cfg.models.deep}
+            if cfg.model_warning:
+                results["model_warning"] = cfg.model_warning
 
             # 1. Live Test Connection using owner's keyring-stored key
             conn_res = test_provider_connection(

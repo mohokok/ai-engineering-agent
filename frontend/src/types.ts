@@ -185,6 +185,9 @@ export interface ProviderSettingsOut {
   active_provider: string;
   available_providers: ProviderCatalogItem[];
   models: ModelSelection;
+  models_source: "live_api" | "fallback_catalog";
+  models_refreshed_at: string | null;
+  model_warning: string | null;
   usage_limits: UsageLimits;
   daily_usage: DailyUsageOut;
   monthly_usage: MonthlyUsageOut;

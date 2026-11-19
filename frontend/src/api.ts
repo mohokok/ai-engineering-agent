@@ -135,3 +135,9 @@ export function testProviderConnection(
     body: JSON.stringify({ complexity }),
   });
 }
+
+export function refreshProviderModels(): Promise<ProviderSettingsOut> {
+  return requestJson<ProviderSettingsOut>("/api/settings/provider/models/refresh", {
+    method: "POST",
+  });
+}

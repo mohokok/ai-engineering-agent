@@ -14,9 +14,11 @@ from app.providers.base import (
     LLMProvider,
     LLMRequest,
     LLMResponse,
+    ModelInfo,
     ProviderAuthError,
     ProviderConfigError,
     ProviderError,
+    ProviderModelNotFoundError,
     ProviderQuotaError,
     ProviderResponseError,
     TaskComplexity,
@@ -25,23 +27,23 @@ from app.providers.base import (
     sanitize_secret_text,
 )
 
-DEFAULT_GEMINI_FAST_MODEL = "gemini-2.5-flash"
-DEFAULT_GEMINI_DEEP_MODEL = "gemini-2.5-pro"
+DEFAULT_GEMINI_FAST_MODEL = "gemini-3.8-flash"
+DEFAULT_GEMINI_DEEP_MODEL = "gemini-4-argon"
 
 AVAILABLE_GEMINI_MODELS: tuple[dict[str, str], ...] = (
     {
-        "id": "gemini-2.5-flash",
-        "label": "Gemini 2.5 Flash (Fast / General)",
+        "id": "gemini-3.8-flash",
+        "label": "Gemini 3.8 Flash (Stable — Fast / General)",
         "tier": "fast",
     },
     {
-        "id": "gemini-2.5-flash-lite",
-        "label": "Gemini 2.5 Flash-Lite (Lightweight)",
+        "id": "gemini-3.5-flash-lite",
+        "label": "Gemini 3.5 Flash-Lite (Stable — Lightweight)",
         "tier": "fast",
     },
     {
-        "id": "gemini-2.5-pro",
-        "label": "Gemini 2.5 Pro (Deep Engineering Reasoning)",
+        "id": "gemini-4-argon",
+        "label": "Gemini 4 Argon (Stable — Deep Reasoning)",
         "tier": "deep",
     },
 )
@@ -125,12 +127,35 @@ class GeminiProvider(LLMProvider):
             config_kwargs["tools"] = [genai_types.Tool(function_declarations=declarations)]
         return genai_types.GenerateContentConfig(**config_kwargs)
 
-    def _translate_api_error(self, exc: Exception) -> ProviderError:
+    def _translate_api_error(
+        self,
+        exc: Exception,
+        *,
+        model_name: str | None = None,
+    ) -> ProviderError:
         message = sanitize_secret_text(str(exc), self._api_key)
         usage = _extract_usage(getattr(exc, "usage_metadata", None))
         status_code = getattr(exc, "code", None)
         lowered = message.lower()
 
+        if status_code == 404 or any(
+            marker in lowered
+            for marker in (
+                "not_found",
+                "is not found",
+                "no longer available",
+                "not supported for generatecontent",
+            )
+        ):
+            target_label = model_name or self._model_map.get("fast", DEFAULT_GEMINI_FAST_MODEL)
+            return ProviderModelNotFoundError(
+                sanitize_secret_text(
+                    f"Configured model '{target_label}' was not found or is no longer available (HTTP 404). "
+                    "Click 'Refresh models' in AI Provider Settings and select another model from the refreshed list.",
+                    self._api_key,
+                ),
+                usage=usage,
+            )
         if status_code in (401, 403) or any(
             marker in lowered
             for marker in ("api_key_invalid", "invalid api key", "api key not valid", "permission_denied", "unauthorized")
@@ -164,11 +189,11 @@ class GeminiProvider(LLMProvider):
                 config=config,
             )
         except genai_errors.APIError as exc:
-            raise self._translate_api_error(exc) from exc
+            raise self._translate_api_error(exc, model_name=model_name) from exc
         except ProviderError:
             raise
         except Exception as exc:
-            raise self._translate_api_error(exc) from exc
+            raise self._translate_api_error(exc, model_name=model_name) from exc
 
         latency_ms = max(1, int((time.perf_counter() - start) * 1000))
         usage = _extract_usage(getattr(raw_resp, "usage_metadata", None))
@@ -247,3 +272,54 @@ class GeminiProvider(LLMProvider):
             usage=response.usage,
             latency_ms=response.latency_ms,
         )
+
+    def list_models(self) -> list[ModelInfo]:
+        """List Gemini models available to this API key that support generateContent."""
+        client = self._build_client()
+        try:
+            raw_models = list(client.models.list())
+        except genai_errors.APIError as exc:
+            raise self._translate_api_error(exc) from exc
+        except ProviderError:
+            raise
+        except Exception as exc:
+            raise self._translate_api_error(exc) from exc
+
+        discovered: list[ModelInfo] = []
+        seen: set[str] = set()
+        for raw_model in raw_models:
+            actions = list(
+                getattr(raw_model, "supported_actions", None)
+                or getattr(raw_model, "supported_generation_methods", None)
+                or ()
+            )
+            if not any(str(act).lower() == "generatecontent" for act in actions):
+                continue
+
+            raw_name = str(getattr(raw_model, "name", "") or "").strip()
+            model_id = raw_name.removeprefix("models/")
+            if not model_id or model_id in seen:
+                continue
+            seen.add(model_id)
+
+            display_name = str(getattr(raw_model, "display_name", "") or "").strip()
+            label = (
+                f"{display_name} ({model_id})"
+                if display_name and display_name != model_id
+                else model_id
+            )
+            lowered_id = model_id.lower()
+            tier: TaskComplexity = (
+                "deep"
+                if any(token in lowered_id for token in ("pro", "argon", "ultra"))
+                else "fast"
+            )
+            discovered.append(
+                ModelInfo(
+                    id=model_id,
+                    label=label,
+                    tier=tier,
+                    supported_actions=tuple(str(act) for act in actions),
+                )
+            )
+        return discovered

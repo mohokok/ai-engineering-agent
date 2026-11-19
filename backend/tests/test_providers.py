@@ -26,6 +26,7 @@ from app.providers import (
     ProviderAuthError,
     ProviderConfigError,
     ProviderError,
+    ProviderModelNotFoundError,
     ProviderQuotaError,
     ProviderResponseError,
     ProviderUsageLimitError,
@@ -171,7 +172,7 @@ def test_gemini_provider_text_structured_pdf_image_and_tools() -> None:
 
     # 1. Text generation uses fast model by default
     text_resp = provider.generate_text("Explain load combinations")
-    assert text_resp.model == "gemini-2.5-flash"
+    assert text_resp.model == "gemini-3.8-flash"
     assert text_resp.text == "تحليل هندسي مبدئي مكتمل"
     assert text_resp.usage.total_tokens == 42
 
@@ -194,7 +195,7 @@ def test_gemini_provider_text_structured_pdf_image_and_tools() -> None:
         ],
         complexity="deep",
     )
-    assert media_resp.model == "gemini-2.5-pro"
+    assert media_resp.model == "gemini-4-argon"
     media_call_contents = recorder[-1].calls[0]["contents"]
     assert len(media_call_contents) == 3
     assert isinstance(media_call_contents[1], genai_types.Part)
@@ -324,8 +325,13 @@ def test_settings_api_keyring_swappability_usage_limits_and_zero_secret_leak(
         d0 = r0.json()
         assert d0["api_key_configured"] is False
         assert d0["active_provider"] == "gemini"
-        assert d0["models"]["fast"] == "gemini-2.5-flash"
-        assert d0["models"]["deep"] == "gemini-2.5-pro"
+        assert d0["models"]["fast"] == "gemini-3.8-flash"
+        assert d0["models"]["deep"] == "gemini-4-argon"
+        assert d0["models_source"] == "fallback_catalog"
+        catalog_ids = [m["id"] for m in d0["available_providers"][0]["models"]]
+        assert "gemini-3.8-flash" in catalog_ids
+        assert "gemini-3.5-flash-lite" in catalog_ids
+        assert "gemini-4-argon" in catalog_ids
 
         # 2. Test connection without key returns clear 400
         no_key_test = client.post("/api/settings/provider/test")
@@ -350,7 +356,7 @@ def test_settings_api_keyring_swappability_usage_limits_and_zero_secret_leak(
         assert ok_test.status_code == 200
         ok_data = ok_test.json()
         assert ok_data["connected"] is True
-        assert ok_data["model"] == "gemini-2.5-flash"
+        assert ok_data["model"] == "gemini-3.8-flash"
         assert ok_data["usage"]["total_tokens"] == 15
         assert ok_data["daily_usage"]["requests"] == 1
         assert fake_secret not in ok_test.text
@@ -360,7 +366,7 @@ def test_settings_api_keyring_swappability_usage_limits_and_zero_secret_leak(
             "/api/settings/provider",
             json={
                 "active_provider": "gemini",
-                "models": {"fast": "gemini-2.5-flash-lite", "deep": "gemini-2.5-pro"},
+                "models": {"fast": "gemini-3.5-flash-lite", "deep": "gemini-4-argon"},
                 "usage_limits": {
                     "daily_request_limit": 1,
                     "daily_token_limit": 500000,
@@ -371,7 +377,7 @@ def test_settings_api_keyring_swappability_usage_limits_and_zero_secret_leak(
             },
         )
         assert upd.status_code == 200
-        assert upd.json()["models"]["fast"] == "gemini-2.5-flash-lite"
+        assert upd.json()["models"]["fast"] == "gemini-3.5-flash-lite"
         assert upd.json()["monthly_usage"]["requests"] == 1
 
         capped_test = client.post("/api/settings/provider/test")
@@ -382,7 +388,7 @@ def test_settings_api_keyring_swappability_usage_limits_and_zero_secret_leak(
             "/api/settings/provider",
             json={
                 "active_provider": "gemini",
-                "models": {"fast": "gemini-2.5-flash", "deep": "gemini-2.5-pro"},
+                "models": {"fast": "gemini-3.8-flash", "deep": "gemini-4-argon"},
                 "usage_limits": {
                     "daily_request_limit": 100,
                     "daily_token_limit": 500000,
@@ -406,7 +412,7 @@ def test_settings_api_keyring_swappability_usage_limits_and_zero_secret_leak(
                 LLMRequest(prompt="Check structural span", complexity="deep"),
                 client_factory=client_factory,
             )
-            assert gen.model == "gemini-2.5-pro"
+            assert gen.model == "gemini-4-argon"
 
             # Verify ZERO occurrence of secret key across entire DB settings & audit_log
             all_settings = db.scalars(select(Setting)).all()
@@ -477,7 +483,7 @@ def test_monthly_usage_limits_and_failed_attempt_counting(tmp_path: Path) -> Non
                     actor="owner",
                     details_json={
                         "provider": "gemini",
-                        "model": "gemini-2.5-flash",
+                        "model": "gemini-3.8-flash",
                         "date_utc": "1999-01-01",
                         "month_utc": month_str,
                         "requests": 2,
@@ -495,7 +501,7 @@ def test_monthly_usage_limits_and_failed_attempt_counting(tmp_path: Path) -> Non
             "/api/settings/provider",
             json={
                 "active_provider": "gemini",
-                "models": {"fast": "gemini-2.5-flash", "deep": "gemini-2.5-pro"},
+                "models": {"fast": "gemini-3.8-flash", "deep": "gemini-4-argon"},
                 "usage_limits": {
                     "daily_request_limit": 100,
                     "daily_token_limit": 500000,
@@ -524,7 +530,7 @@ def test_monthly_usage_limits_and_failed_attempt_counting(tmp_path: Path) -> Non
             "/api/settings/provider",
             json={
                 "active_provider": "gemini",
-                "models": {"fast": "gemini-2.5-flash", "deep": "gemini-2.5-pro"},
+                "models": {"fast": "gemini-3.8-flash", "deep": "gemini-4-argon"},
                 "usage_limits": {
                     "daily_request_limit": 100,
                     "daily_token_limit": 500000,
@@ -545,7 +551,7 @@ def test_monthly_usage_limits_and_failed_attempt_counting(tmp_path: Path) -> Non
                     actor="owner",
                     details_json={
                         "provider": "gemini",
-                        "model": "gemini-2.5-flash",
+                        "model": "gemini-3.8-flash",
                         "date_utc": "1999-01-01",
                         "month_utc": month_str,
                         "requests": 1,
@@ -577,7 +583,7 @@ def test_monthly_usage_limits_and_failed_attempt_counting(tmp_path: Path) -> Non
             "/api/settings/provider",
             json={
                 "active_provider": "gemini",
-                "models": {"fast": "gemini-2.5-flash", "deep": "gemini-2.5-pro"},
+                "models": {"fast": "gemini-3.8-flash", "deep": "gemini-4-argon"},
                 "usage_limits": {
                     "daily_request_limit": 100,
                     "daily_token_limit": 500000,
@@ -702,6 +708,30 @@ def test_verify_gemini_live_script_with_mocked_provider(tmp_path: Path) -> None:
 
     def mock_client_factory(key: str) -> Any:
         class _Models:
+            def list(self) -> list[SimpleNamespace]:
+                return [
+                    SimpleNamespace(
+                        name="models/gemini-3.8-flash",
+                        display_name="Gemini 3.8 Flash",
+                        supported_actions=["generateContent"],
+                    ),
+                    SimpleNamespace(
+                        name="models/gemini-3.5-flash-lite",
+                        display_name="Gemini 3.5 Flash-Lite",
+                        supported_actions=["generateContent"],
+                    ),
+                    SimpleNamespace(
+                        name="models/gemini-4-argon",
+                        display_name="Gemini 4 Argon",
+                        supported_actions=["generateContent"],
+                    ),
+                    SimpleNamespace(
+                        name="models/text-embedding-004",
+                        display_name="Text Embedding 004",
+                        supported_actions=["embedContent"],
+                    ),
+                ]
+
             def generate_content(self, *, contents: Any, config: Any, **_kwargs: Any) -> Any:
                 if key != owner_fake_key:
                     raise genai_errors.APIError(
@@ -733,6 +763,8 @@ def test_verify_gemini_live_script_with_mocked_provider(tmp_path: Path) -> None:
         client_factory=mock_client_factory,
         database_url=db_url,
     )
+    assert summary["models_source"] == "live_api"
+    assert summary["refreshed_generate_content_models_count"] == 3
     assert summary["check_1_test_connection"]["connected"] is True
     assert summary["check_2_invalid_key"]["rejected_cleanly"] is True
     assert set(summary["check_3_structured_json"]["parsed_keys"]) == {
@@ -745,3 +777,197 @@ def test_verify_gemini_live_script_with_mocked_provider(tmp_path: Path) -> None:
     serialized = repr(summary)
     assert owner_fake_key not in serialized
     assert "invalid-key-live-verification-probe" not in serialized
+
+
+
+def test_provider_404_model_not_found_handling(tmp_path: Path) -> None:
+    """HTTP 404 model-not-found names configured model, hints Refresh models, counts attempt, and hides key."""
+    fake_secret = "mock-404-secret-value-555"
+
+    def not_found_factory(_key: str) -> Any:
+        class _Models:
+            def list(self) -> list[SimpleNamespace]:
+                return []
+
+            def generate_content(self, **_kwargs: Any) -> Any:
+                raise genai_errors.APIError(
+                    404,
+                    {
+                        "error": {
+                            "code": 404,
+                            "status": "NOT_FOUND",
+                            "message": f"models/gemini-2.5-flash is not found for ?key={fake_secret}",
+                        }
+                    },
+                )
+
+        return SimpleNamespace(models=_Models())
+
+    direct_provider = GeminiProvider(
+        fake_secret,
+        fast_model="gemini-2.5-flash",
+        client_factory=not_found_factory,
+    )
+    with pytest.raises(ProviderModelNotFoundError) as exc_info:
+        direct_provider.generate_text("hello")
+    msg = str(exc_info.value)
+    assert "gemini-2.5-flash" in msg
+    assert "refresh" in msg.lower()
+    assert fake_secret not in msg
+
+    store = _InMemorySecretStore()
+    store.set_api_key("gemini", fake_secret)
+    app = create_app(
+        _test_settings(tmp_path),
+        secret_store=store,
+        provider_client_factory=not_found_factory,
+    )
+    with TestClient(app) as client:
+        client.put(
+            "/api/settings/provider",
+            json={
+                "active_provider": "gemini",
+                "models": {"fast": "gemini-2.5-flash", "deep": "gemini-4-argon"},
+                "usage_limits": {
+                    "daily_request_limit": 200,
+                    "daily_token_limit": 500000,
+                    "monthly_request_limit": 3000,
+                    "monthly_token_limit": 5000000,
+                    "max_output_tokens": 8192,
+                },
+            },
+        )
+        res = client.post("/api/settings/provider/test", json={"complexity": "fast"})
+        assert res.status_code == 400
+        detail = res.json()["detail"]
+        assert "gemini-2.5-flash" in detail
+        assert "refresh" in detail.lower()
+        assert fake_secret not in detail
+
+        after = client.get("/api/settings/provider").json()
+        assert after["daily_usage"]["requests"] == 1
+        assert after["last_connection_check"]["status"] == "error"
+        assert "gemini-2.5-flash" in after["last_connection_check"]["message"]
+
+
+def test_refresh_models_filters_generate_content_and_startup_check(tmp_path: Path) -> None:
+    """Refresh models calls SDK list, filters to generateContent, warns on missing saved model, and runs on startup."""
+    secret_store = _InMemorySecretStore()
+    calls = {"list": 0}
+
+    def client_factory(_key: str) -> Any:
+        class _Models:
+            def list(self) -> list[SimpleNamespace]:
+                calls["list"] += 1
+                return [
+                    SimpleNamespace(
+                        name="models/gemini-3.8-flash",
+                        display_name="Gemini 3.8 Flash",
+                        supported_actions=["generateContent", "countTokens"],
+                    ),
+                    SimpleNamespace(
+                        name="models/gemini-3.5-flash-lite",
+                        display_name="Gemini 3.5 Flash-Lite",
+                        supported_actions=["generateContent"],
+                    ),
+                    SimpleNamespace(
+                        name="models/gemini-4-argon",
+                        display_name="Gemini 4 Argon",
+                        supported_actions=["generateContent"],
+                    ),
+                    SimpleNamespace(
+                        name="models/text-embedding-004",
+                        display_name="Text Embedding 004",
+                        supported_actions=["embedContent"],
+                    ),
+                    SimpleNamespace(
+                        name="models/imagen-3.0-generate-002",
+                        display_name="Imagen 3",
+                        supported_actions=["predict"],
+                    ),
+                ]
+
+        return SimpleNamespace(models=_Models())
+
+    settings = _test_settings(tmp_path)
+    app1 = create_app(
+        settings,
+        secret_store=secret_store,
+        provider_client_factory=client_factory,
+    )
+    with TestClient(app1) as client:
+        # Refresh without stored key returns 400
+        no_key = client.post("/api/settings/provider/models/refresh")
+        assert no_key.status_code == 400
+
+        client.put("/api/settings/provider/api-key", json={"api_key": "mock-refresh-key"})
+        # Configure retired model ID manually to trigger model_warning after refresh
+        client.put(
+            "/api/settings/provider",
+            json={
+                "active_provider": "gemini",
+                "models": {"fast": "gemini-2.5-flash", "deep": "gemini-4-argon"},
+                "usage_limits": {
+                    "daily_request_limit": 200,
+                    "daily_token_limit": 500000,
+                    "monthly_request_limit": 3000,
+                    "monthly_token_limit": 5000000,
+                    "max_output_tokens": 8192,
+                },
+            },
+        )
+
+        refreshed = client.post("/api/settings/provider/models/refresh")
+        assert refreshed.status_code == 200
+        data = refreshed.json()
+        assert data["models_source"] == "live_api"
+        assert data["models_refreshed_at"] is not None
+        ids = [m["id"] for m in data["available_providers"][0]["models"]]
+        assert ids == ["gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-4-argon"]
+        assert "text-embedding-004" not in ids
+        assert "imagen-3.0-generate-002" not in ids
+        assert data["model_warning"] is not None
+        assert "gemini-2.5-flash" in data["model_warning"]
+
+        # Switch to valid live model + verify manual model ID still permitted cleanly
+        fixed = client.put(
+            "/api/settings/provider",
+            json={
+                "active_provider": "gemini",
+                "models": {"fast": "gemini-3.8-flash", "deep": "gemini-4-argon"},
+                "usage_limits": {
+                    "daily_request_limit": 200,
+                    "daily_token_limit": 500000,
+                    "monthly_request_limit": 3000,
+                    "monthly_token_limit": 5000000,
+                    "max_output_tokens": 8192,
+                },
+            },
+        )
+        assert fixed.status_code == 200
+        assert fixed.json()["model_warning"] is None
+
+        # Deleting API key clears cached discovered models back to fallback catalog
+        deleted = client.delete("/api/settings/provider/api-key")
+        assert deleted.status_code == 200
+        assert deleted.json()["models_source"] == "fallback_catalog"
+        assert deleted.json()["models_refreshed_at"] is None
+
+        # Save key again so a restart triggers startup discovery automatically
+        client.put("/api/settings/provider/api-key", json={"api_key": "mock-refresh-key"})
+
+    calls_before_startup = calls["list"]
+    app2 = create_app(
+        settings,
+        secret_store=secret_store,
+        provider_client_factory=client_factory,
+    )
+    with TestClient(app2) as client2:
+        assert calls["list"] == calls_before_startup + 1
+        boot_state = client2.get("/api/settings/provider").json()
+        assert boot_state["models_source"] == "live_api"
+        assert [m["id"] for m in boot_state["available_providers"][0]["models"]] == [
+            "gemini-3.8-flash",
+            "gemini-3.5-flash-lite",
+            "gemini-4-argon",
+        ]

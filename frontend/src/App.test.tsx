@@ -10,6 +10,7 @@ import {
   getSupportedExtensions,
   listProjectFiles,
   listProjects,
+  refreshProviderModels,
   saveProviderApiKey,
   testProviderConnection,
   updateProviderSettings,
@@ -263,12 +264,13 @@ describe("Step 04 ProviderSettingsView & settings API client", () => {
           id: "gemini",
           name: "Google Gemini (Official google-genai SDK)",
           models: [
-            { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash", tier: "fast" },
-            { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro", tier: "deep" },
+            { id: "gemini-3.8-flash", label: "Gemini 3.8 Flash", tier: "fast" },
+            { id: "gemini-3.5-flash-lite", label: "Gemini 3.5 Flash-Lite", tier: "fast" },
+            { id: "gemini-4-argon", label: "Gemini 4 Argon", tier: "deep" },
           ],
         },
       ],
-      models: { fast: "gemini-2.5-flash", deep: "gemini-2.5-pro" },
+      models: { fast: "gemini-3.8-flash", deep: "gemini-4-argon" },
       usage_limits: {
         daily_request_limit: 200,
         daily_token_limit: 500000,
@@ -295,10 +297,14 @@ describe("Step 04 ProviderSettingsView & settings API client", () => {
       last_connection_check: {
         status: "connected",
         checked_at: "2026-11-19T00:00:00Z",
-        model: "gemini-2.5-flash",
-        message: "Connected cleanly to gemini-2.5-flash.",
+        model: "gemini-3.8-flash",
+        message: "Connected cleanly to gemini-3.8-flash.",
         latency_ms: 95,
       },
+      models_source: "live_api",
+      models_refreshed_at: "2026-11-19T00:00:00Z",
+      model_warning:
+        "Configured model 'gemini-2.5-flash' was not found in the latest live model list.",
       consumer_subscription_notice:
         "Consumer Gemini subscription does not include Gemini API access.",
       classification: "Preliminary",
@@ -315,8 +321,14 @@ describe("Step 04 ProviderSettingsView & settings API client", () => {
     );
     expect(settingsHtml).toContain("محفوظ بأمان (••••••••••••)");
     expect(settingsHtml).toContain("WinVaultKeyring");
-    expect(settingsHtml).toContain("gemini-2.5-flash");
-    expect(settingsHtml).toContain("gemini-2.5-pro");
+    expect(settingsHtml).toContain("gemini-3.8-flash");
+    expect(settingsHtml).toContain("gemini-3.5-flash-lite");
+    expect(settingsHtml).toContain("gemini-4-argon");
+    expect(settingsHtml).toContain("تحديث النماذج الحية (generateContent)");
+    expect(settingsHtml).toContain("قائمة حية من Gemini API");
+    expect(settingsHtml).toContain("<select");
+    expect(settingsHtml).toContain('type="text"');
+    expect(settingsHtml).toContain("was not found in the latest live model list.");
     expect(settingsHtml).toContain("12 / 3000");
     expect(settingsHtml).toContain("1250 / 5000000");
     expect(settingsHtml).toContain("اختبار الاتصال بـ Gemini");
@@ -342,7 +354,12 @@ describe("Step 04 ProviderSettingsView & settings API client", () => {
         })
       )
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({ connected: true, model: "gemini-2.5-flash" }), {
+        new Response(JSON.stringify({ connected: true, model: "gemini-3.8-flash" }), {
+          status: 200,
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ active_provider: "gemini", models_source: "live_api" }), {
           status: 200,
         })
       )
@@ -358,7 +375,7 @@ describe("Step 04 ProviderSettingsView & settings API client", () => {
     await saveProviderApiKey("mock-nonkey-credential-value");
     await updateProviderSettings({
       active_provider: "gemini",
-      models: { fast: "gemini-2.5-flash", deep: "gemini-2.5-pro" },
+      models: { fast: "gemini-3.8-flash", deep: "gemini-4-argon" },
       usage_limits: {
         daily_request_limit: 100,
         daily_token_limit: 250000,
@@ -368,6 +385,7 @@ describe("Step 04 ProviderSettingsView & settings API client", () => {
       },
     });
     await testProviderConnection("fast");
+    await refreshProviderModels();
     await deleteProviderApiKey();
 
     expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/settings/provider", undefined);
@@ -388,6 +406,11 @@ describe("Step 04 ProviderSettingsView & settings API client", () => {
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
       5,
+      "/api/settings/provider/models/refresh",
+      expect.objectContaining({ method: "POST" })
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      6,
       "/api/settings/provider/api-key",
       expect.objectContaining({ method: "DELETE" })
     );

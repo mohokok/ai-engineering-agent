@@ -2,6 +2,7 @@ import { FormEvent, useCallback, useEffect, useState } from "react";
 import {
   deleteProviderApiKey,
   getProviderSettings,
+  refreshProviderModels,
   saveProviderApiKey,
   testProviderConnection,
   updateProviderSettings,
@@ -9,6 +10,7 @@ import {
 import type {
   ConnectionTestOut,
   Lang,
+  ProviderModelOption,
   ProviderSettingsOut,
 } from "../types";
 
@@ -29,6 +31,13 @@ interface SettingsCopy {
   savingKeyBtn: string;
   removeKeyBtn: string;
   configSectionHeading: string;
+  refreshModelsBtn: string;
+  refreshingModelsBtn: string;
+  liveModelsBadge: string;
+  fallbackModelsBadge: string;
+  modelsRefreshedNotice: string;
+  customModelOption: string;
+  manualModelPlaceholder: string;
   providerLabel: string;
   fastModelLabel: string;
   deepModelLabel: string;
@@ -77,6 +86,13 @@ const SETTINGS_COPY: Record<Lang, SettingsCopy> = {
     savingKeyBtn: "جاري الحفظ...",
     removeKeyBtn: "حذف المفتاح المحفوظ",
     configSectionHeading: "اختيار المزود والنماذج وحدود الاستخدام",
+    refreshModelsBtn: "تحديث النماذج الحية (generateContent)",
+    refreshingModelsBtn: "جاري جلب النماذج...",
+    liveModelsBadge: "قائمة حية من Gemini API",
+    fallbackModelsBadge: "قائمة افتراضية",
+    modelsRefreshedNotice: "تم تحديث قائمة النماذج الداعمة لـ generateContent من حسابك.",
+    customModelOption: "— إدخال معرف نموذج مخصص أدناه —",
+    manualModelPlaceholder: "أو اكتب معرف النموذج يدوياً",
     providerLabel: "مزود الذكاء الاصطناعي النشط",
     fastModelLabel: "النموذج للمهام السريعة (Fast)",
     deepModelLabel: "النموذج للتحليل العميق (Deep)",
@@ -122,6 +138,13 @@ const SETTINGS_COPY: Record<Lang, SettingsCopy> = {
     savingKeyBtn: "Saving key...",
     removeKeyBtn: "Remove Stored Key",
     configSectionHeading: "Provider Selection, Complexity Models & Usage Limits",
+    refreshModelsBtn: "Refresh models",
+    refreshingModelsBtn: "Refreshing models...",
+    liveModelsBadge: "Live API (generateContent)",
+    fallbackModelsBadge: "Fallback catalog",
+    modelsRefreshedNotice: "Refreshed live generateContent-capable models from your API key.",
+    customModelOption: "— Custom model ID entered below —",
+    manualModelPlaceholder: "Or enter custom model ID manually",
     providerLabel: "Active AI Provider",
     fastModelLabel: "Fast Complexity Model",
     deepModelLabel: "Deep Complexity Model",
@@ -152,6 +175,54 @@ const SETTINGS_COPY: Record<Lang, SettingsCopy> = {
   },
 };
 
+interface ModelSelectorFieldProps {
+  label: string;
+  value: string;
+  onChange: (nextValue: string) => void;
+  options: ProviderModelOption[];
+  customOptionLabel: string;
+  manualPlaceholder: string;
+}
+
+function ModelSelectorField({
+  label,
+  value,
+  onChange,
+  options,
+  customOptionLabel,
+  manualPlaceholder,
+}: ModelSelectorFieldProps) {
+  const isKnownOption = options.some((opt) => opt.id === value);
+  return (
+    <label className="field">
+      <span>{label}</span>
+      <select
+        dir="ltr"
+        value={isKnownOption ? value : "__custom__"}
+        onChange={(e) => {
+          if (e.target.value !== "__custom__") {
+            onChange(e.target.value);
+          }
+        }}
+      >
+        {options.map((m) => (
+          <option key={m.id} value={m.id}>
+            {m.label}
+          </option>
+        ))}
+        {!isKnownOption && <option value="__custom__">{customOptionLabel}</option>}
+      </select>
+      <input
+        type="text"
+        dir="ltr"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={manualPlaceholder}
+      />
+    </label>
+  );
+}
+
 export interface ProviderSettingsViewProps {
   lang: Lang;
   initialSettings?: ProviderSettingsOut | null;
@@ -167,6 +238,7 @@ export function ProviderSettingsView({
   const [loading, setLoading] = useState<boolean>(false);
   const [savingKey, setSavingKey] = useState<boolean>(false);
   const [savingConfig, setSavingConfig] = useState<boolean>(false);
+  const [refreshingModels, setRefreshingModels] = useState<boolean>(false);
   const [testing, setTesting] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -177,10 +249,10 @@ export function ProviderSettingsView({
     initialSettings?.active_provider ?? "gemini"
   );
   const [fastModel, setFastModel] = useState<string>(
-    initialSettings?.models.fast ?? "gemini-2.5-flash"
+    initialSettings?.models.fast ?? "gemini-3.8-flash"
   );
   const [deepModel, setDeepModel] = useState<string>(
-    initialSettings?.models.deep ?? "gemini-2.5-pro"
+    initialSettings?.models.deep ?? "gemini-4-argon"
   );
   const [dailyReqLimit, setDailyReqLimit] = useState<number>(
     initialSettings?.usage_limits.daily_request_limit ?? 200
@@ -289,6 +361,21 @@ export function ProviderSettingsView({
     }
   }
 
+  async function handleRefreshModels() {
+    setRefreshingModels(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const updated = await refreshProviderModels();
+      syncFormState(updated);
+      setNotice(copy.modelsRefreshedNotice);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRefreshingModels(false);
+    }
+  }
+
   async function handleTestConnection() {
     setTesting(true);
     setError(null);
@@ -340,6 +427,12 @@ export function ProviderSettingsView({
               "Note: A Gemini consumer web subscription does not include Gemini API access. Store an authorized Gemini API key locally via keyring."}
         </span>
       </div>
+
+      {settings?.model_warning && (
+        <div className="status-box notice-box" role="status">
+          <span>{settings.model_warning}</span>
+        </div>
+      )}
 
       {error && (
         <div className="status-box status-err" role="alert">
@@ -471,7 +564,24 @@ export function ProviderSettingsView({
       </section>
 
       <section className="subpanel" aria-label={copy.configSectionHeading}>
-        <h3 className="panel-title">{copy.configSectionHeading}</h3>
+        <div className="panel-header">
+          <h3 className="panel-title">{copy.configSectionHeading}</h3>
+          <div className="badge-group">
+            <span className="badge">
+              {settings?.models_source === "live_api"
+                ? copy.liveModelsBadge
+                : copy.fallbackModelsBadge}
+            </span>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() => void handleRefreshModels()}
+              disabled={refreshingModels}
+            >
+              {refreshingModels ? copy.refreshingModelsBtn : copy.refreshModelsBtn}
+            </button>
+          </div>
+        </div>
         <form className="project-form" onSubmit={(e) => void handleSaveConfig(e)}>
           <div className="form-grid">
             <label className="field">
@@ -491,41 +601,23 @@ export function ProviderSettingsView({
               </select>
             </label>
 
-            <label className="field">
-              <span>{copy.fastModelLabel}</span>
-              <input
-                type="text"
-                list="gemini-fast-models"
-                dir="ltr"
-                value={fastModel}
-                onChange={(e) => setFastModel(e.target.value)}
-              />
-              <datalist id="gemini-fast-models">
-                {(activeProviderMeta?.models || []).map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.label}
-                  </option>
-                ))}
-              </datalist>
-            </label>
+            <ModelSelectorField
+              label={copy.fastModelLabel}
+              value={fastModel}
+              onChange={setFastModel}
+              options={activeProviderMeta?.models || []}
+              customOptionLabel={copy.customModelOption}
+              manualPlaceholder={copy.manualModelPlaceholder}
+            />
 
-            <label className="field">
-              <span>{copy.deepModelLabel}</span>
-              <input
-                type="text"
-                list="gemini-deep-models"
-                dir="ltr"
-                value={deepModel}
-                onChange={(e) => setDeepModel(e.target.value)}
-              />
-              <datalist id="gemini-deep-models">
-                {(activeProviderMeta?.models || []).map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.label}
-                  </option>
-                ))}
-              </datalist>
-            </label>
+            <ModelSelectorField
+              label={copy.deepModelLabel}
+              value={deepModel}
+              onChange={setDeepModel}
+              options={activeProviderMeta?.models || []}
+              customOptionLabel={copy.customModelOption}
+              manualPlaceholder={copy.manualModelPlaceholder}
+            />
 
             <label className="field">
               <span>{copy.dailyReqLimitLabel}</span>

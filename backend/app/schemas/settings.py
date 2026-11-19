@@ -101,6 +101,9 @@ class ProviderSettingsOut(BaseModel):
     active_provider: str
     available_providers: list[dict[str, Any]]
     models: ModelSelectionSchema
+    models_source: Literal["live_api", "fallback_catalog"] = "fallback_catalog"
+    models_refreshed_at: str | None = None
+    model_warning: str | None = None
     usage_limits: UsageLimitsSchema
     daily_usage: DailyUsageOut
     monthly_usage: MonthlyUsageOut
