@@ -10,6 +10,9 @@ import type {
   ProviderSettingsUpdate,
   SupportedExtensionsResponse,
   TaskComplexity,
+  TaskCreateRequest,
+  TaskDetailOut,
+  TaskListResponse,
 } from "./types";
 
 async function extractErrorMessage(response: Response): Promise<string> {
@@ -140,4 +143,31 @@ export function refreshProviderModels(): Promise<ProviderSettingsOut> {
   return requestJson<ProviderSettingsOut>("/api/settings/provider/models/refresh", {
     method: "POST",
   });
+}
+
+export function createTask(payload: TaskCreateRequest): Promise<TaskDetailOut> {
+  return requestJson<TaskDetailOut>("/api/tasks", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function listTasks(filters?: {
+  projectId?: string;
+  status?: string;
+}): Promise<TaskListResponse> {
+  const params = new URLSearchParams();
+  if (filters?.projectId) {
+    params.set("project_id", filters.projectId);
+  }
+  if (filters?.status) {
+    params.set("status", filters.status);
+  }
+  const query = params.toString();
+  return requestJson<TaskListResponse>(query ? `/api/tasks?${query}` : "/api/tasks");
+}
+
+export function getTaskDetail(taskId: string): Promise<TaskDetailOut> {
+  return requestJson<TaskDetailOut>(`/api/tasks/${encodeURIComponent(taskId)}`);
 }

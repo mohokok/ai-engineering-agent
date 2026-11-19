@@ -45,6 +45,15 @@ def test_alembic_upgrade_and_downgrade_round_trip(tmp_path: Path) -> None:
         inspector = inspect(engine)
         tables = set(inspector.get_table_names())
         assert EXPECTED_TABLES.issubset(tables)
+        task_columns = {col["name"] for col in inspector.get_columns("tasks")}
+        assert {
+            "complexity",
+            "provider_name",
+            "model_name",
+            "attached_file_ids_json",
+            "structured_output_json",
+            "token_usage_json",
+        }.issubset(task_columns)
 
         with engine.connect() as conn:
             fk_enabled = conn.execute(text("PRAGMA foreign_keys")).scalar()

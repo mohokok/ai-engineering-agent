@@ -224,3 +224,120 @@ export interface ConnectionTestOut {
   api_key_configured: boolean;
   classification: string;
 }
+
+export type AssignmentLanguage = "ar" | "en" | "mixed";
+
+export type InputFileStatus = "attached" | "missing" | "referenced_in_prompt";
+
+export interface IdentifiedInputFile {
+  filename: string;
+  role: string;
+  status: InputFileStatus;
+}
+
+export interface OrchestratorUnderstanding {
+  language_detected: AssignmentLanguage;
+  restated_assignment: string;
+  primary_discipline: string;
+  secondary_disciplines: string[];
+  expected_deliverables: string[];
+  input_files: IdentifiedInputFile[];
+  applicable_standards_to_verify: string[];
+  missing_information: string[];
+  assumptions: string[];
+  clarification_needed: boolean;
+  clarifying_questions: string[];
+  recommended_next_steps: string[];
+  classification: ProjectClassification;
+}
+
+export interface AttachedFileSummary {
+  file_id: string;
+  filename: string;
+  folder_name: string;
+  extension: string | null;
+  mime_type: string | null;
+  size_bytes: number;
+  sha256: string | null;
+  current_version: number;
+}
+
+export interface TaskTokenUsageOut {
+  prompt_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  thoughts_tokens: number;
+  cached_tokens: number;
+  latency_ms: number;
+}
+
+export interface TaskStepOut {
+  id: string;
+  task_id: string;
+  step_order: number;
+  module_name: string;
+  title: string;
+  status: string;
+  input_payload: Record<string, unknown> | null;
+  output_payload: Record<string, unknown> | null;
+  notes: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+}
+
+export interface TaskLogEntryOut {
+  id: string;
+  action: string;
+  entity_type: string;
+  actor: string;
+  details_json: Record<string, unknown> | null;
+  created_at: string;
+}
+
+export interface TaskCreateRequest {
+  project_id: string;
+  prompt: string;
+  title?: string | null;
+  complexity?: TaskComplexity;
+  task_type?: string;
+  attached_file_ids?: string[];
+  classification?: ProjectClassification;
+}
+
+export interface TaskSummaryOut {
+  id: string;
+  project_id: string;
+  project_code: string;
+  project_name: string;
+  title: string;
+  prompt: string;
+  task_type: string;
+  status: string;
+  classification: ProjectClassification | string;
+  complexity: string | null;
+  provider_name: string | null;
+  model_name: string | null;
+  plan_summary: string | null;
+  result_summary: string | null;
+  error_message: string | null;
+  attached_file_ids: string[];
+  structured_output: OrchestratorUnderstanding | null;
+  token_usage: TaskTokenUsageOut;
+  step_count: number;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+}
+
+export interface TaskDetailOut extends TaskSummaryOut {
+  attached_files: AttachedFileSummary[];
+  steps: TaskStepOut[];
+  logs: TaskLogEntryOut[];
+}
+
+export interface TaskListResponse {
+  tasks: TaskSummaryOut[];
+  total: number;
+  classification: ProjectClassification | string;
+}

@@ -29,6 +29,7 @@ from app.providers import (
     ProviderModelNotFoundError,
     ProviderQuotaError,
     ProviderResponseError,
+    ProviderServiceUnavailableError,
     ProviderUsageLimitError,
     SecretStore,
     ToolDefinition,
@@ -971,3 +972,159 @@ def test_refresh_models_filters_generate_content_and_startup_check(tmp_path: Pat
             "gemini-3.5-flash-lite",
             "gemini-4-argon",
         ]
+
+
+def test_gemini_provider_503_exponential_backoff_retry_and_exhaustion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """HTTP 503 UNAVAILABLE retries up to max 3 tries with exponential backoff across generate & list_models."""
+    fake_secret = "mock-503-secret-value-444"
+
+    def _err_503() -> genai_errors.APIError:
+        return genai_errors.APIError(
+            503,
+            {
+                "error": {
+                    "code": 503,
+                    "status": "UNAVAILABLE",
+                    "message": f"High demand on gemini-4-argon ?key={fake_secret}",
+                }
+            },
+        )
+
+    # 1. Fails twice with 503, succeeds on 3rd try -> exponential backoff [0.5, 1.0]
+    sleeps_ok: list[float] = []
+    calls_ok = {"generate": 0}
+
+    def ok_on_third_factory(_key: str) -> Any:
+        class _Models:
+            def generate_content(self, **_kwargs: Any) -> Any:
+                calls_ok["generate"] += 1
+                if calls_ok["generate"] < 3:
+                    raise _err_503()
+                return SimpleNamespace(
+                    text="Recovered on try 3",
+                    parsed=None,
+                    function_calls=[],
+                    candidates=[SimpleNamespace(finish_reason="STOP")],
+                    usage_metadata=_fake_usage(14, 6),
+                )
+
+        return SimpleNamespace(models=_Models())
+
+    p_ok = GeminiProvider(
+        fake_secret,
+        deep_model="gemini-4-argon",
+        client_factory=ok_on_third_factory,
+        sleep_fn=sleeps_ok.append,
+    )
+    resp = p_ok.generate_text("check beam", complexity="deep")
+    assert resp.text == "Recovered on try 3"
+    assert resp.model == "gemini-4-argon"
+    assert calls_ok["generate"] == 3
+    assert sleeps_ok == [0.5, 1.0]
+
+    # 2. list_models also retries transient 503 and succeeds on 2nd try
+    sleeps_list: list[float] = []
+    calls_list = {"list": 0}
+
+    def list_ok_factory(_key: str) -> Any:
+        class _Models:
+            def list(self) -> list[SimpleNamespace]:
+                calls_list["list"] += 1
+                if calls_list["list"] == 1:
+                    raise _err_503()
+                return [
+                    SimpleNamespace(
+                        name="models/gemini-4-argon",
+                        display_name="Gemini 4 Argon",
+                        supported_actions=["generateContent"],
+                    )
+                ]
+
+        return SimpleNamespace(models=_Models())
+
+    p_list = GeminiProvider(
+        fake_secret,
+        client_factory=list_ok_factory,
+        sleep_fn=sleeps_list.append,
+    )
+    listed = p_list.list_models()
+    assert [m.id for m in listed] == ["gemini-4-argon"]
+    assert calls_list["list"] == 2
+    assert sleeps_list == [0.5]
+
+    # 3. Non-503 error (401) is NOT retried
+    sleeps_401: list[float] = []
+    calls_401 = {"count": 0}
+
+    def fail_401_factory(_key: str) -> Any:
+        class _Models:
+            def generate_content(self, **_kwargs: Any) -> Any:
+                calls_401["count"] += 1
+                raise genai_errors.APIError(401, {"error": {"message": "API_KEY_INVALID"}})
+
+        return SimpleNamespace(models=_Models())
+
+    p_401 = GeminiProvider(
+        fake_secret,
+        client_factory=fail_401_factory,
+        sleep_fn=sleeps_401.append,
+    )
+    with pytest.raises(ProviderAuthError):
+        p_401.generate_text("hello")
+    assert calls_401["count"] == 1
+    assert sleeps_401 == []
+
+    # 4. Exhausting all 3 attempts raises ProviderServiceUnavailableError, returns HTTP 503 via API,
+    #    logs 1 logical failed remote attempt, and never leaks secrets
+    sleeps_exhaust: list[float] = []
+    calls_exhaust = {"generate": 0}
+    monkeypatch.setattr("app.providers.gemini.time.sleep", sleeps_exhaust.append)
+
+    def always_503_factory(_key: str) -> Any:
+        class _Models:
+            def list(self) -> list[SimpleNamespace]:
+                return []
+
+            def generate_content(self, **_kwargs: Any) -> Any:
+                calls_exhaust["generate"] += 1
+                raise _err_503()
+
+        return SimpleNamespace(models=_Models())
+
+    p_exhaust = GeminiProvider(
+        fake_secret,
+        deep_model="gemini-4-argon",
+        client_factory=always_503_factory,
+    )
+    with pytest.raises(ProviderServiceUnavailableError) as exc_info:
+        p_exhaust.generate_text("check frame", complexity="deep")
+    assert calls_exhaust["generate"] == 3
+    assert sleeps_exhaust == [0.5, 1.0]
+    assert "503" in str(exc_info.value)
+    assert "3 attempts" in str(exc_info.value)
+    assert fake_secret not in str(exc_info.value)
+
+    calls_exhaust["generate"] = 0
+    sleeps_exhaust.clear()
+    store = _InMemorySecretStore()
+    store.set_api_key("gemini", fake_secret)
+    app = create_app(
+        _test_settings(tmp_path),
+        secret_store=store,
+        provider_client_factory=always_503_factory,
+    )
+    with TestClient(app) as client:
+        res = client.post("/api/settings/provider/test", json={"complexity": "deep"})
+        assert res.status_code == 503
+        detail = res.json()["detail"]
+        assert "503" in detail
+        assert "gemini-4-argon" in detail
+        assert fake_secret not in detail
+        assert calls_exhaust["generate"] == 3
+        assert sleeps_exhaust == [0.5, 1.0]
+        state = client.get("/api/settings/provider").json()
+        assert state["daily_usage"]["requests"] == 1
+

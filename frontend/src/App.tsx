@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { fetchHealth } from "./api";
+import { AssignmentsView } from "./components/AssignmentsView";
 import { ProjectWorkspaceView } from "./components/ProjectWorkspaceView";
 import { ProviderSettingsView } from "./components/ProviderSettingsView";
 import type { HealthPayload, Lang } from "./types";
 
-type ActiveTab = "projects" | "settings";
+type ActiveTab = "projects" | "assignments" | "settings";
 
 const COPY: Record<
   Lang,
@@ -19,12 +20,13 @@ const COPY: Record<
     backendHealthy: string;
     offlinePrefix: string;
     projectsTab: string;
+    assignmentsTab: string;
     settingsTab: string;
   }
 > = {
   ar: {
     title: "الوكيل الهندسي الاستشاري المحلي",
-    subtitle: "الخطوة 04 — بنية المزودين القابلة للتبديل وتكامل Gemini API (RTL)",
+    subtitle: "الخطوة 05 — محرك المهام والمنسّق الأولي (Orchestrator v0) وسجل المهام (RTL)",
     classificationLabel: "التصنيف: أولي (Preliminary)",
     toggleLang: "Switch to English (LTR)",
     refreshHealth: "تحديث فحص الخادم",
@@ -33,11 +35,12 @@ const COPY: Record<
     backendHealthy: "متصل",
     offlinePrefix: "تعذر الاتصال بالخادم الخلفي: ",
     projectsTab: "المشاريع والملفات",
+    assignmentsTab: "المهام والتكليفات",
     settingsTab: "إعدادات Gemini والمزودين",
   },
   en: {
     title: "Local AI Engineering Consultancy Agent",
-    subtitle: "Step 04 — Swappable Provider Architecture & Gemini Settings",
+    subtitle: "Step 05 — Chat & Task Engine Foundation (Orchestrator v0 & Task History)",
     classificationLabel: "Classification: Preliminary",
     toggleLang: "التبديل إلى العربية (RTL)",
     refreshHealth: "Refresh Health Check",
@@ -46,6 +49,7 @@ const COPY: Record<
     backendHealthy: "Connected",
     offlinePrefix: "Backend unreachable: ",
     projectsTab: "Projects & Files",
+    assignmentsTab: "New Assignment & History",
     settingsTab: "AI Provider Settings",
   },
 };
@@ -150,6 +154,13 @@ export function App({
           </button>
           <button
             type="button"
+            className={`btn ${activeTab === "assignments" ? "" : "btn-secondary"}`}
+            onClick={() => setActiveTab("assignments")}
+          >
+            {text.assignmentsTab}
+          </button>
+          <button
+            type="button"
             className={`btn ${activeTab === "settings" ? "" : "btn-secondary"}`}
             onClick={() => setActiveTab("settings")}
           >
@@ -159,6 +170,8 @@ export function App({
 
         {activeTab === "projects" ? (
           <ProjectWorkspaceView lang={lang} />
+        ) : activeTab === "assignments" ? (
+          <AssignmentsView lang={lang} />
         ) : (
           <ProviderSettingsView lang={lang} />
         )}

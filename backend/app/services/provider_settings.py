@@ -350,6 +350,8 @@ def _append_usage_event(
     action: str,
     status_label: str,
     error_message: str | None = None,
+    project_id: str | None = None,
+    task_id: str | None = None,
 ) -> tuple[DailyUsageOut, MonthlyUsageOut]:
     """Append one immutable usage ledger entry and return updated daily/monthly sums."""
     now = datetime.now(timezone.utc)
@@ -368,10 +370,12 @@ def _append_usage_event(
     }
     if error_message is not None:
         details["error"] = error_message
+    if task_id is not None:
+        details["task_id"] = task_id
 
     db.add(
         AuditLog(
-            project_id=None,
+            project_id=project_id,
             action=action,
             entity_type=USAGE_LEDGER_ENTITY_TYPE,
             entity_id=provider,
@@ -408,6 +412,8 @@ def execute_provider_request(
     request: LLMRequest,
     *,
     client_factory: Callable[[str], Any] | None = None,
+    project_id: str | None = None,
+    task_id: str | None = None,
 ) -> LLMResponse:
     """Enforce daily/monthly usage budgets, invoke LLMProvider, and log every attempt."""
     cfg = _load_provider_config(db)
@@ -440,6 +446,8 @@ def execute_provider_request(
             action="provider.usage_failed",
             status_label="failed",
             error_message=safe_msg,
+            project_id=project_id,
+            task_id=task_id,
         )
         db.commit()
         raise
@@ -451,6 +459,8 @@ def execute_provider_request(
         usage=response.usage,
         action="provider.usage_recorded",
         status_label="ok",
+        project_id=project_id,
+        task_id=task_id,
     )
     db.commit()
     return response

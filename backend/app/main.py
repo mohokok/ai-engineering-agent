@@ -13,6 +13,7 @@ from app.api.files import router as files_router
 from app.api.health import router as health_router
 from app.api.projects import router as projects_router
 from app.api.settings import router as settings_router
+from app.api.tasks import router as tasks_router
 from app.core.config import Settings, get_settings
 from app.db.migrations import upgrade_database
 from app.db.session import create_db_engine, create_session_factory
@@ -109,6 +110,7 @@ def create_app(
     application.include_router(health_router, prefix="/api")
     application.include_router(projects_router, prefix="/api")
     application.include_router(files_router, prefix="/api")
+    application.include_router(tasks_router, prefix="/api")
     application.include_router(settings_router, prefix="/api")
     return application
 
