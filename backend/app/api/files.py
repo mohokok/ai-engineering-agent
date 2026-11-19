@@ -32,6 +32,7 @@ from app.services.files import (
     list_project_files,
     resolve_file_download,
 )
+from app.services.workspace import WorkspacePathError
 
 router = APIRouter(tags=["files"])
 
@@ -57,6 +58,8 @@ def _build_download_response(
         )
     except (FileRecordNotFoundError, FileVersionNotFoundError) as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except WorkspacePathError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
 @router.get("/files/supported-extensions", response_model=SupportedExtensionsResponse)
@@ -103,6 +106,8 @@ async def upload_project_files_endpoint(
         )
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except FileExistsError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except FileTooLargeError as exc:
         raise HTTPException(
             status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail=str(exc)
@@ -112,6 +117,7 @@ async def upload_project_files_endpoint(
         UnsupportedFileTypeError,
         EmptyFileError,
         TooManyFilesError,
+        WorkspacePathError,
     ) as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 

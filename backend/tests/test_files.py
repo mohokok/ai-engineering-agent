@@ -11,7 +11,7 @@ from sqlalchemy import select
 
 from app.core.config import Settings
 from app.db.base import CLASSIFICATION_LABELS
-from app.db.models import AuditLog
+from app.db.models import AuditLog, FileVersion
 from app.main import create_app
 from app.schemas.projects import ProjectClassification
 from app.services.files import UnsafeFilenameError, validate_upload_filename
@@ -283,3 +283,88 @@ def test_malicious_filenames_unsupported_types_and_size_protections(tmp_path: Pa
         assert not (project_dir / ".upload_staging").exists() or not any(
             (project_dir / ".upload_staging").iterdir()
         )
+
+
+def test_pr9_hardening_early_content_length_mime_hint_double_dot_and_error_maps(
+    tmp_path: Path,
+) -> None:
+    """Verify early 413 guard, 409/400 mappings, allowlist mime_hint, and Plan Rev..A.pdf."""
+    settings = _test_settings(tmp_path, max_upload_size_bytes=512, max_files_per_upload=2)
+    app = create_app(settings)
+
+    with TestClient(app) as client:
+        project = _create_sample_project(client)
+        project_id = project["id"]
+
+        # 1. Early Content-Length > MAX_FILES_PER_UPLOAD * MAX_UPLOAD_SIZE_BYTES (2 * 512 = 1024)
+        # Rejects before multipart parsing even touches a corrupt body.
+        early_413 = client.post(
+            f"/api/projects/{project_id}/files",
+            headers={
+                "Content-Type": "multipart/form-data; boundary=notparsed",
+                "Content-Length": "1025",
+            },
+            content=b"unparsed-corrupt-multipart-body",
+        )
+        assert early_413.status_code == 413
+
+        # 2. Double dot inside filename (not a whole '..' path segment) is allowed
+        rev_resp = client.post(
+            f"/api/projects/{project_id}/files",
+            files=[("files", ("Plan Rev..A.pdf", b"%PDF-1.4\nrevA", "text/html"))],
+        )
+        assert rev_resp.status_code == 201
+        rev_file = rev_resp.json()["items"][0]["file"]
+        assert rev_file["original_filename"] == "Plan Rev..A.pdf"
+
+        # 3. Stored and served MIME type strictly uses allowlist mime_hint, ignoring spoofed text/html
+        assert rev_file["mime_type"] == "application/pdf"
+        dl_rev = client.get(f"/api/files/{rev_file['id']}/download")
+        assert dl_rev.status_code == 200
+        assert dl_rev.headers["content-type"].startswith("application/pdf")
+        assert dl_rev.content == b"%PDF-1.4\nrevA"
+
+        # 4. FileExistsError -> HTTP 409 when target file already exists on disk unmanaged
+        preexisting = (
+            settings.workspaces_dir
+            / project["workspace_slug"]
+            / "01_Input_Documents"
+            / "conflict.pdf"
+        )
+        preexisting.write_bytes(b"unmanaged-existing-file")
+        conflict_resp = client.post(
+            f"/api/projects/{project_id}/files",
+            files=[("files", ("conflict.pdf", b"%PDF-1.4\nnew", "application/pdf"))],
+        )
+        assert conflict_resp.status_code == 409
+
+        # 5. ValueError from resolve_project_file_path -> HTTP 400 on tampered relative path
+        with app.state.session_factory() as db:
+            ver_row = db.scalar(
+                select(FileVersion).where(FileVersion.file_id == rev_file["id"])
+            )
+            assert ver_row is not None
+            ver_row.stored_relative_path = "../../outside.pdf"
+            db.commit()
+
+        bad_path_dl = client.get(f"/api/files/{rev_file['id']}/download")
+        assert bad_path_dl.status_code == 400
+
+        # 6. Chunked upload without Content-Length skips early middleware and still fails per-file 413
+        boundary = "chunkedboundary"
+        raw_part = (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="files"; filename="chunked_big.pdf"\r\n'
+            f"Content-Type: application/pdf\r\n\r\n"
+        ).encode("ascii") + (b"x" * 700) + f"\r\n--{boundary}--\r\n".encode("ascii")
+
+        def chunk_stream():
+            for start in range(0, len(raw_part), 128):
+                yield raw_part[start : start + 128]
+
+        chunked_resp = client.post(
+            f"/api/projects/{project_id}/files",
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+            content=chunk_stream(),
+        )
+        assert chunked_resp.status_code == 413

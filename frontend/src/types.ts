@@ -129,3 +129,98 @@ export interface ProjectFileListResponse {
   total: number;
   classification: string;
 }
+
+export type TaskComplexity = "fast" | "deep";
+
+export interface ProviderModelOption {
+  id: string;
+  label: string;
+  tier: string;
+}
+
+export interface ProviderCatalogItem {
+  id: string;
+  name: string;
+  models: ProviderModelOption[];
+}
+
+export interface ModelSelection {
+  fast: string;
+  deep: string;
+}
+
+export interface UsageLimits {
+  daily_request_limit: number;
+  daily_token_limit: number;
+  monthly_request_limit: number;
+  monthly_token_limit: number;
+  max_output_tokens: number;
+}
+
+export interface DailyUsageOut {
+  date_utc: string;
+  requests: number;
+  prompt_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+}
+
+export interface MonthlyUsageOut {
+  month_utc: string;
+  requests: number;
+  prompt_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+}
+
+export interface ConnectionCheckStatus {
+  status: "untested" | "connected" | "error";
+  checked_at: string | null;
+  model: string | null;
+  message: string | null;
+  latency_ms: number | null;
+}
+
+export interface ProviderSettingsOut {
+  active_provider: string;
+  available_providers: ProviderCatalogItem[];
+  models: ModelSelection;
+  models_source: "live_api" | "fallback_catalog";
+  models_refreshed_at: string | null;
+  model_warning: string | null;
+  usage_limits: UsageLimits;
+  daily_usage: DailyUsageOut;
+  monthly_usage: MonthlyUsageOut;
+  api_key_configured: boolean;
+  credential_backend: string;
+  last_connection_check: ConnectionCheckStatus;
+  consumer_subscription_notice: string;
+  classification: string;
+}
+
+export interface ProviderSettingsUpdate {
+  active_provider: string;
+  models: ModelSelection;
+  usage_limits: UsageLimits;
+}
+
+export interface TokenUsageOut {
+  prompt_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  thoughts_tokens: number;
+  cached_tokens: number;
+}
+
+export interface ConnectionTestOut {
+  connected: boolean;
+  provider: string;
+  model: string;
+  message: string;
+  latency_ms: number;
+  usage: TokenUsageOut;
+  daily_usage: DailyUsageOut;
+  monthly_usage: MonthlyUsageOut;
+  api_key_configured: boolean;
+  classification: string;
+}

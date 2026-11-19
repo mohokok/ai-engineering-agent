@@ -92,7 +92,8 @@ def validate_upload_filename(raw_filename: str | None) -> tuple[str, ExtensionSp
     normalized = unicodedata.normalize("NFC", raw_filename.strip())
     if not normalized or normalized in {".", ".."}:
         raise UnsafeFilenameError(f"Invalid filename: {raw_filename!r}")
-    if "/" in normalized or "\\" in normalized or ".." in normalized:
+    segments = re.split(r"[/\\]", normalized)
+    if "/" in normalized or "\\" in normalized or any(seg in {".", ".."} for seg in segments):
         raise UnsafeFilenameError(f"Path traversal or directory separators rejected: {raw_filename!r}")
     if _FORBIDDEN_FILENAME_RE.search(normalized):
         raise UnsafeFilenameError(f"Forbidden characters in filename: {raw_filename!r}")
@@ -178,12 +179,11 @@ async def _stage_uploads(
         if total_bytes == 0:
             raise EmptyFileError(f"Uploaded file {filename!r} is empty (0 bytes)")
 
-        mime_type = (upload.content_type or "").strip() or spec.mime_hint
         staged.append(
             _StagedUpload(
                 filename=filename,
                 spec=spec,
-                mime_type=mime_type,
+                mime_type=spec.mime_hint,
                 size_bytes=total_bytes,
                 sha256=hasher.hexdigest(),
                 temp_path=temp_path,
@@ -507,4 +507,6 @@ def resolve_file_download(
     if not disk_path.is_file():
         raise FileVersionNotFoundError(f"Stored artifact missing on disk for file {file_id}")
 
-    return disk_path, file_row.original_filename, file_row.mime_type
+    spec = classify_extension(file_row.original_filename)
+    served_mime = spec.mime_hint if spec is not None else "application/octet-stream"
+    return disk_path, file_row.original_filename, served_mime
