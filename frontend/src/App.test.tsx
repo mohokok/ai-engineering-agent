@@ -5,11 +5,16 @@ import {
   createProject,
   createTask,
   deleteProviderApiKey,
+  extractProjectFile,
+  getExtractionCapabilities,
+  getExtractionDetail,
+  getExtractionPageImageUrl,
   getFileDownloadUrl,
   getProject,
   getProviderSettings,
   getSupportedExtensions,
   getTaskDetail,
+  listFileExtractions,
   listProjectFiles,
   listProjects,
   listTasks,
@@ -24,6 +29,8 @@ import { ProjectFilesPanel } from "./components/ProjectFilesPanel";
 import { ProjectWorkspaceView } from "./components/ProjectWorkspaceView";
 import { ProviderSettingsView } from "./components/ProviderSettingsView";
 import type {
+  ExtractionCapabilitiesOut,
+  FileExtractionDetailOut,
   ProjectDetail,
   ProjectFileOut,
   ProjectSummary,
@@ -626,5 +633,164 @@ describe("Step 05 AssignmentsView & Task Engine API client", () => {
       undefined
     );
     expect(fetchMock).toHaveBeenNthCalledWith(3, "/api/tasks/t-1", undefined);
+  });
+});
+
+describe("Step 06 ProjectFilesPanel Extraction UI & API client", () => {
+  it("renders Arabic RTL extraction status, normalized items, formula values, and SHA-256 verification", () => {
+    const sampleFiles: ProjectFileOut[] = [
+      {
+        id: "f-pdf-1",
+        project_id: "proj-6",
+        folder_name: "01_Input_Documents",
+        original_filename: "boq_beam.xlsx",
+        stored_relative_path: "01_Input_Documents/boq_beam.xlsx",
+        mime_type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        extension: ".xlsx",
+        size_bytes: 4096,
+        sha256: "a".repeat(64),
+        is_original: true,
+        status: "registered",
+        classification: "Preliminary",
+        current_version: 1,
+        created_at: "2026-11-19T00:00:00Z",
+        updated_at: "2026-11-19T00:00:00Z",
+        versions: [
+          {
+            id: "v-1",
+            file_id: "f-pdf-1",
+            version_number: 1,
+            stored_relative_path: "01_Input_Documents/boq_beam.xlsx",
+            size_bytes: 4096,
+            sha256: "a".repeat(64),
+            change_note: "Initial upload",
+            created_by: "owner",
+            created_at: "2026-11-19T00:00:00Z",
+          },
+        ],
+      },
+    ];
+
+    const capabilities: ExtractionCapabilitiesOut = {
+      ocr: {
+        installed: false,
+        status: "not installed - pending owner",
+        version: null,
+        languages: [],
+        ara_installed: false,
+        eng_installed: false,
+        install_url: "https://github.com/UB-Mannheim/tesseract/wiki",
+        message: "Tesseract OCR (ara+eng) is not installed - pending owner.",
+      },
+      supported_extensions: [".pdf", ".docx", ".xlsx", ".csv", ".pptx", ".png"],
+      cad_bim_deferred_extensions: [".dxf", ".dwg", ".ifc"],
+      classification: "Preliminary",
+    };
+
+    const extraction: FileExtractionDetailOut = {
+      id: "ext-1",
+      project_id: "proj-6",
+      file_id: "f-pdf-1",
+      source_file: "boq_beam.xlsx",
+      folder_name: "01_Input_Documents",
+      extension: ".xlsx",
+      version_number: 1,
+      extraction_version: 1,
+      source_sha256: "a".repeat(64),
+      sha256_before: "a".repeat(64),
+      sha256_after: "a".repeat(64),
+      original_unchanged: true,
+      status: "extracted",
+      ocr_status: "not_needed",
+      classification: "Preliminary",
+      counts: {
+        pages: 0,
+        sheets: 1,
+        slides: 0,
+        tables: 1,
+        formulas: 1,
+        text_items: 0,
+        ocr_items: 0,
+        rendered_page_images: 0,
+        total_items: 2,
+      },
+      warnings: [],
+      rendered_page_images: [],
+      artifact_relative_path: "03_Analysis/extractions/f-pdf-1/v1/r1/extraction.json",
+      error_message: null,
+      created_at: "2026-11-19T00:00:00Z",
+      ocr: capabilities.ocr,
+      items: [
+        {
+          item_index: 1,
+          item_type: "cell_formula",
+          source_file: "boq_beam.xlsx",
+          file_id: "f-pdf-1",
+          version_number: 1,
+          page_or_sheet: "sheet:BOQ",
+          location: "cell:D2",
+          text: "3125",
+          raw_values: null,
+          formula: "=B2*C2",
+          cached_value: "3125",
+          unit_or_format: '0.00" m3"',
+          extraction_method: "native",
+        },
+      ],
+    };
+
+    const html = renderToStaticMarkup(
+      <ProjectFilesPanel
+        lang="ar"
+        projectId="proj-6"
+        initialFiles={sampleFiles}
+        initialCapabilities={capabilities}
+        initialExtraction={extraction}
+      />
+    );
+
+    expect(html).toContain("not installed - pending owner");
+    expect(html).toContain("استخراج البيانات");
+    expect(html).toContain("SHA-256 مطابق تماماً");
+    expect(html).toContain("sheet:BOQ");
+    expect(html).toContain("cell:D2");
+    expect(html).toContain("=B2*C2");
+    expect(html).toContain("3125");
+  });
+
+  it("calls extraction endpoints cleanly and builds page image URLs", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ocr: { status: "not installed - pending owner" } }), {
+          status: 200,
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ id: "ext-1", status: "extracted" }), { status: 201 })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ file_id: "f-1", extractions: [], total: 0 }), { status: 200 })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ id: "ext-1", items: [] }), { status: 200 })
+      );
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    await getExtractionCapabilities();
+    await extractProjectFile("f-1", { force_ocr: true });
+    await listFileExtractions("f-1");
+    await getExtractionDetail("ext-1");
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/extraction/capabilities", undefined);
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/api/files/f-1/extract",
+      expect.objectContaining({ method: "POST" })
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(3, "/api/files/f-1/extractions", undefined);
+    expect(fetchMock).toHaveBeenNthCalledWith(4, "/api/extractions/ext-1", undefined);
+    expect(getExtractionPageImageUrl("ext-1", 2)).toBe("/api/extractions/ext-1/pages/2");
   });
 });

@@ -12,6 +12,7 @@ from app.db.models import (
     AuditLog,
     Calculation,
     Deliverable,
+    FileExtraction,
     FileVersion,
     Project,
     ProjectFile,
@@ -23,6 +24,7 @@ EXPECTED_TABLES = {
     "projects",
     "files",
     "file_versions",
+    "file_extractions",
     "tasks",
     "task_steps",
     "deliverables",
@@ -180,6 +182,15 @@ def test_classification_check_constraint_enforces_five_claude_labels(tmp_path: P
             )
             db.add(seed_project)
             db.flush()
+            seed_file = ProjectFile(
+                project_id=seed_project.id,
+                folder_name="01_Input_Documents",
+                original_filename="seed.pdf",
+                stored_relative_path="01_Input_Documents/seed.pdf",
+                classification="Preliminary",
+            )
+            db.add(seed_file)
+            db.flush()
             db.add(
                 AuditLog(
                     project_id=seed_project.id,
@@ -190,6 +201,7 @@ def test_classification_check_constraint_enforces_five_claude_labels(tmp_path: P
             )
             db.commit()
             seed_id = seed_project.id
+            seed_file_id = seed_file.id
     finally:
         engine.dispose()
 
@@ -271,6 +283,24 @@ def test_classification_check_constraint_enforces_five_claude_labels(tmp_path: P
                     calculation_type="beam",
                     inputs_json={"span_m": 6},
                     results_json={"moment_knm": 45},
+                    classification="InvalidLabel",
+                )
+            )
+            with pytest.raises(IntegrityError):
+                db.flush()
+            db.rollback()
+
+            db.add(
+                FileExtraction(
+                    project_id=seed_id,
+                    file_id=seed_file_id,
+                    version_number=1,
+                    extraction_version=1,
+                    source_sha256="a" * 64,
+                    counts_json={},
+                    warnings_json=[],
+                    rendered_images_json=[],
+                    payload_json={},
                     classification="InvalidLabel",
                 )
             )

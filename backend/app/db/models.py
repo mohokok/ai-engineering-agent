@@ -102,6 +102,9 @@ class ProjectFile(Base):
     versions: Mapped[list["FileVersion"]] = relationship(
         back_populates="file", cascade="save-update, merge", passive_deletes="all"
     )
+    extractions: Mapped[list["FileExtraction"]] = relationship(
+        back_populates="file", cascade="save-update, merge", passive_deletes="all"
+    )
 
 
 class FileVersion(Base):
@@ -336,6 +339,48 @@ class Calculation(Base):
     )
 
     project: Mapped["Project"] = relationship(back_populates="calculations")
+
+
+class FileExtraction(Base):
+    """Persisted deterministic document/spreadsheet/image extraction snapshot."""
+
+    __tablename__ = "file_extractions"
+    __table_args__ = (
+        classification_check_constraint(),
+        UniqueConstraint(
+            "file_id",
+            "version_number",
+            "extraction_version",
+            name="uq_file_extractions_file_ver_run",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    project_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("projects.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    file_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("files.id", ondelete="RESTRICT"), index=True, nullable=False
+    )
+    version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    extraction_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    source_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="extracted", nullable=False)
+    ocr_status: Mapped[str] = mapped_column(String(64), default="not_needed", nullable=False)
+    classification: Mapped[str] = mapped_column(
+        String(32), default="Preliminary", nullable=False
+    )
+    counts_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    warnings_json: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    rendered_images_json: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    artifact_relative_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+    file: Mapped["ProjectFile"] = relationship(back_populates="extractions")
 
 
 class Setting(Base):

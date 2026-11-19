@@ -341,3 +341,85 @@ export interface TaskListResponse {
   total: number;
   classification: ProjectClassification | string;
 }
+
+export interface OcrCapabilityOut {
+  installed: boolean;
+  status: string;
+  version: string | null;
+  languages: string[];
+  ara_installed: boolean;
+  eng_installed: boolean;
+  install_url: string;
+  message: string;
+}
+
+export interface ExtractionCapabilitiesOut {
+  ocr: OcrCapabilityOut;
+  supported_extensions: string[];
+  cad_bim_deferred_extensions: string[];
+  classification: ProjectClassification | string;
+}
+
+export interface ExtractedItem {
+  item_index: number;
+  item_type: "text" | "table" | "cell_formula" | "slide_note" | "image_meta" | "ocr_text";
+  source_file: string;
+  file_id: string | null;
+  version_number: number;
+  page_or_sheet: string;
+  location: string;
+  text: string | null;
+  raw_values: string[][] | null;
+  formula: string | null;
+  cached_value: string | null;
+  unit_or_format: string | null;
+  extraction_method: "native" | "ocr" | "hybrid";
+}
+
+export interface ExtractionCounts {
+  pages: number;
+  sheets: number;
+  slides: number;
+  tables: number;
+  formulas: number;
+  text_items: number;
+  ocr_items: number;
+  rendered_page_images: number;
+  total_items: number;
+}
+
+export interface FileExtractionSummaryOut {
+  id: string;
+  project_id: string;
+  file_id: string;
+  source_file: string;
+  folder_name: string;
+  extension: string;
+  version_number: number;
+  extraction_version: number;
+  source_sha256: string;
+  sha256_before: string;
+  sha256_after: string;
+  original_unchanged: boolean;
+  status: "extracted" | "partial_ocr_unavailable" | "failed";
+  ocr_status: string;
+  classification: ProjectClassification | string;
+  counts: ExtractionCounts;
+  warnings: string[];
+  rendered_page_images: string[];
+  artifact_relative_path: string | null;
+  error_message: string | null;
+  created_at: string;
+}
+
+export interface FileExtractionDetailOut extends FileExtractionSummaryOut {
+  ocr: OcrCapabilityOut;
+  items: ExtractedItem[];
+}
+
+export interface FileExtractionListResponse {
+  file_id: string;
+  extractions: FileExtractionSummaryOut[];
+  total: number;
+  classification: ProjectClassification | string;
+}

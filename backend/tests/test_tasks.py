@@ -603,3 +603,68 @@ def test_step05_failures_are_logged_not_hidden_without_secret_leaks(tmp_path: Pa
         assert hist.json()["total"] == 3
         assert fake_secret not in hist.text
         assert client.get("/api/tasks/missing-task-id").status_code == 404
+
+
+def test_step05_assumptions_always_labelled_for_owner_confirmation(tmp_path: Path) -> None:
+    """Orchestrator prompt forbids unverified boundary facts and labels every assumption to confirm with owner."""
+    from app.agents.orchestrator import ORCHESTRATOR_V0_SYSTEM_PROMPT
+
+    lowered_prompt = ORCHESTRATOR_V0_SYSTEM_PROMPT.lower()
+    assert "confirm with the owner" in lowered_prompt
+    assert "simply supported or continuous" in lowered_prompt
+
+    secret_store = _InMemorySecretStore("mock-assumption-key")
+
+    def client_factory(_key: str) -> Any:
+        class _Models:
+            def list(self) -> list[SimpleNamespace]:
+                return []
+
+            def generate_content(self, **_kwargs: Any) -> Any:
+                return SimpleNamespace(
+                    text="{}",
+                    parsed={
+                        "language_detected": "en",
+                        "restated_assignment": "Review a 6.0 m span beam.",
+                        "primary_discipline": "Structural",
+                        "secondary_disciplines": [],
+                        "expected_deliverables": ["Intake plan"],
+                        "input_files": [],
+                        "applicable_standards_to_verify": ["ACI 318"],
+                        "missing_information": ["Support fixity conditions", "Loads"],
+                        "assumptions": [
+                            "The 6.0 m span beam is simply supported.",
+                            "مساند البلاطة مستمرة على جميع الاتجاهات",
+                        ],
+                        "clarification_needed": True,
+                        "clarifying_questions": ["Confirm support fixity and design loads."],
+                        "recommended_next_steps": ["Confirm missing parameters with owner"],
+                        "suggested_classification": "Preliminary",
+                    },
+                    function_calls=[],
+                    candidates=[SimpleNamespace(finish_reason="STOP")],
+                    usage_metadata=_fake_usage(80, 35),
+                )
+
+        return SimpleNamespace(models=_Models())
+
+    app = create_app(
+        _test_settings(tmp_path),
+        secret_store=secret_store,
+        provider_client_factory=client_factory,
+    )
+    with TestClient(app) as client:
+        proj = client.post(
+            "/api/projects",
+            json={"name": "Assumption Check", "code": "ASM-06"},
+        ).json()
+        res = client.post(
+            "/api/tasks",
+            json={"project_id": proj["id"], "prompt": "Review a 6.0 m span beam."},
+        )
+        assert res.status_code == 201
+        assumptions = res.json()["structured_output"]["assumptions"]
+        assert assumptions == [
+            "Assumption (to confirm with owner): The 6.0 m span beam is simply supported.",
+            "افتراض أولي يحتاج تأكيد المالك: مساند البلاطة مستمرة على جميع الاتجاهات",
+        ]

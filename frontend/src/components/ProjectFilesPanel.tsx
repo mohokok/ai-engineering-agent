@@ -1,11 +1,16 @@
 import { ChangeEvent, DragEvent, useCallback, useEffect, useRef, useState } from "react";
 import {
+  extractProjectFile,
+  getExtractionCapabilities,
+  getExtractionPageImageUrl,
   getFileDownloadUrl,
   getSupportedExtensions,
   listProjectFiles,
   uploadProjectFiles,
 } from "../api";
 import type {
+  ExtractionCapabilitiesOut,
+  FileExtractionDetailOut,
   Lang,
   ProjectFileOut,
   ProjectFilesUploadResponse,
@@ -31,6 +36,8 @@ interface FilesPanelCopy {
   colActions: string;
   readOnlyBadge: string;
   downloadBtn: string;
+  extractBtn: string;
+  extractingBtn: string;
   versionsBtn: string;
   hideVersionsBtn: string;
   versionsHeading: string;
@@ -45,6 +52,12 @@ interface FilesPanelCopy {
   newVersionTag: string;
   duplicateTag: string;
   errorPrefix: string;
+  ocrLabel: string;
+  extractionHeading: string;
+  originalVerified: string;
+  warningsLabel: string;
+  renderedPagesLabel: string;
+  rawJsonLabel: string;
 }
 
 const FILES_COPY: Record<Lang, FilesPanelCopy> = {
@@ -68,6 +81,8 @@ const FILES_COPY: Record<Lang, FilesPanelCopy> = {
     colActions: "الإجراءات",
     readOnlyBadge: "الأصل للقراءة فقط",
     downloadBtn: "تنزيل",
+    extractBtn: "استخراج البيانات",
+    extractingBtn: "جاري الاستخراج...",
     versionsBtn: "سجل الإصدارات",
     hideVersionsBtn: "إخفاء الإصدارات",
     versionsHeading: "سجل الإصدارات الثابت",
@@ -81,7 +96,13 @@ const FILES_COPY: Record<Lang, FilesPanelCopy> = {
     createdTag: "جديد",
     newVersionTag: "إصدار جديد",
     duplicateTag: "مكرر (تم تخطيه)",
-    errorPrefix: "تعذر رفع أو جلب الملفات: ",
+    errorPrefix: "تعذر تنفيذ العملية: ",
+    ocrLabel: "حالة التعرف الضوئي Tesseract OCR (ara+eng)",
+    extractionHeading: "نتائج الاستخراج المهيكل (Normalized JSON)",
+    originalVerified: "تم التحقق: الأصل لم يتغير (SHA-256 مطابق تماماً)",
+    warningsLabel: "ملاحظات وتحذيرات الاستخراج",
+    renderedPagesLabel: "معاينة الصفحات المصوّرة (03_Analysis)",
+    rawJsonLabel: "عرض JSON المهيكل الكامل للاستخراج",
   },
   en: {
     heading: "Project Files & Version History",
@@ -103,6 +124,8 @@ const FILES_COPY: Record<Lang, FilesPanelCopy> = {
     colActions: "Actions",
     readOnlyBadge: "Read-only original",
     downloadBtn: "Download",
+    extractBtn: "Extract Content",
+    extractingBtn: "Extracting...",
     versionsBtn: "Version History",
     hideVersionsBtn: "Hide Versions",
     versionsHeading: "Immutable Version History",
@@ -117,8 +140,31 @@ const FILES_COPY: Record<Lang, FilesPanelCopy> = {
     newVersionTag: "New Version",
     duplicateTag: "Duplicate (Skipped)",
     errorPrefix: "File operation failed: ",
+    ocrLabel: "Tesseract OCR Status (ara+eng)",
+    extractionHeading: "Structured Extraction Output (Normalized JSON)",
+    originalVerified: "Verified: original file untouched (SHA-256 identical)",
+    warningsLabel: "Extraction Notes & Warnings",
+    renderedPagesLabel: "Rendered Page Images (03_Analysis)",
+    rawJsonLabel: "Inspect Full Normalized Extraction JSON",
   },
 };
+
+const DEFAULT_EXTRACTABLE = new Set([
+  ".pdf",
+  ".docx",
+  ".xlsx",
+  ".csv",
+  ".pptx",
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".tif",
+  ".tiff",
+  ".bmp",
+  ".webp",
+  ".txt",
+  ".md",
+]);
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) {
@@ -146,6 +192,8 @@ export interface ProjectFilesPanelProps {
   projectId: string;
   initialFiles?: ProjectFileOut[];
   initialExpandedFileId?: string | null;
+  initialCapabilities?: ExtractionCapabilitiesOut | null;
+  initialExtraction?: FileExtractionDetailOut | null;
 }
 
 export function ProjectFilesPanel({
@@ -153,14 +201,22 @@ export function ProjectFilesPanel({
   projectId,
   initialFiles = [],
   initialExpandedFileId = null,
+  initialCapabilities = null,
+  initialExtraction = null,
 }: ProjectFilesPanelProps) {
   const copy = FILES_COPY[lang];
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const [files, setFiles] = useState<ProjectFileOut[]>(initialFiles);
   const [extInfo, setExtInfo] = useState<SupportedExtensionsResponse | null>(null);
+  const [capabilities, setCapabilities] = useState<ExtractionCapabilitiesOut | null>(
+    initialCapabilities
+  );
   const [loading, setLoading] = useState<boolean>(false);
   const [uploading, setUploading] = useState<boolean>(false);
+  const [extractingFileId, setExtractingFileId] = useState<string | null>(null);
+  const [activeExtraction, setActiveExtraction] =
+    useState<FileExtractionDetailOut | null>(initialExtraction);
   const [dragActive, setDragActive] = useState<boolean>(false);
   const [expandedFileId, setExpandedFileId] = useState<string | null>(initialExpandedFileId);
   const [lastUpload, setLastUpload] = useState<ProjectFilesUploadResponse | null>(null);
@@ -184,6 +240,9 @@ export function ProjectFilesPanel({
     void getSupportedExtensions()
       .then((info) => setExtInfo(info))
       .catch(() => undefined);
+    void getExtractionCapabilities()
+      .then((cap) => setCapabilities(cap))
+      .catch(() => undefined);
   }, [loadFiles]);
 
   async function processUpload(selectedFiles: File[]) {
@@ -203,6 +262,19 @@ export function ProjectFilesPanel({
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setUploading(false);
+    }
+  }
+
+  async function handleExtractFile(fileId: string) {
+    setExtractingFileId(fileId);
+    setError(null);
+    try {
+      const result = await extractProjectFile(fileId);
+      setActiveExtraction(result);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setExtractingFileId(null);
     }
   }
 
@@ -238,6 +310,10 @@ export function ProjectFilesPanel({
     ? extInfo.extensions.map((item) => item.extension).join(",")
     : ".pdf,.doc,.docx,.txt,.rtf,.html,.htm,.md,.xls,.xlsx,.csv,.ods,.ppt,.pptx,.xml,.json,.landxml,.dwg,.dxf,.dgn,.dwf,.svg,.png,.jpg,.jpeg,.tif,.tiff,.bmp,.webp,.ifc,.rvt,.rfa,.rte,.obj,.stl,.step,.stp,.iges,.igs,.gltf,.glb";
 
+  const extractableSet = capabilities
+    ? new Set(capabilities.supported_extensions.map((item) => item.toLowerCase()))
+    : DEFAULT_EXTRACTABLE;
+
   return (
     <section className="subpanel files-panel" aria-label={copy.heading}>
       <div className="panel-header">
@@ -253,6 +329,19 @@ export function ProjectFilesPanel({
           {loading ? copy.loading : copy.refreshBtn}
         </button>
       </div>
+
+      {capabilities && (
+        <div
+          className={`status-box compact-status ${
+            capabilities.ocr.installed ? "status-ok" : "notice-box"
+          }`}
+          style={{ marginTop: 0 }}
+        >
+          <strong>{copy.ocrLabel}:</strong>{" "}
+          <span dir="ltr">{capabilities.ocr.status}</span> —{" "}
+          <span>{capabilities.ocr.message}</span>
+        </div>
+      )}
 
       <div
         className={`dropzone ${dragActive ? "dropzone-active" : ""}`}
@@ -337,6 +426,9 @@ export function ProjectFilesPanel({
             <tbody>
               {files.map((file) => {
                 const isExpanded = expandedFileId === file.id;
+                const canExtract = Boolean(
+                  file.extension && extractableSet.has(file.extension.toLowerCase())
+                );
                 return (
                   <tr key={file.id}>
                     <td>
@@ -380,6 +472,16 @@ export function ProjectFilesPanel({
                         >
                           {copy.downloadBtn}
                         </a>
+                        {canExtract && (
+                          <button
+                            type="button"
+                            className="btn btn-compact"
+                            disabled={extractingFileId === file.id}
+                            onClick={() => void handleExtractFile(file.id)}
+                          >
+                            {extractingFileId === file.id ? copy.extractingBtn : copy.extractBtn}
+                          </button>
+                        )}
                         <button
                           type="button"
                           className="btn btn-secondary btn-compact"
@@ -398,6 +500,150 @@ export function ProjectFilesPanel({
               })}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {activeExtraction && (
+        <div className="version-history-panel">
+          <div className="panel-header">
+            <h4 className="folders-title">
+              {copy.extractionHeading} — <span dir="auto">{activeExtraction.source_file}</span>
+            </h4>
+            <div className="badge-group">
+              <span
+                className={`badge ${
+                  activeExtraction.status === "extracted" ? "badge-connected" : "badge-warn"
+                }`}
+              >
+                {activeExtraction.status}
+              </span>
+              <span className="badge">OCR: {activeExtraction.ocr_status}</span>
+              <span className="badge">{activeExtraction.classification}</span>
+            </div>
+          </div>
+
+          {activeExtraction.original_unchanged && (
+            <div className="status-box status-ok" style={{ marginTop: 0, marginBottom: "0.75rem" }}>
+              {copy.originalVerified} (<code>{shortHash(activeExtraction.sha256_after)}</code>)
+            </div>
+          )}
+
+          {activeExtraction.warnings.length > 0 && (
+            <div className="status-box notice-box" style={{ marginTop: 0, marginBottom: "0.75rem" }}>
+              <strong>{copy.warningsLabel}:</strong>
+              <ul className="outcome-list">
+                {activeExtraction.warnings.map((w, idx) => (
+                  <li key={idx} dir="auto">
+                    {w}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          <dl className="meta-grid">
+            <div>
+              <dt>Pages</dt>
+              <dd dir="ltr">{activeExtraction.counts.pages}</dd>
+            </div>
+            <div>
+              <dt>Sheets</dt>
+              <dd dir="ltr">{activeExtraction.counts.sheets}</dd>
+            </div>
+            <div>
+              <dt>Slides</dt>
+              <dd dir="ltr">{activeExtraction.counts.slides}</dd>
+            </div>
+            <div>
+              <dt>Tables</dt>
+              <dd dir="ltr">{activeExtraction.counts.tables}</dd>
+            </div>
+            <div>
+              <dt>Formulas</dt>
+              <dd dir="ltr">{activeExtraction.counts.formulas}</dd>
+            </div>
+            <div>
+              <dt>Text / OCR Items</dt>
+              <dd dir="ltr">
+                {activeExtraction.counts.text_items} / {activeExtraction.counts.ocr_items}
+              </dd>
+            </div>
+          </dl>
+
+          {activeExtraction.rendered_page_images.length > 0 && (
+            <div style={{ marginBottom: "0.85rem" }}>
+              <strong>{copy.renderedPagesLabel}:</strong>{" "}
+              <span className="badge-group" style={{ marginTop: "0.35rem" }}>
+                {activeExtraction.rendered_page_images.map((relPath, idx) => (
+                  <a
+                    key={relPath}
+                    className="btn btn-secondary btn-compact"
+                    href={getExtractionPageImageUrl(activeExtraction.id, idx + 1)}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    PNG Page {idx + 1}
+                  </a>
+                ))}
+              </span>
+            </div>
+          )}
+
+          <div className="table-wrap">
+            <table className="files-table">
+              <thead>
+                <tr>
+                  <th>Page / Sheet</th>
+                  <th>Location</th>
+                  <th>Type</th>
+                  <th>Method</th>
+                  <th>Extracted Content / Formula & Value</th>
+                </tr>
+              </thead>
+              <tbody>
+                {activeExtraction.items.map((item) => (
+                  <tr key={item.item_index}>
+                    <td dir="ltr">
+                      <code>{item.page_or_sheet}</code>
+                    </td>
+                    <td dir="ltr">
+                      <code>{item.location}</code>
+                    </td>
+                    <td dir="ltr">{item.item_type}</td>
+                    <td dir="ltr">{item.extraction_method}</td>
+                    <td dir="auto">
+                      {item.formula ? (
+                        <div dir="ltr">
+                          <code>{item.formula}</code>
+                          {item.cached_value !== null ? ` = ${item.cached_value}` : " (uncached)"}
+                          {item.unit_or_format ? ` [${item.unit_or_format}]` : ""}
+                        </div>
+                      ) : item.raw_values ? (
+                        <div dir="ltr">
+                          {item.raw_values.length} rows:{" "}
+                          {item.raw_values
+                            .slice(0, 3)
+                            .map((r) => r.join(" | "))
+                            .join(" / ")}
+                        </div>
+                      ) : (
+                        item.text || "—"
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <details style={{ marginTop: "0.75rem" }}>
+            <summary style={{ cursor: "pointer", fontWeight: 600 }}>
+              {copy.rawJsonLabel}
+            </summary>
+            <pre className="json-preview" dir="ltr">
+              {JSON.stringify(activeExtraction, null, 2)}
+            </pre>
+          </details>
         </div>
       )}
 
@@ -432,7 +678,10 @@ export function ProjectFilesPanel({
                           <td>
                             <span className="badge">v{ver.version_number}</span>
                             {ver.version_number === 1 && (
-                              <span className="badge badge-readonly" style={{ marginInlineStart: "0.35rem" }}>
+                              <span
+                                className="badge badge-readonly"
+                                style={{ marginInlineStart: "0.35rem" }}
+                              >
                                 {copy.originalVersionTag}
                               </span>
                             )}

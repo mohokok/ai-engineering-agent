@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     cors_origins: str = "http://127.0.0.1:5173,http://localhost:5173"
     max_upload_size_bytes: int = 50 * 1024 * 1024
     max_files_per_upload: int = 25
+    tesseract_cmd: str = ""
 
     model_config = SettingsConfigDict(
         env_file=str(REPO_ROOT / ".env"),

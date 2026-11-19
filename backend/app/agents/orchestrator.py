@@ -26,7 +26,7 @@ Your role in this step is structured assignment intake and understanding ONLY. F
    - `input_files`: list attached project files from metadata (status `"attached"`), any file named or requested in the prompt that is NOT in attached metadata (status `"missing"`), or files referenced contextually (status `"referenced_in_prompt"`).
    - `applicable_standards_to_verify`: general names of codes/standards that should later be checked via official sources or the Standards Library (e.g., ACI 318, IEC 60364, NFPA 101, ASHRAE 90.1, Libyan engineering regulations). NEVER fabricate clause numbers, edition years, compliance verdicts, calculations, quantities, unit rates, or manufacturer data.
    - `missing_information`: technical parameters, drawings, loads, section sizes, material grades, boundary conditions, occupancy/capacity, currency/rate basis, or documents absent from the assignment.
-   - `assumptions`: explicit preliminary assumptions clearly framed as unverified assumptions.
+   - `assumptions`: unverified preliminary assumptions ONLY. Every item MUST be explicitly labelled as an assumption to confirm with the owner (prefix English with "Assumption (to confirm with owner): " and Arabic with "افتراض أولي يحتاج تأكيد المالك: "). NEVER present unstated structural/engineering conditions (for example: whether a beam/slab is simply supported or continuous, exposure class, soil bearing capacity, or concrete grade) as an established engineering fact in `restated_assignment` or `assumptions`.
    - `recommended_next_steps`: concrete technical intake steps (e.g., file extraction, drawing check, standards verification, deterministic calculation).
 3. CLARIFYING QUESTIONS WHEN MISSING DATA MATERIALLY AFFECTS RESULT:
    - You MUST set `clarification_needed` to `true` and provide concise `clarifying_questions` whenever:
@@ -83,6 +83,34 @@ def build_orchestrator_v0_prompt(
     )
 
 
+def _normalize_assumptions(assumptions: list[str], language: str) -> list[str]:
+    """Ensure every assumption is explicitly labelled as unverified and requiring owner confirmation."""
+    normalized: list[str] = []
+    markers = (
+        "assumption (to confirm",
+        "assumption:",
+        "to confirm with owner",
+        "unverified assumption",
+        "افتراض أولي يحتاج تأكيد",
+        "يحتاج تأكيد المالك",
+        "تحتاج تأكيد المالك",
+    )
+    for raw in assumptions:
+        cleaned = raw.strip()
+        if not cleaned:
+            continue
+        lowered = cleaned.lower()
+        if any(marker in lowered for marker in markers):
+            normalized.append(cleaned)
+            continue
+        has_arabic = any("\u0600" <= ch <= "\u06ff" for ch in cleaned)
+        if language == "ar" or (language == "mixed" and has_arabic) or has_arabic:
+            normalized.append(f"افتراض أولي يحتاج تأكيد المالك: {cleaned}")
+        else:
+            normalized.append(f"Assumption (to confirm with owner): {cleaned}")
+    return normalized
+
+
 def _missing_file_question(missing_names: list[str], language: str) -> str:
     joined = ", ".join(missing_names)
     if language == "ar":
@@ -128,6 +156,7 @@ def normalize_orchestrator_understanding(
 
     return model.model_copy(
         update={
+            "assumptions": _normalize_assumptions(model.assumptions, model.language_detected),
             "clarification_needed": clarification_needed,
             "clarifying_questions": cleaned_questions if clarification_needed else [],
         }
