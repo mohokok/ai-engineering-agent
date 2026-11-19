@@ -353,8 +353,26 @@ export interface OcrCapabilityOut {
   message: string;
 }
 
+export interface OdaCapabilityOut {
+  installed: boolean;
+  status: string;
+  version: string | null;
+  install_url: string;
+  message: string;
+}
+
+export interface FormatSupportEntry {
+  extension: string;
+  category: string;
+  support_level: "native" | "converted_via_oda" | "not_supported";
+  provider_or_tool: string;
+  notes: string;
+}
+
 export interface ExtractionCapabilitiesOut {
   ocr: OcrCapabilityOut;
+  oda?: OdaCapabilityOut;
+  format_support_matrix?: FormatSupportEntry[];
   supported_extensions: string[];
   cad_bim_deferred_extensions: string[];
   classification: ProjectClassification | string;
@@ -362,7 +380,21 @@ export interface ExtractionCapabilitiesOut {
 
 export interface ExtractedItem {
   item_index: number;
-  item_type: "text" | "table" | "cell_formula" | "slide_note" | "image_meta" | "ocr_text";
+  item_type:
+    | "text"
+    | "table"
+    | "cell_formula"
+    | "slide_note"
+    | "image_meta"
+    | "ocr_text"
+    | "cad_layer"
+    | "cad_block"
+    | "cad_entity"
+    | "cad_dimension"
+    | "cad_polyline_area"
+    | "bim_space"
+    | "bim_element"
+    | "vision_summary";
   source_file: string;
   file_id: string | null;
   version_number: number;
@@ -381,7 +413,15 @@ export interface ExtractedItem {
   start_column?: number | null;
   start_column_letter?: string | null;
   row_numbers?: number[] | null;
-  extraction_method: "native" | "ocr" | "hybrid";
+  layer?: string | null;
+  block_name?: string | null;
+  entity_handle?: string | null;
+  cad_space?: string | null;
+  area?: number | null;
+  perimeter_or_length?: number | null;
+  properties?: Record<string, unknown> | null;
+  quantities?: Record<string, unknown> | null;
+  extraction_method: "native" | "ocr" | "converted_oda" | "hybrid" | "ai_vision";
 }
 
 export interface ExtractionCounts {
@@ -393,7 +433,35 @@ export interface ExtractionCounts {
   text_items: number;
   ocr_items: number;
   rendered_page_images: number;
+  layers?: number;
+  blocks?: number;
+  block_inserts?: number;
+  entities?: number;
+  dimensions?: number;
+  polylines?: number;
+  closed_areas?: number;
+  ifc_spaces?: number;
+  ifc_walls?: number;
+  ifc_doors?: number;
+  ifc_windows?: number;
   total_items: number;
+}
+
+export interface DrawingVisionSummaryOut {
+  extraction_id: string;
+  page_number: number;
+  ai_interpretation_only: boolean;
+  disclaimer: string;
+  provider_name: string;
+  model_name: string;
+  drawing_title: string | null;
+  discipline_guess: string;
+  visible_labels_and_notes: string[];
+  key_elements_observed: string[];
+  uncertainty_notes: string[];
+  token_usage: Record<string, number>;
+  artifact_relative_path: string;
+  classification: ProjectClassification | string;
 }
 
 export interface FileExtractionSummaryOut {
@@ -412,6 +480,11 @@ export interface FileExtractionSummaryOut {
   status: "extracted" | "partial_ocr_unavailable" | "failed";
   ocr_status: string;
   ocr_dpi?: number | null;
+  converter_status?: string | null;
+  converted_artifact_relative_path?: string | null;
+  cad_units?: string | null;
+  drawing_inventory?: Record<string, unknown> | null;
+  vision_summaries?: DrawingVisionSummaryOut[];
   classification: ProjectClassification | string;
   counts: ExtractionCounts;
   warnings: string[];
@@ -423,6 +496,7 @@ export interface FileExtractionSummaryOut {
 
 export interface FileExtractionDetailOut extends FileExtractionSummaryOut {
   ocr: OcrCapabilityOut;
+  oda?: OdaCapabilityOut | null;
   items: ExtractedItem[];
 }
 

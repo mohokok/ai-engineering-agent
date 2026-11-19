@@ -1,12 +1,19 @@
-"""Step 06 document, spreadsheet, presentation, and image extraction endpoints."""
+"""Step 06/07 document, CAD (DXF/DWG), BIM (IFC), and drawing vision endpoints."""
+
+from typing import Any, Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Path as ApiPath, Request, status
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
+from app.api.settings import _raise_provider_http_error
 from app.core.config import Settings
 from app.db.session import get_db
+from app.providers.base import ProviderError
+from app.providers.secrets import SecretStore
 from app.schemas.extraction import (
+    DrawingVisionSummaryOut,
+    DrawingVisionSummaryRequest,
     ExtractionCapabilitiesOut,
     FileExtractionDetailOut,
     FileExtractionListResponse,
@@ -22,6 +29,7 @@ from app.services.extraction import (
     get_extraction_detail,
     list_file_extractions,
     resolve_extraction_page_image,
+    summarize_drawing_page_vision,
 )
 from app.services.files import FileRecordNotFoundError, FileVersionNotFoundError
 from app.services.workspace import WorkspacePathError
@@ -33,9 +41,17 @@ def _get_app_settings(request: Request) -> Settings:
     return request.app.state.settings
 
 
+def _get_secret_store(request: Request) -> SecretStore:
+    return request.app.state.secret_store
+
+
+def _get_client_factory(request: Request) -> Callable[[str], Any] | None:
+    return getattr(request.app.state, "provider_client_factory", None)
+
+
 @router.get("/extraction/capabilities", response_model=ExtractionCapabilitiesOut)
 def get_extraction_capabilities_endpoint(request: Request) -> ExtractionCapabilitiesOut:
-    """Return runtime Tesseract OCR availability (or pending owner status) and formats."""
+    """Return runtime Tesseract/ODA availability, format support matrix, and supported extensions."""
     return get_extraction_capabilities(_get_app_settings(request))
 
 
@@ -50,7 +66,7 @@ def extract_project_file_endpoint(
     payload: FileExtractionRequest | None = None,
     db: Session = Depends(get_db),
 ) -> FileExtractionDetailOut:
-    """Run deterministic extraction on a read-only project file and save normalized JSON."""
+    """Run deterministic extraction on a read-only document, CAD drawing, or IFC model."""
     settings = _get_app_settings(request)
     try:
         return extract_project_file(
@@ -69,6 +85,37 @@ def extract_project_file_endpoint(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
         ) from exc
+
+
+@router.post(
+    "/extractions/{extraction_id}/vision-summary",
+    response_model=DrawingVisionSummaryOut,
+    status_code=status.HTTP_201_CREATED,
+)
+def summarize_drawing_vision_endpoint(
+    request: Request,
+    extraction_id: str = ApiPath(..., min_length=1),
+    payload: DrawingVisionSummaryRequest | None = None,
+    db: Session = Depends(get_db),
+) -> DrawingVisionSummaryOut:
+    """Summarize a rendered drawing PNG via Gemini Vision (flagged strictly as AI interpretation)."""
+    try:
+        return summarize_drawing_page_vision(
+            db,
+            _get_app_settings(request),
+            _get_secret_store(request),
+            extraction_id,
+            request_payload=payload,
+            client_factory=_get_client_factory(request),
+        )
+    except ExtractionNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ExtractionRunConflictError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except WorkspacePathError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except ProviderError as exc:
+        _raise_provider_http_error(exc)
 
 
 @router.get("/files/{file_id}/extractions", response_model=FileExtractionListResponse)

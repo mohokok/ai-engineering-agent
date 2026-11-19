@@ -6,9 +6,11 @@ import {
   getFileDownloadUrl,
   getSupportedExtensions,
   listProjectFiles,
+  summarizeDrawingVision,
   uploadProjectFiles,
 } from "../api";
 import type {
+  DrawingVisionSummaryOut,
   ExtractionCapabilitiesOut,
   FileExtractionDetailOut,
   Lang,
@@ -53,10 +55,15 @@ interface FilesPanelCopy {
   duplicateTag: string;
   errorPrefix: string;
   ocrLabel: string;
+  odaLabel: string;
+  matrixToggleLabel: string;
   extractionHeading: string;
   originalVerified: string;
   warningsLabel: string;
   renderedPagesLabel: string;
+  visionBtn: string;
+  visionLoadingBtn: string;
+  inventoryHeading: string;
   rawJsonLabel: string;
 }
 
@@ -98,10 +105,15 @@ const FILES_COPY: Record<Lang, FilesPanelCopy> = {
     duplicateTag: "مكرر (تم تخطيه)",
     errorPrefix: "تعذر تنفيذ العملية: ",
     ocrLabel: "حالة التعرف الضوئي Tesseract OCR (ara+eng)",
+    odaLabel: "حالة محوّل ODA File Converter (.dwg → .dxf)",
+    matrixToggleLabel: "مصفوفة دعم الصيغ (Native / Converted via ODA / Not Supported)",
     extractionHeading: "نتائج الاستخراج المهيكل (Normalized JSON)",
     originalVerified: "تم التحقق: الأصل لم يتغير (SHA-256 مطابق تماماً)",
     warningsLabel: "ملاحظات وتحذيرات الاستخراج",
-    renderedPagesLabel: "معاينة الصفحات المصوّرة (03_Analysis)",
+    renderedPagesLabel: "معاينة الصفحات والرسومات المصوّرة (03_Analysis)",
+    visionBtn: "تلخيص بصري بـ Gemini Vision (تفسير غير قياسي)",
+    visionLoadingBtn: "جاري التلخيص البصري...",
+    inventoryHeading: "جدول جرد الرسومات ونماذج BIM (Drawing & BIM Inventory)",
     rawJsonLabel: "عرض JSON المهيكل الكامل للاستخراج",
   },
   en: {
@@ -141,10 +153,15 @@ const FILES_COPY: Record<Lang, FilesPanelCopy> = {
     duplicateTag: "Duplicate (Skipped)",
     errorPrefix: "File operation failed: ",
     ocrLabel: "Tesseract OCR Status (ara+eng)",
+    odaLabel: "ODA File Converter Status (.dwg → .dxf)",
+    matrixToggleLabel: "Format Support Matrix (Native / Converted via ODA / Not Supported)",
     extractionHeading: "Structured Extraction Output (Normalized JSON)",
     originalVerified: "Verified: original file untouched (SHA-256 identical)",
     warningsLabel: "Extraction Notes & Warnings",
-    renderedPagesLabel: "Rendered Page Images (03_Analysis)",
+    renderedPagesLabel: "Rendered Page & Drawing Images (03_Analysis)",
+    visionBtn: "Gemini Vision Summary (AI Interpretation — Not Measurement)",
+    visionLoadingBtn: "Summarizing via Gemini Vision...",
+    inventoryHeading: "Drawing & BIM Inventory Table",
     rawJsonLabel: "Inspect Full Normalized Extraction JSON",
   },
 };
@@ -155,6 +172,9 @@ const DEFAULT_EXTRACTABLE = new Set([
   ".xlsx",
   ".csv",
   ".pptx",
+  ".dxf",
+  ".dwg",
+  ".ifc",
   ".png",
   ".jpg",
   ".jpeg",
@@ -215,8 +235,11 @@ export function ProjectFilesPanel({
   const [loading, setLoading] = useState<boolean>(false);
   const [uploading, setUploading] = useState<boolean>(false);
   const [extractingFileId, setExtractingFileId] = useState<string | null>(null);
+  const [summarizingVision, setSummarizingVision] = useState<boolean>(false);
   const [activeExtraction, setActiveExtraction] =
     useState<FileExtractionDetailOut | null>(initialExtraction);
+  const [latestVisionSummary, setLatestVisionSummary] =
+    useState<DrawingVisionSummaryOut | null>(null);
   const [dragActive, setDragActive] = useState<boolean>(false);
   const [expandedFileId, setExpandedFileId] = useState<string | null>(initialExpandedFileId);
   const [lastUpload, setLastUpload] = useState<ProjectFilesUploadResponse | null>(null);
@@ -268,6 +291,7 @@ export function ProjectFilesPanel({
   async function handleExtractFile(fileId: string) {
     setExtractingFileId(fileId);
     setError(null);
+    setLatestVisionSummary(null);
     try {
       const result = await extractProjectFile(fileId);
       setActiveExtraction(result);
@@ -275,6 +299,24 @@ export function ProjectFilesPanel({
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setExtractingFileId(null);
+    }
+  }
+
+  async function handleVisionSummary(extractionId: string, pageNumber = 1) {
+    setSummarizingVision(true);
+    setError(null);
+    try {
+      const summary = await summarizeDrawingVision(extractionId, { page_number: pageNumber });
+      setLatestVisionSummary(summary);
+      setActiveExtraction((prev) =>
+        prev && prev.id === extractionId
+          ? { ...prev, vision_summaries: [...(prev.vision_summaries || []), summary] }
+          : prev
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSummarizingVision(false);
     }
   }
 
@@ -331,15 +373,76 @@ export function ProjectFilesPanel({
       </div>
 
       {capabilities && (
-        <div
-          className={`status-box compact-status ${
-            capabilities.ocr.installed ? "status-ok" : "notice-box"
-          }`}
-          style={{ marginTop: 0 }}
-        >
-          <strong>{copy.ocrLabel}:</strong>{" "}
-          <span dir="ltr">{capabilities.ocr.status}</span> —{" "}
-          <span>{capabilities.ocr.message}</span>
+        <div style={{ display: "grid", gap: "0.5rem", marginBottom: "0.75rem" }}>
+          <div
+            className={`status-box compact-status ${
+              capabilities.ocr.installed ? "status-ok" : "notice-box"
+            }`}
+            style={{ marginTop: 0 }}
+          >
+            <strong>{copy.ocrLabel}:</strong>{" "}
+            <span dir="ltr">{capabilities.ocr.status}</span> —{" "}
+            <span>{capabilities.ocr.message}</span>
+          </div>
+
+          {capabilities.oda && (
+            <div
+              className={`status-box compact-status ${
+                capabilities.oda.installed ? "status-ok" : "notice-box"
+              }`}
+              style={{ marginTop: 0 }}
+            >
+              <strong>{copy.odaLabel}:</strong>{" "}
+              <span dir="ltr">{capabilities.oda.status}</span> —{" "}
+              <span>{capabilities.oda.message}</span>
+            </div>
+          )}
+
+          {capabilities.format_support_matrix && capabilities.format_support_matrix.length > 0 && (
+            <details>
+              <summary style={{ cursor: "pointer", fontWeight: 600 }}>
+                {copy.matrixToggleLabel}
+              </summary>
+              <div className="table-wrap" style={{ marginTop: "0.5rem" }}>
+                <table className="files-table">
+                  <thead>
+                    <tr>
+                      <th>Format</th>
+                      <th>Category</th>
+                      <th>Support</th>
+                      <th>Tool / Library</th>
+                      <th>Notes</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {capabilities.format_support_matrix.map((row) => (
+                      <tr key={row.extension}>
+                        <td dir="ltr">
+                          <code>{row.extension}</code>
+                        </td>
+                        <td dir="auto">{row.category}</td>
+                        <td dir="ltr">
+                          <span
+                            className={`badge ${
+                              row.support_level === "native"
+                                ? "badge-connected"
+                                : row.support_level === "converted_via_oda"
+                                  ? ""
+                                  : "badge-warn"
+                            }`}
+                          >
+                            {row.support_level}
+                          </span>
+                        </td>
+                        <td dir="ltr">{row.provider_or_tool}</td>
+                        <td dir="auto">{row.notes}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </details>
+          )}
         </div>
       )}
 
@@ -518,6 +621,14 @@ export function ProjectFilesPanel({
                 {activeExtraction.status}
               </span>
               <span className="badge">OCR: {activeExtraction.ocr_status}</span>
+              {activeExtraction.converter_status && (
+                <span className="badge">ODA: {activeExtraction.converter_status}</span>
+              )}
+              {activeExtraction.cad_units && (
+                <span className="badge" dir="ltr">
+                  Units: {activeExtraction.cad_units}
+                </span>
+              )}
               <span className="badge">{activeExtraction.classification}</span>
             </div>
           </div>
@@ -525,6 +636,12 @@ export function ProjectFilesPanel({
           {activeExtraction.original_unchanged && (
             <div className="status-box status-ok" style={{ marginTop: 0, marginBottom: "0.75rem" }}>
               {copy.originalVerified} (<code>{shortHash(activeExtraction.sha256_after)}</code>)
+              {activeExtraction.converted_artifact_relative_path && (
+                <span>
+                  {" "}
+                  • Converted DXF: <code dir="ltr">{activeExtraction.converted_artifact_relative_path}</code>
+                </span>
+              )}
             </div>
           )}
 
@@ -568,6 +685,32 @@ export function ProjectFilesPanel({
                 {activeExtraction.counts.text_items} / {activeExtraction.counts.ocr_items}
               </dd>
             </div>
+            {(activeExtraction.counts.layers || 0) > 0 && (
+              <div>
+                <dt>CAD Layers / Blocks</dt>
+                <dd dir="ltr">
+                  {activeExtraction.counts.layers} / {activeExtraction.counts.blocks ?? 0}
+                </dd>
+              </div>
+            )}
+            {(activeExtraction.counts.entities || 0) > 0 && (
+              <div>
+                <dt>Entities / Areas</dt>
+                <dd dir="ltr">
+                  {activeExtraction.counts.entities} / {activeExtraction.counts.closed_areas ?? 0}
+                </dd>
+              </div>
+            )}
+            {(activeExtraction.counts.ifc_spaces || 0) > 0 && (
+              <div>
+                <dt>IFC Spaces / Walls / Doors / Win</dt>
+                <dd dir="ltr">
+                  {activeExtraction.counts.ifc_spaces} / {activeExtraction.counts.ifc_walls ?? 0} /{" "}
+                  {activeExtraction.counts.ifc_doors ?? 0} /{" "}
+                  {activeExtraction.counts.ifc_windows ?? 0}
+                </dd>
+              </div>
+            )}
           </dl>
 
           {activeExtraction.rendered_page_images.length > 0 && (
@@ -585,7 +728,250 @@ export function ProjectFilesPanel({
                     PNG Page {idx + 1}
                   </a>
                 ))}
+                <button
+                  type="button"
+                  className="btn btn-compact"
+                  disabled={summarizingVision}
+                  onClick={() => void handleVisionSummary(activeExtraction.id, 1)}
+                >
+                  {summarizingVision ? copy.visionLoadingBtn : copy.visionBtn}
+                </button>
               </span>
+            </div>
+          )}
+
+          {((activeExtraction.vision_summaries && activeExtraction.vision_summaries.length > 0) ||
+            latestVisionSummary) && (
+            <div className="status-box notice-box" style={{ marginBottom: "0.85rem" }}>
+              {(() => {
+                const list = activeExtraction.vision_summaries || [];
+                const activeVision =
+                  list[list.length - 1] || latestVisionSummary;
+                if (!activeVision) {
+                  return null;
+                }
+                return (
+                  <div>
+                    <div className="badge-group" style={{ marginBottom: "0.35rem" }}>
+                      <span className="badge badge-warn">
+                        AI INTERPRETATION ONLY — NOT MEASUREMENT
+                      </span>
+                      <span className="badge" dir="ltr">
+                        {activeVision.model_name} (page {activeVision.page_number})
+                      </span>
+                    </div>
+                    <p style={{ margin: "0.25rem 0", fontWeight: 600 }}>
+                      {activeVision.disclaimer}
+                    </p>
+                    <p dir="auto" style={{ margin: "0.25rem 0" }}>
+                      <strong>Title:</strong> {activeVision.drawing_title || "—"} |{" "}
+                      <strong>Discipline Guess:</strong> {activeVision.discipline_guess}
+                    </p>
+                    {activeVision.visible_labels_and_notes.length > 0 && (
+                      <p dir="auto" style={{ margin: "0.25rem 0" }}>
+                        <strong>Visible Labels:</strong>{" "}
+                        {activeVision.visible_labels_and_notes.join(" • ")}
+                      </p>
+                    )}
+                    {activeVision.uncertainty_notes.length > 0 && (
+                      <p dir="auto" style={{ margin: "0.25rem 0" }}>
+                        <strong>Uncertainties:</strong>{" "}
+                        {activeVision.uncertainty_notes.join(" • ")}
+                      </p>
+                    )}
+                  </div>
+                );
+              })()}
+            </div>
+          )}
+
+          {activeExtraction.drawing_inventory && (
+            <div style={{ marginBottom: "0.9rem" }}>
+              <h5 className="folders-title" style={{ marginBottom: "0.5rem" }}>
+                {copy.inventoryHeading}
+              </h5>
+              {(() => {
+                const inv = activeExtraction.drawing_inventory as Record<string, unknown>;
+                const kind = String(inv.kind || "");
+                if (kind === "cad_dxf") {
+                  const layers = (inv.layers as Array<Record<string, unknown>>) || [];
+                  const blocks = (inv.blocks as Array<Record<string, unknown>>) || [];
+                  const areas = (inv.closed_areas as Array<Record<string, unknown>>) || [];
+                  return (
+                    <div style={{ display: "grid", gap: "0.65rem" }}>
+                      {layers.length > 0 && (
+                        <div className="table-wrap">
+                          <table className="files-table">
+                            <thead>
+                              <tr>
+                                <th>Layer Name</th>
+                                <th>Color</th>
+                                <th>Linetype</th>
+                                <th>ModelSpace</th>
+                                <th>PaperSpace</th>
+                                <th>Total Entities</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {layers.map((l, i) => (
+                                <tr key={`${String(l.name)}-${i}`}>
+                                  <td dir="auto">
+                                    <code>{String(l.name)}</code>
+                                  </td>
+                                  <td dir="ltr">{String(l.color ?? "")}</td>
+                                  <td dir="ltr">{String(l.linetype ?? "")}</td>
+                                  <td dir="ltr">{String(l.modelspace_entities ?? 0)}</td>
+                                  <td dir="ltr">{String(l.paperspace_entities ?? 0)}</td>
+                                  <td dir="ltr">{String(l.total_entities ?? 0)}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                      {areas.length > 0 && (
+                        <div className="table-wrap">
+                          <table className="files-table">
+                            <thead>
+                              <tr>
+                                <th>Handle</th>
+                                <th>Layer</th>
+                                <th>Geometry</th>
+                                <th>Native Area</th>
+                                <th>Area (m2)</th>
+                                <th>Perimeter / Length</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {areas.map((a, i) => (
+                                <tr key={`${String(a.handle)}-${i}`}>
+                                  <td dir="ltr">
+                                    <code>{String(a.handle)}</code>
+                                  </td>
+                                  <td dir="auto">{String(a.layer)}</td>
+                                  <td dir="ltr">{String(a.type)}</td>
+                                  <td dir="ltr">
+                                    {String(a.area_native ?? "—")} {String(a.area_native_unit ?? "")}
+                                  </td>
+                                  <td dir="ltr">
+                                    {a.area_m2 !== undefined && a.area_m2 !== null
+                                      ? String(a.area_m2)
+                                      : "—"}
+                                  </td>
+                                  <td dir="ltr">{String(a.perimeter_native ?? "—")}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                      {blocks.length > 0 && (
+                        <div className="table-wrap">
+                          <table className="files-table">
+                            <thead>
+                              <tr>
+                                <th>Block Name</th>
+                                <th>Inserts</th>
+                                <th>Entities in Def</th>
+                                <th>XREF?</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {blocks.map((b, i) => (
+                                <tr key={`${String(b.name)}-${i}`}>
+                                  <td dir="auto">
+                                    <code>{String(b.name)}</code>
+                                  </td>
+                                  <td dir="ltr">{String(b.insert_count ?? 0)}</td>
+                                  <td dir="ltr">{String(b.definition_entities ?? 0)}</td>
+                                  <td dir="ltr">{b.is_xref ? "Yes (external)" : "No"}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                  );
+                }
+                if (kind === "bim_ifc") {
+                  const spaces = (inv.spaces as Array<Record<string, unknown>>) || [];
+                  const elements = (inv.elements as Array<Record<string, unknown>>) || [];
+                  return (
+                    <div style={{ display: "grid", gap: "0.65rem" }}>
+                      {spaces.length > 0 && (
+                        <div className="table-wrap">
+                          <table className="files-table">
+                            <thead>
+                              <tr>
+                                <th>IfcSpace Name</th>
+                                <th>Storey</th>
+                                <th>Explicit Area</th>
+                                <th>Source Quantity</th>
+                                <th>GlobalId</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {spaces.map((s, i) => (
+                                <tr key={`${String(s.global_id)}-${i}`}>
+                                  <td dir="auto">
+                                    <strong>{String(s.name || s.global_id)}</strong>
+                                  </td>
+                                  <td dir="auto">{String(s.storey || "—")}</td>
+                                  <td dir="ltr">
+                                    {s.area !== null && s.area !== undefined
+                                      ? `${String(s.area)} ${String(s.area_unit || "")}`
+                                      : "not_provided_in_ifc"}
+                                  </td>
+                                  <td dir="ltr">
+                                    <code>{String(s.area_source || "—")}</code>
+                                  </td>
+                                  <td dir="ltr">
+                                    <code>{String(s.global_id)}</code>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                      {elements.length > 0 && (
+                        <div className="table-wrap">
+                          <table className="files-table">
+                            <thead>
+                              <tr>
+                                <th>IFC Type</th>
+                                <th>Name</th>
+                                <th>Tag</th>
+                                <th>Storey</th>
+                                <th>Explicit Area</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {elements.slice(0, 50).map((el, i) => (
+                                <tr key={`${String(el.global_id)}-${i}`}>
+                                  <td dir="ltr">
+                                    <code>{String(el.ifc_type)}</code>
+                                  </td>
+                                  <td dir="auto">{String(el.name || "—")}</td>
+                                  <td dir="ltr">{String(el.tag || "—")}</td>
+                                  <td dir="auto">{String(el.storey || "—")}</td>
+                                  <td dir="ltr">
+                                    {el.area !== null && el.area !== undefined
+                                      ? String(el.area)
+                                      : "—"}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                  );
+                }
+                return null;
+              })()}
             </div>
           )}
 

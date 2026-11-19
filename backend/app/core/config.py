@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     max_upload_size_bytes: int = 50 * 1024 * 1024
     max_files_per_upload: int = 25
     tesseract_cmd: str = ""
+    oda_file_converter_path: str = ""
 
     model_config = SettingsConfigDict(
         env_file=str(REPO_ROOT / ".env"),
