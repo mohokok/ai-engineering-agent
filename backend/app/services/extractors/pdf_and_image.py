@@ -113,12 +113,18 @@ def extract_pdf(
                         )
                         payload.counts.tables += 1
 
-                # OCR fallback when selectable text is absent/sparse (likely scanned) or requested
+                # OCR fallback when selectable text is absent/sparse (likely scanned) or requested.
+                # Re-rasterize at 300 DPI for scanned OCR so fine Arabic ligatures stay sharp.
                 compact_chars = len("".join(page_text.split()))
                 if compact_chars < _MIN_NATIVE_PDF_CHARS_BEFORE_OCR or force_ocr:
                     saw_scanned_page = True
+                    ocr_input_bytes = (
+                        fitz_page.get_pixmap(dpi=300).tobytes("png")
+                        if ocr_runner is None and ocr_capability.installed
+                        else png_bytes
+                    )
                     ocr_text, ocr_warning = run_ocr_on_image_bytes(
-                        png_bytes,
+                        ocr_input_bytes,
                         configured_cmd=configured_tesseract_cmd,
                         ocr_runner=ocr_runner,
                     )

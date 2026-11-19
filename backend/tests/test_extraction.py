@@ -1,6 +1,7 @@
 """Tests for Step 06 deterministic extraction across PDF, DOCX, XLSX, CSV, PPTX, images, and OCR."""
 
 from io import BytesIO
+import os
 from pathlib import Path
 import stat
 from types import SimpleNamespace
@@ -20,7 +21,11 @@ from app.core.config import Settings
 from app.db.models import AuditLog, FileExtraction
 from app.main import create_app
 from app.services.extraction import extract_project_file
-from app.services.extractors.ocr import TESSERACT_NOT_INSTALLED_STATUS, detect_tesseract
+from app.services.extractors.ocr import (
+    TESSERACT_NOT_INSTALLED_STATUS,
+    _resolve_tesseract_executable,
+    detect_tesseract,
+)
 
 
 def _test_settings(tmp_path: Path, *, tesseract_cmd: str = "") -> Settings:
@@ -466,3 +471,91 @@ def test_extraction_rejects_cad_deferred_formats_and_logs_corrupt_file_failures(
 
         assert client.get("/api/files/nonexistent-file/extractions").status_code == 404
         assert client.get("/api/extractions/nonexistent-ext").status_code == 404
+
+
+def test_tesseract_resolution_priority_and_live_ara_eng_ocr(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify configured -> PATH -> default folder priority and run real Tesseract 5.x ara+eng OCR."""
+    custom_exe = tmp_path / "custom_tesseract.exe"
+    custom_exe.write_bytes(b"stub")
+    default_exe = tmp_path / "default_tesseract.exe"
+    default_exe.write_bytes(b"stub")
+
+    with monkeypatch.context() as m:
+        m.setattr("app.services.extractors.ocr._DEFAULT_WINDOWS_TESSERACT_PATHS", (default_exe,))
+        m.setattr("app.services.extractors.ocr.shutil.which", lambda _cmd: "path_tesseract.exe")
+        # 1. Configured path takes highest precedence over PATH and default folder
+        assert _resolve_tesseract_executable(str(custom_exe)) == str(custom_exe)
+        # 2. Blank setting falls back to PATH before default folder
+        assert _resolve_tesseract_executable("") == "path_tesseract.exe"
+        # 3. Absent from PATH falls back to default install folder
+        m.setattr("app.services.extractors.ocr.shutil.which", lambda _cmd: None)
+        assert _resolve_tesseract_executable("") == str(default_exe)
+
+    # Verify live installed Tesseract 5.5.3 (not on PATH, found in default Program Files folder)
+    live_cap = detect_tesseract("")
+    assert live_cap.installed is True
+    assert live_cap.status == "installed"
+    assert live_cap.ara_installed is True
+    assert live_cap.eng_installed is True
+    assert "ara" in live_cap.languages and "eng" in live_cap.languages
+
+    # Build a sanitized Arabic + English raster image (250 DPI) and a scanned-only PDF wrapping it
+    fonts_dir = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts"
+    archive = pymupdf.Archive(str(fonts_dir))
+    render_doc = pymupdf.open()
+    render_page = render_doc.new_page(width=700, height=280)
+    html = """
+    <style>
+    @font-face { font-family: WinTahoma; src: url("tahoma.ttf"); }
+    body { font-family: WinTahoma; font-size: 26px; padding: 20px; }
+    </style>
+    <body>
+      <div dir="ltr">Beam Span = 6.00 m | Load = 18.50 kN/m</div>
+      <div dir="rtl" lang="ar" style="margin-top: 20px;">مشروع مستشفى طرابلس التعليمي</div>
+    </body>
+    """
+    render_page.insert_htmlbox(pymupdf.Rect(10, 10, 690, 270), html, archive=archive)
+    png_bytes = render_page.get_pixmap(dpi=250).tobytes("png")
+    render_doc.close()
+
+    scanned_doc = pymupdf.open()
+    scanned_page = scanned_doc.new_page(width=700, height=280)
+    scanned_page.insert_image(pymupdf.Rect(0, 0, 700, 280), stream=png_bytes)
+    scanned_pdf_bytes = scanned_doc.tobytes()
+    scanned_doc.close()
+
+    app = create_app(_test_settings(tmp_path))
+    with TestClient(app) as client:
+        caps = client.get("/api/extraction/capabilities").json()
+        assert caps["ocr"]["status"] == "installed"
+        assert caps["ocr"]["ara_installed"] is True
+        assert caps["ocr"]["eng_installed"] is True
+
+        project_id, _ = _create_project(client)
+        f_png = _upload_file(client, project_id, "sample_bilingual.png", png_bytes, "image/png")
+        f_pdf = _upload_file(client, project_id, "sample_bilingual_scan.pdf", scanned_pdf_bytes, "application/pdf")
+
+        res_png = client.post(f"/api/files/{f_png['id']}/extract")
+        assert res_png.status_code == 201
+        d_png = res_png.json()
+        assert d_png["status"] == "extracted"
+        assert d_png["ocr_status"] == "ocr_applied"
+        assert d_png["original_unchanged"] is True
+        assert d_png["counts"]["ocr_items"] == 1
+        png_ocr = next(i["text"] for i in d_png["items"] if i["item_type"] == "ocr_text")
+        assert "6.00" in png_ocr and "18.50" in png_ocr
+        assert "مستشفى" in png_ocr and "طرابلس" in png_ocr
+
+        res_pdf = client.post(f"/api/files/{f_pdf['id']}/extract")
+        assert res_pdf.status_code == 201
+        d_pdf = res_pdf.json()
+        assert d_pdf["status"] == "extracted"
+        assert d_pdf["ocr_status"] == "ocr_applied"
+        assert d_pdf["original_unchanged"] is True
+        assert d_pdf["counts"]["ocr_items"] == 1
+        pdf_ocr = next(i["text"] for i in d_pdf["items"] if i["item_type"] == "ocr_text")
+        assert "6.00" in pdf_ocr and "18.50" in pdf_ocr
+        assert "مستشفى" in pdf_ocr and "طرابلس" in pdf_ocr
