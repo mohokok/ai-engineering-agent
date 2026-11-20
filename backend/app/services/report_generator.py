@@ -1,6 +1,6 @@
 """Deterministic Arabic RTL / English LTR DOCX and PDF report generator for Step 09."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import html
 from pathlib import Path
 from typing import Any, Iterable
@@ -15,6 +15,8 @@ import pymupdf
 
 from app.schemas.reports import (
     CategorizedStatement,
+    DocumentRegisterEntry,
+    OcrExtractedTextItem,
     ReportLanguage,
     ReviewFinding,
     RevisionBlockOut,
@@ -45,12 +47,19 @@ class ReviewReportRenderData:
     recommendations: list[CategorizedStatement]
     gaps_or_unextracted: list[str]
     source_registry: list[SourceLocationRef]
+    is_inventory_only: bool = True
+    document_register: list[DocumentRegisterEntry] = field(default_factory=list)
+    verified_facts_total: int = 0
+    verified_facts_shown: int = 0
+    appendix_verified_facts: list[CategorizedStatement] = field(default_factory=list)
+    ocr_text_items: list[OcrExtractedTextItem] = field(default_factory=list)
 
 
 _LABELS: dict[ReportLanguage, dict[str, str]] = {
     "ar": {
         "classification_prefix": "التصنيف",
         "disclaimer": "ملاحظة: هذا التقرير استشاري أولي لا يُعد صالحاً للتنفيذ دون مراجعة واعتماد مهندس مرخص.",
+        "inventory_notice": "إشعار النطاق: هذا التقرير في الوضع الحتمي عبارة عن جرد ملفات وفحص تقني آلي فقط (0 توكن) — وليس مراجعة هندسية فنية.",
         "project": "المشروع",
         "client": "الجهة المالكة",
         "location": "الموقع",
@@ -62,27 +71,37 @@ _LABELS: dict[ReportLanguage, dict[str, str]] = {
         "sources_label": "المصادر المراجَعة",
         "change_label": "ملاحظة التعديل",
         "summary_heading": "الملخص التنفيذي",
-        "findings_heading": "1. سجل ملاحظات المراجعة الهندسية (مربوطة بالمصادر)",
+        "register_heading": "0. سجل المستندات والملفات (Document Register)",
+        "reg_file": "الملف",
+        "reg_type": "النوع",
+        "reg_scope": "الصفحات / العناصر",
+        "reg_status": "حالة الاستخراج والوحدات",
+        "reg_conf": "مستوى الثقة",
+        "findings_heading": "1. الملاحظات والعيوب المرصودة فعلياً (مربوطة بالمصادر)",
         "col_id": "المعرف",
         "col_disc": "التخصص",
         "col_sev": "الخطورة",
         "col_loc": "المرجع / الموقع",
         "col_ev": "الأدلة ورابط المصدر",
-        "col_rec": "التوصية",
+        "col_rec": "الإجراء المطلوب",
         "col_stat": "الحالة",
         "source_link_prefix": "المصدر",
-        "facts_heading": "2.1 الحقائق المُتحقَّق منها بمصدرها",
-        "calc_heading": "2.2 القيم المحسوبة برمجياً فقط",
-        "assump_heading": "2.3 الافتراضات الأولية (تحتاج تأكيد المالك)",
-        "recs_heading": "2.4 التوصيات الهندسية",
+        "facts_heading": "2.1 الحقائق الحتمية والبيانات الأصلية (Verified Facts)",
+        "calc_heading": "2.2 القيم المحسوبة برمجياً (مجاميع هندسية وليست صافي مساحة مبنى)",
+        "ocr_heading": "2.3 نصوص مستخرجة بالتعرف الضوئي (OCR — غير مُتحقَّق منها)",
+        "assump_heading": "2.4 الافتراضات الأولية (تحتاج تأكيد المالك)",
+        "recs_heading": "2.5 التوصيات المرتبطة بالعيوب المرصودة",
+        "appendix_heading": "الملحق أ: القائمة الكاملة للحقائق الحتمية (كل البنود)",
         "sources_heading": "3. سجل المصادر المرجعية (الاستخراج وسجل البحث)",
         "gaps_heading": "4. فجوات البيانات والمستندات غير المستخرجة / غير المراجَعة",
         "empty_section": "لا توجد بنود مسجلة في هذا القسم ضمن النطاق الحالي.",
+        "empty_findings": "لا توجد عيوب أو تعارضات مرصودة ضمن نطاق الفحص الحتمي.",
         "method_prefix": "طريقة الحساب",
     },
     "en": {
         "classification_prefix": "Classification",
         "disclaimer": "Notice: Advisory engineering output — not construction-ready without a licensed engineer's sign-off.",
+        "inventory_notice": "SCOPE NOTICE: Deterministic mode produces a file inventory & automated technical check (0 tokens) — it is NOT an engineering review.",
         "project": "Project",
         "client": "Client / Owner",
         "location": "Location",
@@ -94,25 +113,48 @@ _LABELS: dict[ReportLanguage, dict[str, str]] = {
         "sources_label": "Sources Included",
         "change_label": "Revision Note",
         "summary_heading": "Executive Summary",
-        "findings_heading": "1. Engineering Review Findings (Source-Linked)",
+        "register_heading": "0. Document Register",
+        "reg_file": "File",
+        "reg_type": "Type",
+        "reg_scope": "Pages / Entities",
+        "reg_status": "Extraction Status & Units",
+        "reg_conf": "Confidence / Verification",
+        "findings_heading": "1. Concrete Observed Issues & Discrepancies (Source-Linked)",
         "col_id": "ID",
         "col_disc": "Discipline",
         "col_sev": "Severity",
         "col_loc": "Location / Drawing Ref",
-        "col_ev": "Evidence & Source Link",
-        "col_rec": "Recommendation",
+        "col_ev": "Observed Evidence & Source Link",
+        "col_rec": "Required Verification Action",
         "col_stat": "Status",
         "source_link_prefix": "Source",
-        "facts_heading": "2.1 Verified Facts (With Source Links)",
+        "facts_heading": "2.1 Verified Facts (Deterministic Metadata & Native Extractions Only)",
         "calc_heading": "2.2 Deterministic Calculated Quantities & Checks",
-        "assump_heading": "2.3 Preliminary Assumptions (Pending Owner Confirmation)",
-        "recs_heading": "2.4 Engineering Recommendations",
+        "ocr_heading": "2.3 Extracted Text (OCR — Per-Page Confidence, Not Verified)",
+        "assump_heading": "2.4 Preliminary Assumptions (Pending Owner Confirmation)",
+        "recs_heading": "2.5 Action Recommendations (Linked to Observed Findings)",
+        "appendix_heading": "Appendix A: Complete Verified Facts Inventory",
         "sources_heading": "3. Source Location & Provenance Register",
         "gaps_heading": "4. Data Gaps & Unextracted / Unreviewed Sources",
         "empty_section": "No items recorded in this category for the current review scope.",
+        "empty_findings": "No concrete unit, reconciliation, OCR, or missing-data issues observed.",
         "method_prefix": "Method / Formula",
     },
 }
+
+
+def _facts_scope_banner(data: ReviewReportRenderData) -> str | None:
+    total = data.verified_facts_total if data.verified_facts_total else len(data.verified_facts)
+    shown = data.verified_facts_shown if data.verified_facts_total else len(data.verified_facts)
+    if total == 0:
+        return None
+    if data.language == "ar":
+        if total > shown:
+            return f"عرض {shown} من أصل {total} حقيقة — القائمة الكاملة ({total} بنداً) متاحة في الملحق أ وملف JSON المرفق في 08_Reports."
+        return f"عرض {shown} من أصل {total} حقيقة (كامل البنود)."
+    if total > shown:
+        return f"Showing {shown} of {total} verified facts — complete list of {total} items is included in Appendix A and the 08_Reports JSON log."
+    return f"Showing {shown} of {total} verified facts (complete)."
 
 
 def _format_source_links_text(links: Iterable[SourceLocationRef]) -> str:
@@ -245,17 +287,58 @@ def generate_review_report_docx(out_path: Path, data: ReviewReportRenderData) ->
         for p in c1.paragraphs:
             _style_paragraph(p, is_ar=is_ar, font_size=9)
 
-    # 3. Executive Summary
+    # 3. Executive Summary & Deterministic Inventory Notice
+    if data.is_inventory_only:
+        p_inv = doc.add_paragraph(lbl["inventory_notice"])
+        _style_paragraph(p_inv, is_ar=is_ar, bold=True, font_size=9.5, color=RGBColor(0x92, 0x40, 0x0E))
     p_sum_h = doc.add_heading(lbl["summary_heading"], level=2)
     _style_paragraph(p_sum_h, is_ar=is_ar, bold=True, font_size=12, color=RGBColor(0x1E, 0x3A, 0x5F))
     p_sum = doc.add_paragraph(data.summary)
     _style_paragraph(p_sum, is_ar=is_ar, font_size=10)
 
+    # 3b. Plain Document Register Table
+    p_reg_h = doc.add_heading(lbl["register_heading"], level=2)
+    _style_paragraph(p_reg_h, is_ar=is_ar, bold=True, font_size=12, color=RGBColor(0x1E, 0x3A, 0x5F))
+    if not data.document_register:
+        p_empty = doc.add_paragraph(lbl["empty_section"])
+        _style_paragraph(p_empty, is_ar=is_ar, font_size=9)
+    else:
+        reg_headers = [
+            lbl["reg_file"],
+            lbl["reg_type"],
+            lbl["reg_scope"],
+            lbl["reg_status"],
+            lbl["reg_conf"],
+        ]
+        reg_tbl = doc.add_table(rows=1 + len(data.document_register), cols=len(reg_headers))
+        _configure_rtl_table(reg_tbl, is_ar=is_ar)
+        for idx, htxt in enumerate(reg_headers):
+            cell = reg_tbl.rows[0].cells[idx]
+            cell.text = htxt
+            _shade_cell(cell, "1E3A5F")
+            for p in cell.paragraphs:
+                _style_paragraph(p, is_ar=is_ar, bold=True, font_size=8, color=RGBColor(0xFF, 0xFF, 0xFF))
+        for r_idx, row_reg in enumerate(data.document_register, start=1):
+            reg_vals = [
+                row_reg.file_name,
+                row_reg.file_type,
+                row_reg.pages_or_entities,
+                row_reg.extraction_status,
+                row_reg.confidence,
+            ]
+            for c_idx, val in enumerate(reg_vals):
+                cell = reg_tbl.rows[r_idx].cells[c_idx]
+                cell.text = val
+                if r_idx % 2 == 0:
+                    _shade_cell(cell, "F8FAFC")
+                for p in cell.paragraphs:
+                    _style_paragraph(p, is_ar=is_ar, font_size=8)
+
     # 4. Findings Table (ID, Discipline, Severity, Location/Drawing Ref, Evidence & Source Link, Recommendation, Status)
     p_f_h = doc.add_heading(lbl["findings_heading"], level=2)
     _style_paragraph(p_f_h, is_ar=is_ar, bold=True, font_size=12, color=RGBColor(0x1E, 0x3A, 0x5F))
     if not data.findings:
-        p_empty = doc.add_paragraph(lbl["empty_section"])
+        p_empty = doc.add_paragraph(lbl["empty_findings"])
         _style_paragraph(p_empty, is_ar=is_ar, font_size=9)
     else:
         headers = [
@@ -294,14 +377,57 @@ def generate_review_report_docx(out_path: Path, data: ReviewReportRenderData) ->
                 for p in cell.paragraphs:
                     _style_paragraph(p, is_ar=is_ar, font_size=8)
 
-    # 5. Strictly Separated Categories (Verified Facts / Calculated / Assumptions / Recommendations)
-    categories: list[tuple[str, list[CategorizedStatement]]] = [
-        (lbl["facts_heading"], data.verified_facts),
-        (lbl["calc_heading"], data.calculated_items),
+    # 5. Strictly Separated Categories (Verified Facts N of M / Calculated / Unverified OCR Text / Assumptions / Recommendations)
+    facts_banner = _facts_scope_banner(data)
+    ch_facts = doc.add_heading(lbl["facts_heading"], level=2)
+    _style_paragraph(ch_facts, is_ar=is_ar, bold=True, font_size=11, color=RGBColor(0x1E, 0x3A, 0x5F))
+    if facts_banner:
+        p_ban = doc.add_paragraph(facts_banner)
+        _style_paragraph(p_ban, is_ar=is_ar, bold=True, font_size=8.5, color=RGBColor(0x03, 0x69, 0xA1))
+    if not data.verified_facts:
+        p_empty = doc.add_paragraph(lbl["empty_section"])
+        _style_paragraph(p_empty, is_ar=is_ar, font_size=9)
+    else:
+        for item in data.verified_facts:
+            line = f"• {item.text}"
+            if item.source_links:
+                line += f" — [{lbl['source_link_prefix']}: {_format_source_links_text(item.source_links)}]"
+            p_item = doc.add_paragraph(line)
+            _style_paragraph(p_item, is_ar=is_ar, font_size=9)
+
+    ch_calc = doc.add_heading(lbl["calc_heading"], level=2)
+    _style_paragraph(ch_calc, is_ar=is_ar, bold=True, font_size=11, color=RGBColor(0x1E, 0x3A, 0x5F))
+    if not data.calculated_items:
+        p_empty = doc.add_paragraph(lbl["empty_section"])
+        _style_paragraph(p_empty, is_ar=is_ar, font_size=9)
+    else:
+        for item in data.calculated_items:
+            line = f"• {item.text}"
+            if item.formula_or_method:
+                line += f" — [{lbl['method_prefix']}: {item.formula_or_method}]"
+            if item.source_links:
+                line += f" — [{lbl['source_link_prefix']}: {_format_source_links_text(item.source_links)}]"
+            p_item = doc.add_paragraph(line)
+            _style_paragraph(p_item, is_ar=is_ar, font_size=9)
+
+    ch_ocr = doc.add_heading(lbl["ocr_heading"], level=2)
+    _style_paragraph(ch_ocr, is_ar=is_ar, bold=True, font_size=11, color=RGBColor(0x9A, 0x34, 0x12))
+    if not data.ocr_text_items:
+        p_empty = doc.add_paragraph(lbl["empty_section"])
+        _style_paragraph(p_empty, is_ar=is_ar, font_size=9)
+    else:
+        for ocr_item in data.ocr_text_items:
+            src_str = _format_source_links_text(ocr_item.source_links)
+            p_ocr = doc.add_paragraph(
+                f"• [{ocr_item.source_file} — {ocr_item.page_or_sheet}] {ocr_item.status_label}: "
+                f"{ocr_item.text} — [{lbl['source_link_prefix']}: {src_str}]"
+            )
+            _style_paragraph(p_ocr, is_ar=is_ar, font_size=9)
+
+    for heading_text, items in (
         (lbl["assump_heading"], data.assumptions),
         (lbl["recs_heading"], data.recommendations),
-    ]
-    for heading_text, items in categories:
+    ):
         ch = doc.add_heading(heading_text, level=2)
         _style_paragraph(ch, is_ar=is_ar, bold=True, font_size=11, color=RGBColor(0x1E, 0x3A, 0x5F))
         if not items:
@@ -316,6 +442,15 @@ def generate_review_report_docx(out_path: Path, data: ReviewReportRenderData) ->
                 line += f" — [{lbl['source_link_prefix']}: {_format_source_links_text(item.source_links)}]"
             p_item = doc.add_paragraph(line)
             _style_paragraph(p_item, is_ar=is_ar, font_size=9)
+
+    if data.appendix_verified_facts and len(data.appendix_verified_facts) > len(data.verified_facts):
+        p_app_h = doc.add_heading(lbl["appendix_heading"], level=2)
+        _style_paragraph(p_app_h, is_ar=is_ar, bold=True, font_size=11, color=RGBColor(0x1E, 0x3A, 0x5F))
+        for idx_a, item in enumerate(data.appendix_verified_facts, start=1):
+            src_str = _format_source_links_text(item.source_links) if item.source_links else ""
+            suffix = f" — [{lbl['source_link_prefix']}: {src_str}]" if src_str else ""
+            p_app = doc.add_paragraph(f"{idx_a}. {item.text}{suffix}")
+            _style_paragraph(p_app, is_ar=is_ar, font_size=8.5)
 
     # 6. Source Register & Gaps
     p_src_h = doc.add_heading(lbl["sources_heading"], level=2)
@@ -419,6 +554,29 @@ def generate_review_report_pdf(out_path: Path, data: ReviewReportRenderData) -> 
         )
     )
 
+    if data.document_register:
+        reg_rows_html = "".join(
+            f"<tr>"
+            f"<td>{_esc_rtl_cell(r.file_name, is_ar=is_ar)}</td>"
+            f"<td>{_esc_rtl_cell(r.file_type, is_ar=is_ar)}</td>"
+            f"<td>{_esc_rtl_cell(r.pages_or_entities, is_ar=is_ar)}</td>"
+            f"<td>{_esc_rtl_cell(r.extraction_status, is_ar=is_ar)}</td>"
+            f"<td>{_esc_rtl_cell(r.confidence, is_ar=is_ar)}</td>"
+            f"</tr>"
+            for r in data.document_register
+        )
+        register_html = (
+            f"<table>"
+            f"<colgroup><col style='width:24%'/><col style='width:10%'/><col style='width:20%'/><col style='width:25%'/><col style='width:21%'/></colgroup>"
+            f"<tbody><tr>"
+            f"<th>{_esc(lbl['reg_file'])}</th><th>{_esc(lbl['reg_type'])}</th>"
+            f"<th>{_esc(lbl['reg_scope'])}</th><th>{_esc(lbl['reg_status'])}</th>"
+            f"<th>{_esc(lbl['reg_conf'])}</th>"
+            f"</tr>{reg_rows_html}</tbody></table>"
+        )
+    else:
+        register_html = f"<p class='muted'>{_esc(lbl['empty_section'])}</p>"
+
     if data.findings:
         findings_cards = []
         for f in data.findings:
@@ -441,9 +599,10 @@ def generate_review_report_pdf(out_path: Path, data: ReviewReportRenderData) -> 
             )
         findings_html = "".join(findings_cards)
     else:
-        findings_html = f"<p class='muted'>{_esc(lbl['empty_section'])}</p>"
+        findings_html = f"<p class='muted'>{_esc(lbl['empty_findings'])}</p>"
 
-    def render_category(title_txt: str, items: list[CategorizedStatement]) -> str:
+    def render_category(title_txt: str, items: list[CategorizedStatement], *, banner_note: str | None = None) -> str:
+        banner_p = f"<p class='scope-note'>{_esc(banner_note)}</p>" if banner_note else ""
         if not items:
             body_html = f"<p class='muted'>{_esc(lbl['empty_section'])}</p>"
         else:
@@ -456,16 +615,44 @@ def generate_review_report_pdf(out_path: Path, data: ReviewReportRenderData) -> 
                     extra += f" <span class='src'><strong>{_esc(lbl['source_link_prefix'])}:</strong> {_format_source_links_html(item.source_links, is_ar=is_ar)}</span>"
                 lis.append(f"<li>{_esc(item.text)}{extra}</li>")
             body_html = f"<ul>{''.join(lis)}</ul>"
-        return f"<h3>{_esc(title_txt)}</h3>{body_html}"
+        return f"<h3>{_esc(title_txt)}</h3>{banner_p}{body_html}"
 
+    if data.ocr_text_items:
+        ocr_lis = []
+        for o in data.ocr_text_items:
+            src_o = _format_source_links_html(o.source_links, is_ar=is_ar) if o.source_links else ""
+            src_part = f" <span class='src'><strong>{_esc(lbl['source_link_prefix'])}:</strong> {src_o}</span>" if src_o else ""
+            ocr_lis.append(
+                f"<li><strong>[{_esc_rtl_cell(o.source_file, is_ar=is_ar)} — {_esc_rtl_cell(o.page_or_sheet, is_ar=is_ar)}]</strong> "
+                f"<span class='ocrtag'>{_esc(o.status_label)}</span>: {_esc_rtl_cell(o.text, is_ar=is_ar)}{src_part}</li>"
+            )
+        ocr_html = f"<h3>{_esc(lbl['ocr_heading'])}</h3><ul>{''.join(ocr_lis)}</ul>"
+    else:
+        ocr_html = f"<h3>{_esc(lbl['ocr_heading'])}</h3><p class='muted'>{_esc(lbl['empty_section'])}</p>"
+
+    facts_banner = _facts_scope_banner(data)
     categories_html = "".join(
         [
-            render_category(lbl["facts_heading"], data.verified_facts),
+            render_category(lbl["facts_heading"], data.verified_facts, banner_note=facts_banner),
             render_category(lbl["calc_heading"], data.calculated_items),
+            ocr_html,
             render_category(lbl["assump_heading"], data.assumptions),
             render_category(lbl["recs_heading"], data.recommendations),
         ]
     )
+
+    if data.appendix_verified_facts and len(data.appendix_verified_facts) > len(data.verified_facts):
+        app_lis = []
+        for item in data.appendix_verified_facts:
+            src_a = (
+                f" <span class='src'><strong>{_esc(lbl['source_link_prefix'])}:</strong> {_format_source_links_html(item.source_links, is_ar=is_ar)}</span>"
+                if item.source_links
+                else ""
+            )
+            app_lis.append(f"<li>{_esc(item.text)}{src_a}</li>")
+        appendix_html = f"<h2>{_esc(lbl['appendix_heading'])}</h2><ol>{''.join(app_lis)}</ol>"
+    else:
+        appendix_html = ""
 
     if data.source_registry:
         src_items = "".join(
@@ -508,7 +695,10 @@ th {{ background-color: #1e3a5f; color: #ffffff; font-weight: bold; }}
 .frow {{ margin-bottom: 2.5pt; }}
 .src {{ color: #0369a1; font-size: 7.8pt; }}
 .muted {{ color: #64748b; font-size: 8.5pt; }}
-ul {{ margin: 3pt 0 6pt 0; padding-left: 14pt; padding-right: 14pt; }}
+.inv-notice {{ background-color: #fef3c7; border: 0.8pt solid #f59e0b; color: #78350f; padding: 5pt 7pt; font-weight: bold; font-size: 8.8pt; margin: 6pt 0; }}
+.scope-note {{ color: #0369a1; font-weight: bold; font-size: 8.4pt; margin: 2pt 0 4pt 0; }}
+.ocrtag {{ color: #9a3412; font-weight: bold; font-size: 8pt; }}
+ul, ol {{ margin: 3pt 0 6pt 0; padding-left: 14pt; padding-right: 14pt; }}
 li {{ margin-bottom: 3pt; }}
 </style>
 </head>
@@ -520,6 +710,7 @@ li {{ margin-bottom: 3pt; }}
       {(' | ' + _esc(lbl['location']) + ': ' + _esc(data.location)) if data.location else ''}
     </div>
     <div class="disclaimer">{_esc(lbl['disclaimer'])}</div>
+    {(f"<div class='inv-notice'>{_esc(lbl['inventory_notice'])}</div>") if data.is_inventory_only else ''}
   </div>
 
   <h2>{_esc(lbl['revision_heading'])}</h2>
@@ -528,10 +719,15 @@ li {{ margin-bottom: 3pt; }}
   <h2>{_esc(lbl['summary_heading'])}</h2>
   <p>{_esc(data.summary)}</p>
 
+  <h2>{_esc(lbl['register_heading'])}</h2>
+  {register_html}
+
   <h2>{_esc(lbl['findings_heading'])}</h2>
   {findings_html}
 
   {categories_html}
+
+  {appendix_html}
 
   <h2>{_esc(lbl['sources_heading'])}</h2>
   {sources_html}

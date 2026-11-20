@@ -19,6 +19,8 @@ from app.providers.secrets import SecretStore
 from app.schemas.reports import (
     CategorizedStatement,
     DeliverableOut,
+    DocumentRegisterEntry,
+    OcrExtractedTextItem,
     ReportLanguage,
     ReviewFinding,
     ReviewReportDetailOut,
@@ -194,13 +196,31 @@ def _to_report_detail_out(row: ReviewReport, *, db: Session | None = None) -> Re
         list(row.deliverables),
         key=lambda d: (d.folder_name or "", d.format),
     )
+    raw_vf = [CategorizedStatement.model_validate(s) for s in (payload.get("verified_facts") or [])]
+    raw_all_vf = [
+        CategorizedStatement.model_validate(s)
+        for s in (payload.get("appendix_verified_facts") or payload.get("verified_facts") or [])
+    ]
+    raw_ocr = [
+        OcrExtractedTextItem.model_validate(o) for o in (payload.get("ocr_text_items") or [])
+    ]
+    vf_total = int(payload.get("verified_facts_total", len(raw_all_vf)) or 0)
+    vf_shown = int(payload.get("verified_facts_shown", len(raw_vf)) or 0)
+    is_inv_only = bool(payload.get("is_inventory_only", row.status != "ai_enhanced"))
     return ReviewReportDetailOut(
         **summary_out.model_dump(),
+        is_inventory_only=is_inv_only,
         revision_block=revision_block,
-        findings=[ReviewFinding.model_validate(f) for f in (payload.get("findings") or [])],
-        verified_facts=[
-            CategorizedStatement.model_validate(s) for s in (payload.get("verified_facts") or [])
+        document_register=[
+            DocumentRegisterEntry.model_validate(r) for r in (payload.get("document_register") or [])
         ],
+        findings=[ReviewFinding.model_validate(f) for f in (payload.get("findings") or [])],
+        verified_facts=raw_vf,
+        verified_facts_total=vf_total,
+        verified_facts_shown=vf_shown,
+        appendix_verified_facts=raw_all_vf,
+        ocr_text_items=raw_ocr,
+        ocr_text_items_total=len(raw_ocr),
         calculated_items=[
             CategorizedStatement.model_validate(s) for s in (payload.get("calculated_items") or [])
         ],
@@ -227,15 +247,15 @@ def _default_summary_without_ai(
 ) -> str:
     if language == "ar":
         return (
-            f"تقرير المراجعة الهندسية للمشروع [{project.code}] {project.name} (التصنيف: {classification}). "
-            f"تمت قراءة {bundle.source_files_count} ملف(ات) مستخرجة و{bundle.reviewed_research_count} مصدر بحثي مراجَع، "
-            f"وتسجيل {len(bundle.findings)} ملاحظة مرتبطة بمصادرها وفصل الحقائق المحققة عن الحسابات البرمجية والافتراضات والتوصيات (وضع التوليد الحتمي: 0 توكن)."
+            f"تقرير جرد وفحص استخراج حتمي (ليس مراجعة هندسية فنية) للمشروع [{project.code}] {project.name} (التصنيف: {classification}). "
+            f"تم جرد {bundle.source_files_count} ملف(ات) و{bundle.reviewed_research_count} مصدر بحثي مراجَع بـ 0 توكن، "
+            f"وتسجيل {len(bundle.findings)} ملاحظة فنية فعلية و{bundle.verified_facts_total} حقيقة حتمية ({bundle.verified_facts_shown} معروضة في الملخص و{len(bundle.ocr_text_items)} نص OCR غير مُتحقَّق منه)."
         )
     return (
-        f"Engineering document & drawing review report for [{project.code}] {project.name} "
-        f"(Classification: {classification}). Evaluated {bundle.source_files_count} project file(s) and "
-        f"{bundle.reviewed_research_count} reviewed research source(s), issuing {len(bundle.findings)} source-linked finding(s) "
-        f"with separated verified facts, deterministic calculations, assumptions, and recommendations (0 Gemini tokens)."
+        f"Deterministic extraction inventory & technical check (NOT an engineering design review) for [{project.code}] {project.name} "
+        f"(Classification: {classification}). Inventoried {bundle.source_files_count} file(s) and "
+        f"{bundle.reviewed_research_count} reviewed research source(s) at 0 AI tokens, flagging {len(bundle.findings)} concrete issue(s) "
+        f"and {bundle.verified_facts_total} deterministic fact(s) (showing {bundle.verified_facts_shown} of {bundle.verified_facts_total}; {len(bundle.ocr_text_items)} unverified OCR segment(s))."
     )
 
 
@@ -342,16 +362,29 @@ def _persist_report_version(
     report_id = new_uuid()
     issued_at_iso = datetime.now(timezone.utc).isoformat()
 
+    is_inventory_only = status_label != "ai_enhanced"
     notice = (
-        "مخرج استشاري أولي — لا يُعتمد للتنفيذ دون مراجعة وتوقيع مهندس مرخص."
+        (
+            "تقرير جرد وفحص حتمي فقط — ليس مراجعة هندسية فنية أو اعتماداً للتنفيذ."
+            if is_inventory_only
+            else "مخرج استشاري مدعوم بالذكاء الاصطناعي — لا يُعتمد للتنفيذ دون مراجعة وتوقيع مهندس مرخص."
+        )
         if language == "ar"
-        else "Advisory engineering output — not construction-ready without licensed engineer sign-off."
+        else (
+            "Deterministic file inventory & automated technical check — NOT an engineering design review."
+            if is_inventory_only
+            else "AI-assisted advisory output — not construction-ready without licensed engineer sign-off."
+        )
     )
     revision_block = RevisionBlockOut(
         version=version,
         revision=revision,
         classification=classification,
-        prepared_by="Engineering Agent (Orchestrator + Review Skill)",
+        prepared_by=(
+            "Engineering Agent (Deterministic Inventory & Check — 0 AI tokens)"
+            if is_inventory_only
+            else "Engineering Agent (Orchestrator + Review Skill — AI Enhanced)"
+        ),
         review_notice=notice,
         issued_at_iso=issued_at_iso,
         change_note=change_note,
@@ -360,9 +393,15 @@ def _persist_report_version(
     )
 
     payload_dict: dict[str, Any] = {
+        "is_inventory_only": is_inventory_only,
         "revision_block": revision_block.model_dump(),
+        "document_register": [r.model_dump() for r in bundle.document_register],
         "findings": [f.model_dump() for f in bundle.findings],
         "verified_facts": [s.model_dump() for s in bundle.verified_facts],
+        "verified_facts_total": bundle.verified_facts_total,
+        "verified_facts_shown": bundle.verified_facts_shown,
+        "appendix_verified_facts": [s.model_dump() for s in bundle.all_verified_facts],
+        "ocr_text_items": [o.model_dump() for o in bundle.ocr_text_items],
         "calculated_items": [s.model_dump() for s in bundle.calculated_items],
         "assumptions": [s.model_dump() for s in bundle.assumptions],
         "recommendations": [s.model_dump() for s in bundle.recommendations],
@@ -410,10 +449,16 @@ def _persist_report_version(
         discipline=discipline,
         language=language,
         classification=classification,
+        is_inventory_only=is_inventory_only,
         summary=summary_text,
         revision_block=revision_block,
+        document_register=list(bundle.document_register),
         findings=list(bundle.findings),
         verified_facts=list(bundle.verified_facts),
+        verified_facts_total=bundle.verified_facts_total,
+        verified_facts_shown=bundle.verified_facts_shown,
+        appendix_verified_facts=list(bundle.all_verified_facts),
+        ocr_text_items=list(bundle.ocr_text_items),
         calculated_items=list(bundle.calculated_items),
         assumptions=list(bundle.assumptions),
         recommendations=list(bundle.recommendations),

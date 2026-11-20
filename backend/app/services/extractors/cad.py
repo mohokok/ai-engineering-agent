@@ -60,6 +60,188 @@ _ASCII_ALPHA_RE = re.compile(r"[A-Za-z]")
 _ARABIC_SCRIPT_RE = re.compile(r"[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]")
 _NUMBER_ONLY_RE = re.compile(r"^\s*([+-]?\d+(?:[.,]\d+)?)\s*(?:m|cm|mm|in|ft)?\s*$", re.IGNORECASE)
 
+_NON_AREA_LAYER_KEYWORDS: tuple[str, ...] = (
+    "defpoints",
+    "grid",
+    "axis",
+    "axes",
+    "dim",
+    "dimension",
+    "text",
+    "txt",
+    "anno",
+    "annotation",
+    "note",
+    "title",
+    "tblock",
+    "border",
+    "frame",
+    "viewport",
+    "vport",
+    "furn",
+    "furniture",
+    "equip",
+    "fixture",
+    "sanitary",
+    "elec",
+    "light",
+    "hvac",
+    "duct",
+    "pipe",
+    "plumb",
+    "fire",
+    "hatch",
+    "fill",
+    "pattern",
+    "sym",
+    "symbol",
+    "stair",
+    "railing",
+    "landscape",
+    "tree",
+    "park",
+    "أبعاد",
+    "محاور",
+    "أثاث",
+    "فرش",
+    "مفروشات",
+    "كتابة",
+    "نصوص",
+    "ملاحظات",
+    "إطار",
+    "تهشير",
+    "كهرباء",
+    "إضاءة",
+    "تكييف",
+    "صحية",
+    "صرف",
+    "حريق",
+    "رموز",
+)
+
+_EXPLICIT_AREA_LAYER_KEYWORDS: tuple[str, ...] = (
+    "area",
+    "room",
+    "space",
+    "zone",
+    "gross",
+    "net",
+    "boma",
+    "gfa",
+    "nfa",
+    "boundary",
+    "bnd",
+    "footprint",
+    "slab",
+    "floor",
+    "plan",
+    "plot",
+    "site",
+    "parcel",
+    "wall",
+    "arch",
+    "مساح",
+    "غرف",
+    "فراغ",
+    "حدود",
+    "أرضي",
+    "بلاط",
+    "جدران",
+    "معمار",
+    "موقع",
+)
+
+
+def classify_cad_area_bearing_layer(
+    layer_name: str,
+    *,
+    has_closed_contours: bool = False,
+    has_explicit_area_layers: bool = False,
+) -> tuple[bool, str]:
+    """Classify conservatively whether a CAD layer is area-bearing (never treating furniture/dims/grids as area)."""
+    norm = layer_name.strip().lower()
+    if any(tok in norm for tok in _NON_AREA_LAYER_KEYWORDS):
+        return False, "excluded_non_area_layer"
+    if any(tok in norm for tok in _EXPLICIT_AREA_LAYER_KEYWORDS):
+        return True, "explicit_area_bearing_layer"
+    if norm == "0" and has_closed_contours and not has_explicit_area_layers:
+        return True, "default_layer_with_closed_contours"
+    return False, "unclassified_non_area_layer"
+
+
+def compute_layer_area_groups(
+    closed_areas: list[dict[str, Any]],
+    layer_inventory: list[dict[str, Any]],
+    *,
+    units_doubtful: bool,
+) -> list[dict[str, Any]]:
+    """Group closed contours per (layer, entity_type) with area_bearing flag and honest non-net-area label."""
+    closed_layers = {str(e.get("layer") or "0") for e in closed_areas if isinstance(e, dict)}
+    has_explicit_area_layers = any(
+        any(tok in ln.strip().lower() for tok in _EXPLICIT_AREA_LAYER_KEYWORDS)
+        and not any(tok in ln.strip().lower() for tok in _NON_AREA_LAYER_KEYWORDS)
+        for ln in closed_layers
+    )
+
+    layer_meta: dict[str, tuple[bool, str]] = {}
+    for layer_row in layer_inventory:
+        if not isinstance(layer_row, dict):
+            continue
+        lname = str(layer_row.get("name") or "")
+        if not lname:
+            continue
+        bearing, reason = classify_cad_area_bearing_layer(
+            lname,
+            has_closed_contours=(lname in closed_layers),
+            has_explicit_area_layers=has_explicit_area_layers,
+        )
+        layer_row["area_bearing"] = bearing
+        layer_row["area_bearing_reason"] = reason
+        layer_meta[lname] = (bearing, reason)
+
+    buckets: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for entry in closed_areas:
+        if not isinstance(entry, dict):
+            continue
+        lname = str(entry.get("layer") or "0")
+        etype = str(entry.get("type") or "LWPOLYLINE")
+        buckets.setdefault((lname, etype), []).append(entry)
+
+    groups: list[dict[str, Any]] = []
+    for (lname, etype), entries in sorted(buckets.items()):
+        if lname in layer_meta:
+            bearing, reason = layer_meta[lname]
+        else:
+            bearing, reason = classify_cad_area_bearing_layer(
+                lname,
+                has_closed_contours=True,
+                has_explicit_area_layers=has_explicit_area_layers,
+            )
+        native_sum = round(sum(float(e.get("area_native") or 0.0) for e in entries), 4)
+        m2_values = [
+            float(e["area_m2"])
+            for e in entries
+            if e.get("area_m2") is not None
+        ]
+        m2_sum = (
+            round(sum(m2_values), 4)
+            if (not units_doubtful and len(m2_values) == len(entries) and m2_values)
+            else None
+        )
+        groups.append(
+            {
+                "layer": lname,
+                "entity_type": etype,
+                "area_bearing": bearing,
+                "area_bearing_reason": reason,
+                "count": len(entries),
+                "area_native_sum": native_sum,
+                "area_m2_sum": m2_sum,
+                "label": "geometric sum, not net building area",
+            }
+        )
+    return groups
+
 
 def _to_legacy_8bit_bytes(segment: str) -> bytes | None:
     """Convert Latin-1 / CP1252-decoded legacy ANSI chars back into raw 8-bit bytes if possible."""
@@ -463,7 +645,14 @@ def apply_confirmed_cad_unit(
         d["confirmed_unit"] = confirmed_unit
         new_dimensions.append(d)
 
+    layers_copy = [dict(layer_row) for layer_row in (inv.get("layers") or [])]
+    inv["layers"] = layers_copy
     inv["closed_areas"] = new_closed_areas
+    inv["layer_area_groups"] = compute_layer_area_groups(
+        new_closed_areas,
+        layers_copy,
+        units_doubtful=is_unitless,
+    )
     if new_dimensions:
         inv["dimensions"] = new_dimensions
     inv["units_doubtful"] = is_unitless
@@ -1380,6 +1569,11 @@ def extract_dxf(
             f"Detected {proxy_count} ACAD_PROXY_ENTITY object(s) (custom Autodesk vertical/Civil/MEP objects not natively decomposed)."
         )
 
+    layer_area_groups = compute_layer_area_groups(
+        area_inventory,
+        layer_inventory,
+        units_doubtful=units_doubtful,
+    )
     payload.counts.layers = len(layer_inventory)
     payload.counts.blocks = len(block_inventory)
     payload.counts.block_inserts = sum(block_insert_counts.values())
@@ -1415,6 +1609,7 @@ def extract_dxf(
         "layers": layer_inventory,
         "blocks": block_inventory,
         "closed_areas": area_inventory,
+        "layer_area_groups": layer_area_groups,
         "dimensions": dimension_inventory,
         "text_items": text_samples,
         "xrefs_detected": xref_names,
