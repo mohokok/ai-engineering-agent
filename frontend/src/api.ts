@@ -1,4 +1,5 @@
 import type {
+  CadUnitChoice,
   ConnectionTestOut,
   DrawingVisionSummaryOut,
   ExtractionCapabilitiesOut,
@@ -182,7 +183,7 @@ export function getExtractionCapabilities(): Promise<ExtractionCapabilitiesOut> 
 
 export function extractProjectFile(
   fileId: string,
-  payload?: { version_number?: number; force_ocr?: boolean }
+  payload?: { version_number?: number; force_ocr?: boolean; confirmed_unit?: CadUnitChoice }
 ): Promise<FileExtractionDetailOut> {
   return requestJson<FileExtractionDetailOut>(
     `/api/files/${encodeURIComponent(fileId)}/extract`,
@@ -190,6 +191,20 @@ export function extractProjectFile(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload ?? {}),
+    }
+  );
+}
+
+export function confirmExtractionDrawingUnit(
+  extractionId: string,
+  confirmedUnit: CadUnitChoice
+): Promise<FileExtractionDetailOut> {
+  return requestJson<FileExtractionDetailOut>(
+    `/api/extractions/${encodeURIComponent(extractionId)}/confirm-unit`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirmed_unit: confirmedUnit }),
     }
   );
 }

@@ -17,6 +17,8 @@ from app.db.models import AuditLog, FileExtraction, FileVersion, Project, Projec
 from app.providers.base import LLMRequest, MediaInput, ProviderResponseError
 from app.providers.secrets import SecretStore
 from app.schemas.extraction import (
+    CadUnitChoice,
+    DrawingUnitConfirmRequest,
     DrawingVisionPayload,
     DrawingVisionSummaryOut,
     DrawingVisionSummaryRequest,
@@ -51,6 +53,7 @@ from app.services.extractors import (
     probe_oda,
     probe_tesseract,
 )
+from app.services.extractors.cad import apply_confirmed_cad_unit
 from app.services.files import FileRecordNotFoundError, FileVersionNotFoundError
 from app.services.provider_settings import execute_provider_request
 from app.services.workspace import resolve_project_file_path
@@ -201,6 +204,9 @@ class _DispatchOutcome:
     converter_status: str | None = None
     converted_artifact_relative_path: str | None = None
     cad_units: str | None = None
+    units_doubtful: bool = False
+    units_status: str | None = None
+    owner_confirmed_unit: str | None = None
     drawing_inventory: dict[str, Any] | None = None
 
 
@@ -235,6 +241,15 @@ def _to_summary_out(
     sha_after = str(payload.get("sha256_after") or row.source_sha256)
     raw_summaries = payload.get("vision_summaries")
     summaries = list(raw_summaries) if isinstance(raw_summaries, list) else []
+    inv = payload.get("drawing_inventory")
+    inv_dict = inv if isinstance(inv, dict) else {}
+    units_doubtful = bool(
+        payload.get("units_doubtful")
+        if "units_doubtful" in payload
+        else inv_dict.get("units_doubtful", False)
+    )
+    units_status = payload.get("units_status") or inv_dict.get("units_status")
+    owner_confirmed_unit = payload.get("owner_confirmed_unit") or inv_dict.get("owner_confirmed_unit")
     return FileExtractionSummaryOut(
         id=row.id,
         project_id=row.project_id,
@@ -254,6 +269,9 @@ def _to_summary_out(
         converter_status=payload.get("converter_status"),
         converted_artifact_relative_path=payload.get("converted_artifact_relative_path"),
         cad_units=payload.get("cad_units"),
+        units_doubtful=units_doubtful,
+        units_status=units_status,
+        owner_confirmed_unit=owner_confirmed_unit,
         drawing_inventory=payload.get("drawing_inventory"),
         vision_summaries=summaries,
         classification=row.classification,
@@ -319,6 +337,7 @@ def _dispatch_extractor(
     oda_probe: OdaProbe,
     ocr_runner: OcrRunner | None,
     force_ocr: bool,
+    confirmed_unit: CadUnitChoice | None = None,
 ) -> _DispatchOutcome:
     if ext == ".pdf":
         return _DispatchOutcome(
@@ -344,10 +363,14 @@ def _dispatch_extractor(
             file_id=file_id,
             version_number=version_number,
             extraction_method="native",
+            confirmed_unit=confirmed_unit,
         )
         return _DispatchOutcome(
             extracted=extracted,
             cad_units=units_disp,
+            units_doubtful=bool(inventory.get("units_doubtful", False)),
+            units_status=inventory.get("units_status"),
+            owner_confirmed_unit=inventory.get("owner_confirmed_unit"),
             drawing_inventory=inventory,
         )
     if ext == ".dwg":
@@ -376,6 +399,7 @@ def _dispatch_extractor(
             file_id=file_id,
             version_number=version_number,
             extraction_method="converted_oda",
+            confirmed_unit=confirmed_unit,
         )
         inventory["converted_from"] = ext
         inventory["converted_dxf_relative_path"] = converted_rel_path
@@ -384,6 +408,9 @@ def _dispatch_extractor(
             converter_status=oda_probe.capability.status,
             converted_artifact_relative_path=converted_rel_path,
             cad_units=units_disp,
+            units_doubtful=bool(inventory.get("units_doubtful", False)),
+            units_status=inventory.get("units_status"),
+            owner_confirmed_unit=inventory.get("owner_confirmed_unit"),
             drawing_inventory=inventory,
         )
     if ext == ".ifc":
@@ -568,6 +595,7 @@ def extract_project_file(
             oda_probe=oda_probe,
             ocr_runner=ocr_runner,
             force_ocr=opts.force_ocr,
+            confirmed_unit=opts.confirmed_unit,
         )
         extracted = outcome.extracted
         sha256_after = _compute_sha256(source_path)
@@ -659,7 +687,11 @@ def extract_project_file(
         "converter_status": outcome.converter_status,
         "converted_artifact_relative_path": outcome.converted_artifact_relative_path,
         "cad_units": outcome.cad_units,
+        "units_doubtful": outcome.units_doubtful,
+        "units_status": outcome.units_status,
+        "owner_confirmed_unit": outcome.owner_confirmed_unit,
         "drawing_inventory": outcome.drawing_inventory,
+        "unit_confirmations": [],
         "vision_summaries": [],
         "ocr": ocr_capability.model_dump(),
         "oda": oda_capability.model_dump(),
@@ -721,6 +753,93 @@ def extract_project_file(
     db.commit()
     db.refresh(row)
 
+    return _to_detail_out(
+        row,
+        source_file=pf.original_filename,
+        folder_name=pf.folder_name,
+        extension=ext,
+        settings=settings,
+    )
+
+
+def confirm_extraction_drawing_unit(
+    db: Session,
+    settings: Settings,
+    extraction_id: str,
+    *,
+    request_payload: DrawingUnitConfirmRequest,
+) -> FileExtractionDetailOut:
+    """Confirm or override a CAD drawing's linear unit per extraction without altering raw native values."""
+    row = db.get(FileExtraction, extraction_id)
+    if row is None:
+        raise ExtractionNotFoundError(f"Extraction '{extraction_id}' was not found.")
+    pf = db.get(ProjectFile, row.file_id)
+    project = db.get(Project, row.project_id)
+    if pf is None or project is None:
+        raise ExtractionNotFoundError(
+            f"Parent file or project for extraction '{extraction_id}' was not found."
+        )
+
+    payload_data = dict(row.payload_json) if isinstance(row.payload_json, dict) else {}
+    inv = payload_data.get("drawing_inventory")
+    if not isinstance(inv, dict) or inv.get("kind") != "cad_dxf":
+        raise UnsupportedExtractionFormatError(
+            "Drawing unit confirmation is only applicable to extracted CAD (.dxf/.dwg) artifacts."
+        )
+
+    updated_payload = apply_confirmed_cad_unit(
+        payload_data,
+        confirmed_unit=request_payload.confirmed_unit,
+    )
+    run_rel_dir = f"03_Analysis/extractions/{pf.id}/v{row.version_number}/r{row.extraction_version}"
+    existing_confs = list(payload_data.get("unit_confirmations") or [])
+    conf_seq = len(existing_confs) + 1
+    conf_rel_path = f"{run_rel_dir}/unit_confirmation_s{conf_seq}.json"
+    conf_disk_path = resolve_project_file_path(
+        settings.workspaces_dir, project.workspace_slug, conf_rel_path
+    )
+    conf_disk_path.parent.mkdir(parents=True, exist_ok=True)
+    if conf_disk_path.exists():
+        raise ExtractionRunConflictError(
+            f"Refusing to overwrite existing unit confirmation artifact '{conf_rel_path}'."
+        )
+
+    conf_record = {
+        "extraction_id": extraction_id,
+        "confirmed_unit": request_payload.confirmed_unit,
+        "declared_insunits_code": inv.get("insunits_code"),
+        "declared_unit": inv.get("declared_unit") or inv.get("units"),
+        "artifact_relative_path": conf_rel_path,
+        "closed_areas": (updated_payload.get("drawing_inventory") or {}).get("closed_areas", []),
+    }
+    conf_disk_path.write_text(
+        json.dumps(conf_record, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    updated_payload["unit_confirmations"] = [*existing_confs, conf_record]
+    row.payload_json = updated_payload
+    row.warnings_json = list(updated_payload.get("warnings") or [])
+    db.add(
+        AuditLog(
+            project_id=project.id,
+            action="file.drawing_unit_confirmed",
+            entity_type="file_extraction",
+            entity_id=extraction_id,
+            actor="owner",
+            details_json={
+                "file_id": pf.id,
+                "source_file": pf.original_filename,
+                "confirmed_unit": request_payload.confirmed_unit,
+                "declared_insunits_code": inv.get("insunits_code"),
+                "artifact_relative_path": conf_rel_path,
+            },
+        )
+    )
+    db.commit()
+    db.refresh(row)
+
+    ext = (pf.extension or Path(pf.original_filename).suffix).lower()
     return _to_detail_out(
         row,
         source_file=pf.original_filename,
