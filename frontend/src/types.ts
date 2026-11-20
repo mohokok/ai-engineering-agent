@@ -662,3 +662,142 @@ export interface ResearchRunCreateRequest {
   classification?: ProjectClassification;
   synthesize_with_ai?: boolean;
 }
+
+export type ReportLanguage = "ar" | "en";
+export type FindingSeverity = "critical" | "high" | "medium" | "low" | "info";
+export type FindingStatus = "open" | "needs_verification" | "resolved";
+export type StatementCategory = "verified_fact" | "calculated" | "assumption" | "recommendation";
+
+export interface SourceLocationRef {
+  ref_id: string;
+  source_kind: "extraction" | "research_source" | string;
+  source_id: string;
+  file_id?: string | null;
+  extraction_id?: string | null;
+  research_run_id?: string | null;
+  url?: string | null;
+  source_name: string;
+  page_or_sheet: string;
+  location: string;
+  excerpt?: string | null;
+}
+
+export interface ReviewFinding {
+  finding_id: string;
+  discipline: string;
+  severity: FindingSeverity | string;
+  location_or_drawing_ref: string;
+  evidence: string;
+  recommendation: string;
+  status: FindingStatus | string;
+  statement_category: StatementCategory | string;
+  source_links: SourceLocationRef[];
+}
+
+export interface CategorizedStatement {
+  category: StatementCategory | string;
+  text: string;
+  formula_or_method?: string | null;
+  source_links: SourceLocationRef[];
+}
+
+export interface RevisionBlockOut {
+  version: number;
+  revision: string;
+  classification: ProjectClassification | string;
+  prepared_by: string;
+  review_notice: string;
+  issued_at_iso: string;
+  change_note: string;
+  source_files_count: number;
+  reviewed_research_count: number;
+}
+
+export interface DeliverableOut {
+  id: string;
+  project_id: string;
+  report_id?: string | null;
+  task_id?: string | null;
+  file_id?: string | null;
+  title: string;
+  deliverable_type: string;
+  discipline: string;
+  format: string;
+  classification: ProjectClassification | string;
+  status: string;
+  version: number;
+  folder_name?: string | null;
+  filename?: string | null;
+  relative_path?: string | null;
+  mime_type?: string | null;
+  size_bytes?: number | null;
+  sha256?: string | null;
+  summary?: string | null;
+  download_url: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DeliverableListResponse {
+  deliverables: DeliverableOut[];
+  total: number;
+  classification: ProjectClassification | string;
+}
+
+export interface ReviewReportSummaryOut {
+  id: string;
+  project_id: string;
+  project_code: string;
+  project_name: string;
+  task_id?: string | null;
+  title: string;
+  discipline: string;
+  language: ReportLanguage | string;
+  classification: ProjectClassification | string;
+  revision: string;
+  version: number;
+  status: string;
+  summary?: string | null;
+  findings_count: number;
+  estimated_prompt_tokens?: number;
+  prompt_char_count?: number;
+  prompt_char_cap?: number;
+  step04_daily_tokens_remaining?: number | null;
+  step04_monthly_tokens_remaining?: number | null;
+  token_usage: TaskTokenUsageOut;
+  error_message?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ReviewReportDetailOut extends ReviewReportSummaryOut {
+  revision_block: RevisionBlockOut;
+  findings: ReviewFinding[];
+  verified_facts: CategorizedStatement[];
+  calculated_items: CategorizedStatement[];
+  assumptions: CategorizedStatement[];
+  recommendations: CategorizedStatement[];
+  gaps_or_unextracted: string[];
+  source_registry: SourceLocationRef[];
+  deliverables: DeliverableOut[];
+}
+
+export interface ReviewReportListResponse {
+  reports: ReviewReportSummaryOut[];
+  total: number;
+  classification: ProjectClassification | string;
+}
+
+export interface ReviewReportGenerateRequest {
+  task_id?: string | null;
+  file_ids?: string[];
+  research_run_ids?: string[];
+  title?: string | null;
+  discipline?: string;
+  language?: ReportLanguage;
+  classification?: ProjectClassification;
+  review_notes?: string | null;
+  change_note?: string;
+  use_ai?: boolean;
+  complexity?: TaskComplexity;
+}

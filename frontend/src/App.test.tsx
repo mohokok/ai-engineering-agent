@@ -6,7 +6,10 @@ import {
   createProject,
   createTask,
   deleteProviderApiKey,
+  enhanceReviewReportAi,
   extractProjectFile,
+  generateReviewReport,
+  getDeliverableDownloadUrl,
   getExtractionCapabilities,
   getExtractionDetail,
   getExtractionPageImageUrl,
@@ -15,6 +18,7 @@ import {
   getProviderSettings,
   getSupportedExtensions,
   getTaskDetail,
+  listDeliverables,
   listFileExtractions,
   listProjectFiles,
   listProjects,
@@ -29,11 +33,13 @@ import {
   uploadProjectFiles,
 } from "./api";
 import { AssignmentsView } from "./components/AssignmentsView";
+import { DeliverablesView } from "./components/DeliverablesView";
 import { ProjectFilesPanel } from "./components/ProjectFilesPanel";
 import { ProjectWorkspaceView } from "./components/ProjectWorkspaceView";
 import { ProviderSettingsView } from "./components/ProviderSettingsView";
 import { ResearchView } from "./components/ResearchView";
 import type {
+  DeliverableOut,
   ExtractionCapabilitiesOut,
   FileExtractionDetailOut,
   ProjectDetail,
@@ -42,6 +48,7 @@ import type {
   ProviderSettingsOut,
   ResearchRunDetailOut,
   ResearchRunSummaryOut,
+  ReviewReportDetailOut,
   TaskDetailOut,
   TaskSummaryOut,
 } from "./types";
@@ -1371,5 +1378,195 @@ describe("App Step 08 Controlled Internet Research UI (RTL/LTR)", () => {
     expect(created.id).toBe("res-run-1");
     const listOut = await listResearchRuns();
     expect(listOut.total).toBe(1);
+  });
+});
+
+describe("App Step 09 Review Reports & Deliverables UI (RTL/LTR)", () => {
+  it("renders Deliverables & Reports tab, source-linked findings, separated categories, token estimate, and downloads", async () => {
+    const appAr = renderToStaticMarkup(<App initialLang="ar" initialTab="deliverables" />);
+    expect(appAr).toContain('dir="rtl"');
+    expect(appAr).toContain("التقارير والمخرجات");
+    expect(appAr).toContain("إصدار تقرير المراجعة الهندسية");
+
+    const sampleDeliverables: DeliverableOut[] = [
+      {
+        id: "del-08-pdf",
+        project_id: "proj-09",
+        report_id: "rep-09",
+        task_id: null,
+        file_id: null,
+        title: "Clinic Review Report (Rev 01 — 08_Reports)",
+        deliverable_type: "review_report_working",
+        discipline: "Multidisciplinary",
+        format: "pdf",
+        classification: "For Review",
+        status: "issued",
+        version: 1,
+        folder_name: "08_Reports",
+        filename: "review_rep09_v1.pdf",
+        relative_path: "08_Reports/review_rep09_v1.pdf",
+        mime_type: "application/pdf",
+        size_bytes: 18420,
+        sha256: "abcdef1234567890",
+        summary: "Summary",
+        download_url: "/api/deliverables/del-08-pdf/download",
+        created_at: "2026-11-20T20:00:00Z",
+        updated_at: "2026-11-20T20:00:00Z",
+      },
+      {
+        id: "del-10-docx",
+        project_id: "proj-09",
+        report_id: "rep-09",
+        task_id: null,
+        file_id: null,
+        title: "Clinic Review Report (Rev 01 — 10_Final_Deliverables)",
+        deliverable_type: "review_report",
+        discipline: "Multidisciplinary",
+        format: "docx",
+        classification: "For Review",
+        status: "issued",
+        version: 1,
+        folder_name: "10_Final_Deliverables",
+        filename: "clinic_review_v1_For_Review.docx",
+        relative_path: "10_Final_Deliverables/clinic_review_v1_For_Review.docx",
+        mime_type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        size_bytes: 22150,
+        sha256: "123456abcdef7890",
+        summary: "Summary",
+        download_url: "/api/deliverables/del-10-docx/download",
+        created_at: "2026-11-20T20:00:00Z",
+        updated_at: "2026-11-20T20:00:00Z",
+      },
+    ];
+
+    const srcRef = {
+      ref_id: "EXT-1",
+      source_kind: "extraction",
+      source_id: "ext-09",
+      file_id: "file-09",
+      extraction_id: "ext-09",
+      research_run_id: null,
+      url: null,
+      source_name: "plan_metric.dxf",
+      page_or_sheet: "ModelSpace",
+      location: "$INSUNITS=6 (m)",
+      excerpt: "Closed room 24.0 m2",
+    };
+
+    const sampleReport: ReviewReportDetailOut = {
+      id: "rep-09",
+      project_id: "proj-09",
+      project_code: "CLN-09",
+      project_name: "عيادة طرابلس",
+      task_id: null,
+      title: "تقرير مراجعة العيادة",
+      discipline: "Multidisciplinary",
+      language: "ar",
+      classification: "For Review",
+      revision: "Rev 01",
+      version: 1,
+      status: "generated",
+      summary: "تم استعراض الملفات وفصل الحقائق المحققة عن الحسابات البرمجية والافتراضات.",
+      findings_count: 1,
+      estimated_prompt_tokens: 310,
+      prompt_char_count: 1085,
+      prompt_char_cap: 10000,
+      step04_daily_tokens_remaining: 498000,
+      step04_monthly_tokens_remaining: 4998000,
+      token_usage: { prompt_tokens: 0, output_tokens: 0, total_tokens: 0, thoughts_tokens: 0, cached_tokens: 0, latency_ms: 0 },
+      error_message: null,
+      created_at: "2026-11-20T20:00:00Z",
+      updated_at: "2026-11-20T20:00:00Z",
+      revision_block: {
+        version: 1,
+        revision: "Rev 01",
+        classification: "For Review",
+        prepared_by: "Engineering Agent",
+        review_notice: "Requires licensed engineer sign-off",
+        issued_at_iso: "2026-11-20T20:00:00Z",
+        change_note: "Initial issue",
+        source_files_count: 2,
+        reviewed_research_count: 1,
+      },
+      findings: [
+        {
+          finding_id: "REV-001",
+          discipline: "CAD Coordination",
+          severity: "high",
+          location_or_drawing_ref: "plan_metric.dxf — ModelSpace",
+          evidence: "Closed polyline room verified at 24.0 m2.",
+          recommendation: "Confirm partition wall finish thickness.",
+          status: "needs_verification",
+          statement_category: "verified_fact",
+          source_links: [srcRef],
+        },
+      ],
+      verified_facts: [{ category: "verified_fact", text: "Room area measured 24.0 m2.", source_links: [srcRef] }],
+      calculated_items: [
+        {
+          category: "calculated",
+          text: "Closed DXF area sum = 24.0 m2",
+          formula_or_method: "Python deterministic shoelace sum",
+          source_links: [srcRef],
+        },
+      ],
+      assumptions: [
+        {
+          category: "assumption",
+          text: "افتراض أولي يحتاج تأكيد المالك: سماكة اللياسة غير محددة.",
+          source_links: [],
+        },
+      ],
+      recommendations: [{ category: "recommendation", text: "Confirm partition wall finish thickness.", source_links: [srcRef] }],
+      gaps_or_unextracted: ["External 403 source excluded."],
+      source_registry: [srcRef],
+      deliverables: sampleDeliverables,
+    };
+
+    const htmlAr = renderToStaticMarkup(
+      <DeliverablesView
+        lang="ar"
+        initialDeliverables={sampleDeliverables}
+        initialReport={sampleReport}
+      />
+    );
+    expect(htmlAr).toContain("For Review");
+    expect(htmlAr).toContain("Rev 01");
+    expect(htmlAr).toContain("REV-001");
+    expect(htmlAr).toContain("EXT-1");
+    expect(htmlAr).toContain("plan_metric.dxf");
+    expect(htmlAr).toContain("~310 est. prompt tokens");
+    expect(htmlAr).toContain("حقائق مُتحقَّق منها بمصدرها");
+    expect(htmlAr).toContain("قيم محسوبة برمجياً فقط");
+    expect(htmlAr).toContain("افتراضات أولية (تحتاج تأكيد المالك)");
+    expect(htmlAr).toContain("/api/deliverables/del-08-pdf/download");
+    expect(htmlAr).toContain("/api/deliverables/del-10-docx/download");
+
+    const htmlEn = renderToStaticMarkup(
+      <DeliverablesView
+        lang="en"
+        initialDeliverables={sampleDeliverables}
+        initialReport={sampleReport}
+      />
+    );
+    expect(htmlEn).toContain("Generate Engineering Review Report");
+    expect(htmlEn).toContain("Verified Facts (Source-Linked)");
+    expect(htmlEn).toContain("Calculated Quantities (Deterministic Code)");
+    expect(htmlEn).toContain("10_Final_Deliverables");
+    expect(getDeliverableDownloadUrl("del-10-docx")).toBe("/api/deliverables/del-10-docx/download");
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(sampleReport), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ deliverables: sampleDeliverables, total: 2, classification: "Preliminary" }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(sampleReport), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const createdRep = await generateReviewReport("proj-09", { language: "ar", classification: "For Review" });
+    expect(createdRep.revision).toBe("Rev 01");
+    const delivs = await listDeliverables({ project_id: "proj-09" });
+    expect(delivs.total).toBe(2);
+    const enhanced = await enhanceReviewReportAi("rep-09", "fast");
+    expect(enhanced.id).toBe("rep-09");
   });
 });
