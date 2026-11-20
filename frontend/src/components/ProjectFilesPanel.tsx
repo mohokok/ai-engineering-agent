@@ -918,7 +918,11 @@ export function ProjectFilesPanel({
                                 <th>Handle</th>
                                 <th>Layer</th>
                                 <th>Geometry</th>
-                                <th>Native Area</th>
+                                <th>
+                                  {activeExtraction.owner_confirmed_unit
+                                    ? "Confirmed Display Area"
+                                    : "Native Area"}
+                                </th>
                                 <th>Area (m2)</th>
                                 <th>Perimeter / Length</th>
                               </tr>
@@ -932,14 +936,50 @@ export function ProjectFilesPanel({
                                   <td dir="auto">{String(a.layer)}</td>
                                   <td dir="ltr">{String(a.type)}</td>
                                   <td dir="ltr">
-                                    {String(a.area_native ?? "—")} {String(a.area_native_unit ?? "")}
+                                    {Boolean(a.display_area_unit) ? (
+                                      <span>
+                                        {String(a.display_area ?? a.area_native ?? "—")}{" "}
+                                        {String(a.display_area_unit)}
+                                        {Boolean(a.area_native_unit) && (
+                                          <span style={{ opacity: 0.75, marginInlineStart: "0.35rem" }}>
+                                            (raw: {String(a.area_native ?? "—")} {String(a.area_native_unit)})
+                                          </span>
+                                        )}
+                                      </span>
+                                    ) : (
+                                      <span>
+                                        {String(a.area_native ?? "—")} {String(a.area_native_unit ?? "")}
+                                      </span>
+                                    )}
                                   </td>
                                   <td dir="ltr">
                                     {a.area_m2 !== undefined && a.area_m2 !== null
                                       ? String(a.area_m2)
                                       : "—"}
                                   </td>
-                                  <td dir="ltr">{String(a.perimeter_native ?? "—")}</td>
+                                  <td dir="ltr">
+                                    {a.perimeter_native !== undefined && a.perimeter_native !== null ? (
+                                      Boolean(a.display_perimeter_unit) ? (
+                                        <span>
+                                          {String(a.display_perimeter ?? a.perimeter_native)}{" "}
+                                          {String(a.display_perimeter_unit)}
+                                          {Boolean(a.perimeter_unit) &&
+                                            a.perimeter_unit !== a.display_perimeter_unit && (
+                                              <span style={{ opacity: 0.75, marginInlineStart: "0.35rem" }}>
+                                                (raw: {String(a.perimeter_native)} {String(a.perimeter_unit)})
+                                              </span>
+                                            )}
+                                        </span>
+                                      ) : (
+                                        <span>
+                                          {String(a.perimeter_native)}{" "}
+                                          {String(a.perimeter_unit ?? "")}
+                                        </span>
+                                      )
+                                    ) : (
+                                      "—"
+                                    )}
+                                  </td>
                                 </tr>
                               ))}
                             </tbody>

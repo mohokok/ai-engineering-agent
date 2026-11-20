@@ -3,9 +3,10 @@ import { fetchHealth } from "./api";
 import { AssignmentsView } from "./components/AssignmentsView";
 import { ProjectWorkspaceView } from "./components/ProjectWorkspaceView";
 import { ProviderSettingsView } from "./components/ProviderSettingsView";
+import { ResearchView } from "./components/ResearchView";
 import type { HealthPayload, Lang } from "./types";
 
-type ActiveTab = "projects" | "assignments" | "settings";
+type ActiveTab = "projects" | "assignments" | "research" | "settings";
 
 const COPY: Record<
   Lang,
@@ -21,12 +22,13 @@ const COPY: Record<
     offlinePrefix: string;
     projectsTab: string;
     assignmentsTab: string;
+    researchTab: string;
     settingsTab: string;
   }
 > = {
   ar: {
     title: "الوكيل الهندسي الاستشاري المحلي",
-    subtitle: "الخطوة 07 — استخراج الرسومات والنماذج والمستندات (DXF / DWG / IFC / PDF / Office)",
+    subtitle: "الخطوة 08 — البحث الهندسي المضبوط وسجل المصادر الموثّق (إلى جانب CAD/BIM والمستندات)",
     classificationLabel: "التصنيف: أولي (Preliminary)",
     toggleLang: "Switch to English (LTR)",
     refreshHealth: "تحديث فحص الخادم",
@@ -36,11 +38,12 @@ const COPY: Record<
     offlinePrefix: "تعذر الاتصال بالخادم الخلفي: ",
     projectsTab: "المشاريع والملفات",
     assignmentsTab: "المهام والتكليفات",
+    researchTab: "البحث وسجل المصادر",
     settingsTab: "إعدادات Gemini والمزودين",
   },
   en: {
     title: "Local AI Engineering Consultancy Agent",
-    subtitle: "Step 07 — CAD/BIM Drawing (DXF, DWG, IFC) & Document Extraction",
+    subtitle: "Step 08 — Controlled Internet Research & Persisted Source Log",
     classificationLabel: "Classification: Preliminary",
     toggleLang: "التبديل إلى العربية (RTL)",
     refreshHealth: "Refresh Health Check",
@@ -50,6 +53,7 @@ const COPY: Record<
     offlinePrefix: "Backend unreachable: ",
     projectsTab: "Projects & Files",
     assignmentsTab: "New Assignment & History",
+    researchTab: "Research & Source Log",
     settingsTab: "AI Provider Settings",
   },
 };
@@ -161,6 +165,13 @@ export function App({
           </button>
           <button
             type="button"
+            className={`btn ${activeTab === "research" ? "" : "btn-secondary"}`}
+            onClick={() => setActiveTab("research")}
+          >
+            {text.researchTab}
+          </button>
+          <button
+            type="button"
             className={`btn ${activeTab === "settings" ? "" : "btn-secondary"}`}
             onClick={() => setActiveTab("settings")}
           >
@@ -172,6 +183,8 @@ export function App({
           <ProjectWorkspaceView lang={lang} />
         ) : activeTab === "assignments" ? (
           <AssignmentsView lang={lang} />
+        ) : activeTab === "research" ? (
+          <ResearchView lang={lang} />
         ) : (
           <ProviderSettingsView lang={lang} />
         )}

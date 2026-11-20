@@ -37,6 +37,21 @@ CAD_UNIT_SCALE_MAP: dict[str, tuple[float | None, str]] = {
     for label, scale, area_u in _DXF_INSUNITS_MAP.values()
 }
 
+_DISPLAY_UNIT_LABELS: dict[str, tuple[str, str]] = {
+    "m": ("sq m", "m"),
+    "cm": ("sq cm", "cm"),
+    "mm": ("sq mm", "mm"),
+    "dm": ("sq dm", "dm"),
+    "km": ("sq km", "km"),
+    "in": ("sq in", "in"),
+    "ft": ("sq ft", "ft"),
+    "yd": ("sq yd", "yd"),
+    "mi": ("sq mi", "mi"),
+    "uin": ("sq uin", "uin"),
+    "mil": ("sq mil", "mil"),
+    "unitless": ("unitless sq", "unitless"),
+}
+
 UNITS_DOUBTFUL_WARNING = "units doubtful - owner must confirm drawing unit"
 
 _THREE_D_ENTITY_TYPES = frozenset({"3DSOLID", "MESH", "SURFACE", "BODY", "3DFACE"})
@@ -325,17 +340,101 @@ def _assess_cad_unit_plausibility(
     }
 
 
+def _apply_confirmed_unit_fields(
+    entry: dict[str, Any],
+    *,
+    owner_confirmed_unit: str | None,
+    declared_unit_label: str,
+    declared_area_unit: str | None,
+    scale_to_m: float | None,
+) -> dict[str, Any]:
+    """Attach confirmed area_m2 and display unit labels while preserving raw declared units and native values untouched."""
+    native_area = entry.get("area_native")
+    area_m2 = (
+        round(float(native_area) * (scale_to_m ** 2), 6)
+        if native_area is not None and scale_to_m is not None
+        else None
+    )
+    entry["area_m2"] = area_m2
+    if owner_confirmed_unit is not None:
+        disp_area_unit, disp_perim_unit = _DISPLAY_UNIT_LABELS.get(
+            owner_confirmed_unit, (f"sq {owner_confirmed_unit}", owner_confirmed_unit)
+        )
+        entry["confirmed_unit"] = owner_confirmed_unit
+        entry["raw_declared_unit"] = declared_unit_label
+        entry["raw_declared_area_unit"] = declared_area_unit
+        if owner_confirmed_unit == "unitless" or scale_to_m is None:
+            entry["display_area_unit"] = "unitless sq"
+            entry["display_perimeter_unit"] = "unitless"
+        else:
+            entry["display_area"] = native_area
+            entry["display_area_unit"] = disp_area_unit
+            if entry.get("perimeter_native") is not None:
+                entry["display_perimeter"] = entry["perimeter_native"]
+                entry["display_perimeter_unit"] = disp_perim_unit
+    return entry
+
+
+def _format_closed_area_text(
+    *,
+    ent_kind: str,
+    q_dict: dict[str, Any],
+    unit_label: str,
+    area_unit: str | None,
+    owner_confirmed_unit: str | None,
+) -> str:
+    native_area = q_dict["area_native"]
+    area_m2 = q_dict.get("area_m2")
+    perim = q_dict.get("perimeter_native")
+    if owner_confirmed_unit is not None and owner_confirmed_unit != "unitless":
+        disp_area_unit = str(q_dict.get("display_area_unit") or "sq m")
+        disp_perim_unit = str(q_dict.get("display_perimeter_unit") or owner_confirmed_unit)
+        m2_note = f" ({area_m2} m2)" if area_m2 is not None and owner_confirmed_unit != "m" else ""
+        if ent_kind == "HATCH":
+            gross_area = q_dict.get("gross_area_native")
+            hole_count = q_dict.get("island_count", 0)
+            return (
+                f"HATCH Confirmed Net Area={native_area} {disp_area_unit}{m2_note} "
+                f"(gross={gross_area}, islands={hole_count}) [raw declared: {native_area} {area_unit}]"
+            )
+        if ent_kind == "CIRCLE":
+            radius_val = q_dict.get("radius")
+            return (
+                f"CIRCLE r={radius_val} {disp_perim_unit} | Confirmed Area={native_area} {disp_area_unit}{m2_note} "
+                f"[raw declared: {native_area} {area_unit}]"
+            )
+        return (
+            f"Closed {ent_kind} | Confirmed Area={native_area} {disp_area_unit}{m2_note} | "
+            f"Perimeter={perim} {disp_perim_unit} [raw declared: {native_area} {area_unit}, {perim} {unit_label}]"
+        )
+
+    if ent_kind == "HATCH":
+        gross_area = q_dict.get("gross_area_native")
+        hole_count = q_dict.get("island_count", 0)
+        return f"HATCH Net Area={native_area} {area_unit} (gross={gross_area}, islands={hole_count})"
+    if ent_kind == "CIRCLE":
+        radius_val = q_dict.get("radius")
+        m2_note = f" ({area_m2} m2)" if area_m2 is not None and area_unit != "m2" else ""
+        return f"CIRCLE r={radius_val} {unit_label} | Area={native_area} {area_unit}{m2_note}"
+    m2_note = f" ({area_m2} m2)" if area_m2 is not None and area_unit != "m2" else ""
+    return f"Closed {ent_kind} | Area={native_area} {area_unit}{m2_note} | Perimeter={perim} {unit_label}"
+
+
 def apply_confirmed_cad_unit(
     payload_data: dict[str, Any],
     *,
     confirmed_unit: CadUnitChoice,
 ) -> dict[str, Any]:
-    """Return an updated CAD payload copy with area_m2 computed from owner-confirmed units without altering native values."""
+    """Return an updated CAD payload copy with area_m2 and confirmed display units without altering native values."""
     scale_to_m, _ = CAD_UNIT_SCALE_MAP[confirmed_unit]
     inv = dict(payload_data.get("drawing_inventory") or {})
     insunits_raw = int(inv.get("insunits_code", 0) or 0)
     declared_label = str(inv.get("declared_unit") or inv.get("units") or "unknown")
+    declared_area_unit = str(inv.get("area_unit") or f"{declared_label}_sq")
     is_unitless = scale_to_m is None
+    disp_area_unit, disp_linear_unit = _DISPLAY_UNIT_LABELS.get(
+        confirmed_unit, (f"sq {confirmed_unit}", confirmed_unit)
+    )
 
     updated = dict(payload_data)
     updated["owner_confirmed_unit"] = confirmed_unit
@@ -347,18 +446,31 @@ def apply_confirmed_cad_unit(
 
     new_closed_areas: list[dict[str, Any]] = []
     for raw_entry in inv.get("closed_areas") or []:
-        entry = dict(raw_entry)
-        area_native = entry.get("area_native")
-        if area_native is not None and scale_to_m is not None:
-            entry["area_m2"] = round(float(area_native) * (scale_to_m ** 2), 6)
-        else:
-            entry["area_m2"] = None
+        entry = _apply_confirmed_unit_fields(
+            dict(raw_entry),
+            owner_confirmed_unit=confirmed_unit,
+            declared_unit_label=declared_label,
+            declared_area_unit=str(raw_entry.get("area_native_unit") or declared_area_unit),
+            scale_to_m=scale_to_m,
+        )
         new_closed_areas.append(entry)
 
+    new_dimensions: list[dict[str, Any]] = []
+    for raw_dim in inv.get("dimensions") or []:
+        d = dict(raw_dim)
+        d["raw_declared_unit"] = str(d.get("raw_declared_unit") or d.get("unit") or declared_label)
+        d["display_unit"] = disp_linear_unit
+        d["confirmed_unit"] = confirmed_unit
+        new_dimensions.append(d)
+
     inv["closed_areas"] = new_closed_areas
+    if new_dimensions:
+        inv["dimensions"] = new_dimensions
     inv["units_doubtful"] = is_unitless
     inv["units_status"] = updated["units_status"]
     inv["owner_confirmed_unit"] = confirmed_unit
+    inv["display_area_unit"] = disp_area_unit
+    inv["display_linear_unit"] = disp_linear_unit
     inv["confirmed_scale_to_m"] = scale_to_m
     updated["drawing_inventory"] = inv
 
@@ -366,14 +478,29 @@ def apply_confirmed_cad_unit(
     for raw_item in payload_data.get("items") or []:
         item = dict(raw_item)
         if item.get("item_type") == "cad_polyline_area" and isinstance(item.get("quantities"), dict):
-            q = dict(item["quantities"])
-            area_native = q.get("area_native")
-            if area_native is not None and scale_to_m is not None:
-                area_m2 = round(float(area_native) * (scale_to_m ** 2), 6)
-            else:
-                area_m2 = None
-            q["area_m2"] = area_m2
+            q = _apply_confirmed_unit_fields(
+                dict(item["quantities"]),
+                owner_confirmed_unit=confirmed_unit,
+                declared_unit_label=declared_label,
+                declared_area_unit=str(item["quantities"].get("area_native_unit") or declared_area_unit),
+                scale_to_m=scale_to_m,
+            )
             item["quantities"] = q
+            loc = str(item.get("location") or "")
+            ent_kind = loc.rsplit("|", 1)[-1] if "|" in loc else "LWPOLYLINE"
+            item["text"] = _format_closed_area_text(
+                ent_kind=ent_kind,
+                q_dict=q,
+                unit_label=declared_label,
+                area_unit=q.get("area_native_unit"),
+                owner_confirmed_unit=confirmed_unit,
+            )
+        elif item.get("item_type") == "cad_dimension" and isinstance(item.get("properties"), dict):
+            props = dict(item["properties"])
+            props["raw_declared_unit"] = str(props.get("raw_declared_unit") or props.get("unit") or declared_label)
+            props["display_unit"] = disp_linear_unit
+            props["confirmed_unit"] = confirmed_unit
+            item["properties"] = props
         new_items.append(item)
     updated["items"] = new_items
 
@@ -381,22 +508,51 @@ def apply_confirmed_cad_unit(
         w for w in (payload_data.get("warnings") or []) if UNITS_DOUBTFUL_WARNING not in w
     ]
     kept_warnings.append(
-        f"Owner confirmed drawing unit '{confirmed_unit}' (header declared $INSUNITS={insunits_raw}, {declared_label}); "
-        "raw native values preserved untouched."
+        f"Owner confirmed drawing unit '{confirmed_unit}' ({disp_area_unit} / {disp_linear_unit}; "
+        f"header declared $INSUNITS={insunits_raw}, {declared_label}); raw native values preserved untouched."
     )
     updated["warnings"] = kept_warnings
     return updated
 
 
+def _polyline_bulge_area_and_perimeter(
+    points_xyb: list[tuple[float, float, float]],
+    *,
+    closed: bool,
+) -> tuple[float, float]:
+    """Compute exact 2D area and arc-aware perimeter for LWPOLYLINE/POLYLINE vertices (x, y, bulge)."""
+    n = len(points_xyb)
+    if n < 2:
+        return 0.0, 0.0
+    signed_poly_twice = 0.0
+    arc_area_sum = 0.0
+    perim = 0.0
+    seg_count = n if closed else n - 1
+    for i in range(seg_count):
+        x1, y1, bulge = points_xyb[i]
+        x2, y2, _ = points_xyb[(i + 1) % n]
+        chord = math.hypot(x2 - x1, y2 - y1)
+        if closed:
+            signed_poly_twice += x1 * y2 - x2 * y1
+        if abs(bulge) > 1e-12 and chord > 1e-12:
+            theta = 4.0 * math.atan(bulge)
+            radius = chord * (1.0 + bulge * bulge) / (4.0 * abs(bulge))
+            perim += radius * abs(theta)
+            if closed:
+                seg_area = 0.5 * (radius * radius) * (abs(theta) - math.sin(abs(theta)))
+                arc_area_sum += seg_area if bulge > 0 else -seg_area
+        else:
+            perim += chord
+    total_area = abs(0.5 * signed_poly_twice + arc_area_sum) if closed else 0.0
+    return total_area, perim
+
+
 def _polygon_perimeter(points: list[tuple[float, float]], *, closed: bool) -> float:
-    if len(points) < 2:
-        return 0.0
-    total = 0.0
-    for i in range(len(points) - 1):
-        total += math.hypot(points[i + 1][0] - points[i][0], points[i + 1][1] - points[i][1])
-    if closed and math.hypot(points[0][0] - points[-1][0], points[0][1] - points[-1][1]) > 1e-9:
-        total += math.hypot(points[0][0] - points[-1][0], points[0][1] - points[-1][1])
-    return total
+    _, perim = _polyline_bulge_area_and_perimeter(
+        [(x, y, 0.0) for x, y in points],
+        closed=closed,
+    )
+    return perim
 
 
 def _path_polygon_area(path_obj: Any) -> float:
@@ -486,16 +642,17 @@ def _append_closed_area_record(
     area_unit: str | None,
     unit_label: str,
     effective_scale_to_m: float | None,
+    owner_confirmed_unit: str | None = None,
 ) -> int:
-    """Finalize one closed geometry / HATCH record with verified or null area_m2."""
+    """Finalize one closed geometry / HATCH record with verified or null area_m2 and confirmed display units."""
     native_area = float(pending["area_native"])
-    area_m2 = (
-        round(native_area * (effective_scale_to_m ** 2), 6)
-        if effective_scale_to_m is not None
-        else None
+    q_dict = _apply_confirmed_unit_fields(
+        dict(pending["quantities"]),
+        owner_confirmed_unit=owner_confirmed_unit,
+        declared_unit_label=unit_label,
+        declared_area_unit=area_unit,
+        scale_to_m=effective_scale_to_m,
     )
-    q_dict: dict[str, Any] = dict(pending["quantities"])
-    q_dict["area_m2"] = area_m2
 
     ent_kind = str(pending["type"])
     handle = str(pending["handle"])
@@ -509,19 +666,18 @@ def _append_closed_area_record(
         gross_area = float(q_dict["gross_area_native"])
         hole_count = int(q_dict["island_count"])
         hole_area = float(q_dict["net_subtracted_area_native"])
-        text = f"HATCH Net Area={native_area} {area_unit} (gross={gross_area}, islands={hole_count})"
         if hole_count > 0:
             payload.warnings.append(
                 f"HATCH entity handle={handle} on layer '{ent_layer}' contains {hole_count} island hole(s); "
                 f"net area={native_area} {area_unit} (gross={gross_area}, net_subtracted={hole_area})."
             )
-    elif ent_kind == "CIRCLE":
-        radius_val = q_dict.get("radius")
-        m2_note = f" ({area_m2} m2)" if area_m2 is not None and area_unit != "m2" else ""
-        text = f"CIRCLE r={radius_val} {unit_label} | Area={native_area} {area_unit}{m2_note}"
-    else:
-        m2_note = f" ({area_m2} m2)" if area_m2 is not None and area_unit != "m2" else ""
-        text = f"Closed {ent_kind} | Area={native_area} {area_unit}{m2_note} | Perimeter={perim} {unit_label}"
+    text = _format_closed_area_text(
+        ent_kind=ent_kind,
+        q_dict=q_dict,
+        unit_label=unit_label,
+        area_unit=area_unit,
+        owner_confirmed_unit=owner_confirmed_unit,
+    )
 
     idx += 1
     payload.items.append(
@@ -964,18 +1120,21 @@ def extract_dxf(
             elif dxftype == "LWPOLYLINE":
                 payload.counts.polylines += 1
                 try:
-                    if getattr(ent, "has_arc", False):
-                        pts = [(float(p.x), float(p.y)) for p in ent.flattening(distance=0.0005)]
-                    else:
-                        pts = [(float(p[0]), float(p[1])) for p in ent.get_points("xy")]
+                    pts_xyb = [(float(p[0]), float(p[1]), float(p[2])) for p in ent.get_points("xyb")]
                 except Exception:
-                    pts = []
-                is_closed = bool(getattr(ent, "closed", False)) or (
-                    len(pts) >= 3 and math.hypot(pts[0][0] - pts[-1][0], pts[0][1] - pts[-1][1]) <= 1e-5
+                    pts_xyb = []
+                has_arc = bool(getattr(ent, "has_arc", False)) or any(
+                    abs(b) > 1e-12 for _, _, b in pts_xyb
                 )
-                perim = round(_polygon_perimeter(pts, closed=is_closed), 6) if len(pts) >= 2 else 0.0
-                if is_closed and len(pts) >= 3:
-                    native_area = round(float(ezdxf.math.area(pts)), 6)
+                is_closed = bool(getattr(ent, "closed", False)) or (
+                    len(pts_xyb) >= 3
+                    and math.hypot(pts_xyb[0][0] - pts_xyb[-1][0], pts_xyb[0][1] - pts_xyb[-1][1]) <= 1e-5
+                )
+                area_raw, perim_raw = _polyline_bulge_area_and_perimeter(pts_xyb, closed=is_closed)
+                perim = round(perim_raw, 6)
+                can_form_area = is_closed and (len(pts_xyb) >= 3 or (len(pts_xyb) == 2 and has_arc))
+                if can_form_area and area_raw > 0:
+                    native_area = round(area_raw, 6)
                     payload.counts.closed_areas += 1
                     pending_areas.append(
                         {
@@ -992,7 +1151,8 @@ def extract_dxf(
                                 "area_native_unit": area_unit,
                                 "perimeter_native": perim,
                                 "perimeter_unit": unit_label,
-                                "vertex_count": len(pts),
+                                "vertex_count": len(pts_xyb),
+                                "has_arc_bulge": has_arc,
                             },
                         }
                     )
@@ -1021,13 +1181,23 @@ def extract_dxf(
             elif dxftype == "POLYLINE":
                 payload.counts.polylines += 1
                 if getattr(ent, "is_2d_polyline", False):
-                    pts = [(float(v.dxf.location.x), float(v.dxf.location.y)) for v in ent.vertices]
+                    pts_xyb = [
+                        (
+                            float(v.dxf.location.x),
+                            float(v.dxf.location.y),
+                            float(getattr(v.dxf, "bulge", 0.0) or 0.0),
+                        )
+                        for v in ent.vertices
+                    ]
+                    has_arc = any(abs(b) > 1e-12 for _, _, b in pts_xyb)
                     is_closed = bool(ent.is_closed) or (
-                        len(pts) >= 3 and math.hypot(pts[0][0] - pts[-1][0], pts[0][1] - pts[-1][1]) <= 1e-5
+                        len(pts_xyb) >= 3
+                        and math.hypot(pts_xyb[0][0] - pts_xyb[-1][0], pts_xyb[0][1] - pts_xyb[-1][1]) <= 1e-5
                     )
-                    perim = round(_polygon_perimeter(pts, closed=is_closed), 6) if len(pts) >= 2 else 0.0
-                    if is_closed and len(pts) >= 3:
-                        native_area = round(float(ezdxf.math.area(pts)), 6)
+                    area_raw, perim_raw = _polyline_bulge_area_and_perimeter(pts_xyb, closed=is_closed)
+                    perim = round(perim_raw, 6)
+                    if is_closed and (len(pts_xyb) >= 3 or (len(pts_xyb) == 2 and has_arc)) and area_raw > 0:
+                        native_area = round(area_raw, 6)
                         payload.counts.closed_areas += 1
                         pending_areas.append(
                             {
@@ -1044,7 +1214,8 @@ def extract_dxf(
                                     "area_native_unit": area_unit,
                                     "perimeter_native": perim,
                                     "perimeter_unit": unit_label,
-                                    "vertex_count": len(pts),
+                                    "vertex_count": len(pts_xyb),
+                                    "has_arc_bulge": has_arc,
                                 },
                             }
                         )
@@ -1168,7 +1339,22 @@ def extract_dxf(
             area_unit=area_unit,
             unit_label=unit_label,
             effective_scale_to_m=effective_scale_to_m,
+            owner_confirmed_unit=owner_confirmed_unit,
         )
+
+    if owner_confirmed_unit is not None:
+        disp_area_u, disp_lin_u = _DISPLAY_UNIT_LABELS.get(
+            owner_confirmed_unit, (f"sq {owner_confirmed_unit}", owner_confirmed_unit)
+        )
+        for dim_entry in dimension_inventory:
+            dim_entry["raw_declared_unit"] = unit_label
+            dim_entry["display_unit"] = disp_lin_u
+            dim_entry["confirmed_unit"] = owner_confirmed_unit
+        for item in payload.items:
+            if item.item_type == "cad_dimension" and isinstance(item.properties, dict):
+                item.properties["raw_declared_unit"] = unit_label
+                item.properties["display_unit"] = disp_lin_u
+                item.properties["confirmed_unit"] = owner_confirmed_unit
 
     # Render ModelSpace PNG preview cleanly
     preview_filename = "page_001.png"
@@ -1211,6 +1397,16 @@ def extract_dxf(
         "units_doubtful": units_doubtful,
         "units_status": units_status,
         "owner_confirmed_unit": owner_confirmed_unit,
+        "display_area_unit": (
+            _DISPLAY_UNIT_LABELS.get(owner_confirmed_unit, (f"sq {owner_confirmed_unit}", owner_confirmed_unit))[0]
+            if owner_confirmed_unit
+            else None
+        ),
+        "display_linear_unit": (
+            _DISPLAY_UNIT_LABELS.get(owner_confirmed_unit, (f"sq {owner_confirmed_unit}", owner_confirmed_unit))[1]
+            if owner_confirmed_unit
+            else None
+        ),
         "unit_plausibility_reasons": unit_assessment["reasons"],
         "cp1256_strings_recovered": encoding_recovered_count,
         "modelspace_entities": modelspace_entity_count,

@@ -59,6 +59,9 @@ class Project(Base):
     research_sources: Mapped[list["ResearchSource"]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )
+    research_runs: Mapped[list["ResearchRun"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
     issues: Mapped[list["Issue"]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )
@@ -238,12 +241,51 @@ class Deliverable(Base):
     project: Mapped["Project"] = relationship(back_populates="deliverables")
 
 
+class ResearchRun(Base):
+    """Persisted controlled internet research run tied optionally to a project or task."""
+
+    __tablename__ = "research_runs"
+    __table_args__ = (classification_check_constraint(),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    project_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("projects.id", ondelete="CASCADE"), index=True, nullable=True
+    )
+    task_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("tasks.id", ondelete="SET NULL"), index=True, nullable=True
+    )
+    query: Mapped[str] = mapped_column(Text, nullable=False)
+    search_provider: Mapped[str] = mapped_column(
+        String(64), default="duckduckgo_lite", nullable=False
+    )
+    classification: Mapped[str] = mapped_column(
+        String(32), default="Preliminary", nullable=False
+    )
+    status: Mapped[str] = mapped_column(String(32), default="completed", nullable=False)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    structured_output_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    token_usage_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    artifact_relative_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, index=True, nullable=False
+    )
+
+    project: Mapped["Project | None"] = relationship(back_populates="research_runs")
+    sources: Mapped[list["ResearchSource"]] = relationship(
+        back_populates="research_run", cascade="all, delete-orphan"
+    )
+
+
 class ResearchSource(Base):
     """Recorded technical research citation with provenance and reliability metadata."""
 
     __tablename__ = "research_sources"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    research_run_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("research_runs.id", ondelete="CASCADE"), index=True, nullable=True
+    )
     project_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("projects.id", ondelete="CASCADE"), index=True, nullable=True
     )
@@ -262,11 +304,21 @@ class ResearchSource(Base):
         String(64), default="unverified", nullable=False
     )
     source_type: Mapped[str] = mapped_column(String(64), default="web", nullable=False)
+    source_priority_tier: Mapped[str] = mapped_column(
+        String(64), default="reputable", nullable=False
+    )
+    priority_rank: Mapped[int] = mapped_column(Integer, default=6, nullable=False)
+    access_status: Mapped[str] = mapped_column(String(32), default="accessible", nullable=False)
+    reviewed: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    untrusted_neutralized: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
     )
 
     project: Mapped["Project | None"] = relationship(back_populates="research_sources")
+    research_run: Mapped["ResearchRun | None"] = relationship(back_populates="sources")
 
 
 class Issue(Base):

@@ -1,6 +1,7 @@
 """Tests for Step 07 CAD (DXF/DWG via ODA), BIM (IFC), and Gemini vision drawing summary."""
 
 from io import StringIO
+import math
 import os
 from pathlib import Path
 import stat
@@ -569,9 +570,20 @@ def test_extract_dxf_doubtful_inches_sets_null_area_m2_and_owner_confirm_unit(
         conf_area = confirmed["drawing_inventory"]["closed_areas"][0]
         assert conf_area["area_native"] == pytest.approx(7032.67, abs=1e-2)
         assert conf_area["area_native_unit"] == "sq_in"
+        assert conf_area["perimeter_native"] == pytest.approx(412.5, abs=1e-2)
+        assert conf_area["perimeter_unit"] == "in"
+        assert conf_area["raw_declared_unit"] == "in"
+        assert conf_area["display_area"] == pytest.approx(7032.67, abs=1e-2)
+        assert conf_area["display_area_unit"] == "sq m"
+        assert conf_area["display_perimeter"] == pytest.approx(412.5, abs=1e-2)
+        assert conf_area["display_perimeter_unit"] == "m"
         assert conf_area["area_m2"] == pytest.approx(7032.67, abs=1e-2)
         conf_item = [i for i in confirmed["items"] if i["item_type"] == "cad_polyline_area"][0]
         assert conf_item["quantities"]["area_m2"] == pytest.approx(7032.67, abs=1e-2)
+        assert conf_item["quantities"]["display_area_unit"] == "sq m"
+        assert conf_item["quantities"]["display_perimeter_unit"] == "m"
+        assert f"{conf_area['area_native']} sq m" in conf_item["text"]
+        assert "412.5 m" in conf_item["text"]
 
         conf_artifact = (
             settings.workspaces_dir
@@ -685,3 +697,44 @@ def test_extract_dxf_cp1256_mojibake_arabic_and_preserves_raw_and_latin(tmp_path
         assert "Résumé" in texts
         assert "Ø 20mm" in texts
         assert "20 m²" in texts
+
+
+def test_extract_closed_lwpolyline_with_semicircular_arc_bulge_exact_area(
+    tmp_path: Path,
+) -> None:
+    """Closed LWPOLYLINE with semicircular arc bulge computes exact hand-calculated area and perimeter."""
+    doc = ezdxf.new("R2018")
+    doc.header["$INSUNITS"] = 6  # meters
+    msp = doc.modelspace()
+    # 6.0m x 4.0m rectangle (24.0 m2) + semicircular right cap radius R=2.0m (0.5 * pi * 2^2 = 2*pi)
+    msp.add_lwpolyline([(0, 0, 0), (6, 0, 1.0), (6, 4, 0), (0, 4, 0)], format="xyb", close=True)
+    # 6.0m x 4.0m rectangle with concave semicircular notch (24.0 - 2*pi)
+    msp.add_lwpolyline([(20, 0, 0), (26, 0, -1.0), (26, 4, 0), (20, 4, 0)], format="xyb", close=True)
+
+    buf = StringIO()
+    doc.write(buf)
+    dxf_bytes = buf.getvalue().encode("utf-8")
+
+    expected_convex_area = round(24.0 + 2.0 * math.pi, 6)
+    expected_concave_area = round(24.0 - 2.0 * math.pi, 6)
+    expected_perim = round(16.0 + 2.0 * math.pi, 6)
+
+    settings = _test_settings(tmp_path)
+    app = create_app(settings)
+    with TestClient(app) as client:
+        project_id, _ = _create_project(client)
+        f_dxf = _upload_file(client, project_id, "arc_bulge_plan.dxf", dxf_bytes, "application/dxf")
+        res = client.post(f"/api/files/{f_dxf['id']}/extract")
+        assert res.status_code == 201, res.text
+        data = res.json()
+
+        areas = sorted(data["drawing_inventory"]["closed_areas"], key=lambda x: x["area_native"])
+        assert len(areas) == 2
+        assert areas[0]["area_native"] == pytest.approx(expected_concave_area, abs=1e-5)
+        assert areas[0]["area_m2"] == pytest.approx(expected_concave_area, abs=1e-5)
+        assert areas[0]["has_arc_bulge"] is True
+
+        assert areas[1]["area_native"] == pytest.approx(expected_convex_area, abs=1e-5)
+        assert areas[1]["area_m2"] == pytest.approx(expected_convex_area, abs=1e-5)
+        assert areas[1]["perimeter_native"] == pytest.approx(expected_perim, abs=1e-5)
+        assert areas[1]["has_arc_bulge"] is True

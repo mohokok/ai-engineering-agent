@@ -13,6 +13,7 @@ from app.api.extraction import router as extraction_router
 from app.api.files import router as files_router
 from app.api.health import router as health_router
 from app.api.projects import router as projects_router
+from app.api.research import router as research_router
 from app.api.settings import router as settings_router
 from app.api.tasks import router as tasks_router
 from app.core.config import Settings, get_settings
@@ -66,6 +67,7 @@ def create_app(
     *,
     secret_store: SecretStore | None = None,
     provider_client_factory: Callable[[str], Any] | None = None,
+    research_http_transport: Any | None = None,
 ) -> FastAPI:
     """Create and configure the FastAPI application instance."""
     resolved_settings = settings or get_settings()
@@ -98,6 +100,7 @@ def create_app(
     application.state.session_factory = session_factory
     application.state.secret_store = resolved_secret_store
     application.state.provider_client_factory = provider_client_factory
+    application.state.research_http_transport = research_http_transport
 
     application.add_middleware(
         UploadSizeLimitMiddleware,
@@ -115,6 +118,7 @@ def create_app(
     application.include_router(files_router, prefix="/api")
     application.include_router(extraction_router, prefix="/api")
     application.include_router(tasks_router, prefix="/api")
+    application.include_router(research_router, prefix="/api")
     application.include_router(settings_router, prefix="/api")
     return application
 

@@ -18,8 +18,10 @@ import {
   listFileExtractions,
   listProjectFiles,
   listProjects,
+  listResearchRuns,
   listTasks,
   refreshProviderModels,
+  runControlledResearch,
   saveProviderApiKey,
   summarizeDrawingVision,
   testProviderConnection,
@@ -30,6 +32,7 @@ import { AssignmentsView } from "./components/AssignmentsView";
 import { ProjectFilesPanel } from "./components/ProjectFilesPanel";
 import { ProjectWorkspaceView } from "./components/ProjectWorkspaceView";
 import { ProviderSettingsView } from "./components/ProviderSettingsView";
+import { ResearchView } from "./components/ResearchView";
 import type {
   ExtractionCapabilitiesOut,
   FileExtractionDetailOut,
@@ -37,6 +40,8 @@ import type {
   ProjectFileOut,
   ProjectSummary,
   ProviderSettingsOut,
+  ResearchRunDetailOut,
+  ResearchRunSummaryOut,
   TaskDetailOut,
   TaskSummaryOut,
 } from "./types";
@@ -1092,5 +1097,173 @@ describe("Step 07 CAD/BIM inventory, ODA status, and Vision Summary disclaimer U
       "/api/extractions/ext-doubt-1/confirm-unit",
       expect.objectContaining({ method: "POST" })
     );
+
+    const confirmedHtml = renderToStaticMarkup(
+      <ProjectFilesPanel
+        lang="en"
+        projectId="proj-7b"
+        initialFiles={[]}
+        initialCapabilities={capabilities}
+        initialExtraction={{
+          ...doubtfulExtraction,
+          units_doubtful: false,
+          units_status: "owner_confirmed",
+          owner_confirmed_unit: "m",
+          cad_units: "m (owner confirmed; file header in, $INSUNITS=1)",
+          drawing_inventory: {
+            ...doubtfulExtraction.drawing_inventory,
+            closed_areas: [
+              {
+                handle: "2B0",
+                layer: "0",
+                type: "LWPOLYLINE",
+                area_native: 2.040006,
+                area_native_unit: "sq_in",
+                perimeter_native: 5.8,
+                perimeter_unit: "in",
+                display_area: 2.040006,
+                display_area_unit: "sq m",
+                display_perimeter: 5.8,
+                display_perimeter_unit: "m",
+                raw_declared_unit: "in",
+                area_m2: 2.040006,
+              },
+            ],
+          },
+        }}
+      />
+    );
+    expect(confirmedHtml).toContain("Confirmed Display Area");
+    expect(confirmedHtml).toContain("2.040006 sq m");
+    expect(confirmedHtml).toContain("5.8 m");
+    expect(confirmedHtml).toContain("raw: 2.040006 sq_in");
+    expect(confirmedHtml).toContain("raw: 5.8 in");
+  });
+});
+
+describe("App Step 08 Controlled Internet Research UI (RTL/LTR)", () => {
+  it("renders Research History tab and ResearchView in Arabic RTL and English LTR with unreviewed/injection badges", async () => {
+    const appAr = renderToStaticMarkup(<App initialLang="ar" initialTab="research" />);
+    expect(appAr).toContain('dir="rtl"');
+    expect(appAr).toContain("البحث الهندسي المضبوط");
+    expect(appAr).toContain("سجل أبحاث الإنترنت والمصادر");
+
+    const sampleSummary: ResearchRunSummaryOut = {
+      id: "res-run-1",
+      project_id: "p-1",
+      task_id: null,
+      query: "متطلبات التهوية لغرف العمليات NFPA 99",
+      search_provider: "duckduckgo_lite",
+      classification: "Preliminary",
+      status: "partial_inaccessible",
+      summary: "Verified NFPA page; ISO paywall marked unreviewed.",
+      error_message: null,
+      total_sources: 2,
+      accessible_sources: 1,
+      inaccessible_sources: 1,
+      token_usage: { prompt_tokens: 150, output_tokens: 60, total_tokens: 210, thoughts_tokens: 0, cached_tokens: 0, latency_ms: 0 },
+      artifact_relative_path: "11_References/research/res-run-1/research_log.json",
+      created_at: "2026-11-20T18:00:00Z",
+    };
+
+    const sampleDetail: ResearchRunDetailOut = {
+      ...sampleSummary,
+      structured_output: {
+        summary: "Verified NFPA page; ISO paywall marked unreviewed.",
+        verified_findings: [
+          {
+            claim: "Operating theatre ventilation criteria cited directly from fetched page.",
+            source_name: "NFPA 99 Overview",
+            source_url: "https://nfpa.org/codes/nfpa-99",
+            publication_date: "2024-01-15",
+            priority_tier: "standards_bodies",
+          },
+        ],
+        unreviewed_or_inaccessible: [
+          "https://iso.org/standard/paywalled.html — UNREVIEWED (HTTP 403 Forbidden)",
+        ],
+        standards_and_gaps: [],
+        injection_attempts_ignored: [
+          "Ignored untrusted directive from https://nfpa.org/codes/nfpa-99: ignore all previous instructions",
+        ],
+        assumptions: ["Assumption (to confirm with owner): Verify local hospital authority addendum."],
+        suggested_classification: "Preliminary",
+      },
+      sources: [
+        {
+          id: "src-1",
+          research_run_id: "res-run-1",
+          project_id: "p-1",
+          task_id: null,
+          source_name: "NFPA 99 Overview",
+          url: "https://nfpa.org/codes/nfpa-99",
+          publication_date: "2024-01-15",
+          access_date: "2026-11-20T18:00:00Z",
+          query_text: sampleSummary.query,
+          extracted_info: "Medical gas and essential ventilation controls.",
+          reliability_rating: "high_standards_body",
+          source_type: "standard",
+          source_priority_tier: "standards_bodies",
+          priority_rank: 2,
+          access_status: "accessible",
+          reviewed: true,
+          http_status: 200,
+          failure_reason: null,
+          untrusted_neutralized: true,
+          created_at: "2026-11-20T18:00:00Z",
+        },
+        {
+          id: "src-2",
+          research_run_id: "res-run-1",
+          project_id: "p-1",
+          task_id: null,
+          source_name: "ISO Restricted Standard",
+          url: "https://iso.org/standard/paywalled.html",
+          publication_date: null,
+          access_date: "2026-11-20T18:00:00Z",
+          query_text: sampleSummary.query,
+          extracted_info: "UNREVIEWED — Document inaccessible: HTTP 403",
+          reliability_rating: "unreviewed",
+          source_type: "standard",
+          source_priority_tier: "standards_bodies",
+          priority_rank: 99,
+          access_status: "inaccessible",
+          reviewed: false,
+          http_status: 403,
+          failure_reason: "HTTP 403",
+          untrusted_neutralized: true,
+          created_at: "2026-11-20T18:00:00Z",
+        },
+      ],
+    };
+
+    const htmlEn = renderToStaticMarkup(
+      <ResearchView
+        lang="en"
+        initialRuns={[sampleSummary]}
+        initialDetail={sampleDetail}
+      />
+    );
+    expect(htmlEn).toContain("Controlled Internet Research");
+    expect(htmlEn).toContain("Inaccessible Documents (Explicitly Marked UNREVIEWED)");
+    expect(htmlEn).toContain("https://iso.org/standard/paywalled.html");
+    expect(htmlEn).toContain("Untrusted Prompt-Injection Attempts Safely Ignored");
+    expect(htmlEn).toContain("high_standards_body");
+    expect(htmlEn).toContain("Inaccessible — Unreviewed");
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(sampleDetail), { status: 201 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ runs: [sampleSummary], total: 1, classification: "Preliminary" }), {
+          status: 200,
+        })
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const created = await runControlledResearch({ query: "NFPA 99", classification: "Preliminary" });
+    expect(created.id).toBe("res-run-1");
+    const listOut = await listResearchRuns();
+    expect(listOut.total).toBe(1);
   });
 });
