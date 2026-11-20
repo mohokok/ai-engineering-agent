@@ -3,12 +3,15 @@
 from app.services.extractors.bim import extract_ifc
 from app.services.extractors.cad import extract_dxf
 from app.services.extractors.ocr import (
+    OCR_LOW_CONFIDENCE_THRESHOLD,
     TESSERACT_NOT_INSTALLED_STATUS,
+    OcrPageResult,
     OcrRunner,
     TesseractProbe,
     detect_tesseract,
     probe_tesseract,
     run_ocr_on_image_bytes,
+    run_ocr_with_details,
 )
 from app.services.extractors.oda import (
     ODA_NOT_INSTALLED_STATUS,
@@ -25,15 +28,22 @@ from app.services.extractors.office import (
     extract_pptx,
     extract_xlsx,
 )
-from app.services.extractors.pdf_and_image import extract_image, extract_pdf
+from app.services.extractors.pdf_and_image import (
+    assess_native_pdf_text_reliability,
+    extract_image,
+    extract_pdf,
+)
 
 __all__ = [
     "ExtractedPayload",
+    "OCR_LOW_CONFIDENCE_THRESHOLD",
     "ODA_NOT_INSTALLED_STATUS",
+    "OcrPageResult",
     "OcrRunner",
     "OdaProbe",
     "TESSERACT_NOT_INSTALLED_STATUS",
     "TesseractProbe",
+    "assess_native_pdf_text_reliability",
     "convert_dwg_to_dxf",
     "detect_oda",
     "detect_tesseract",
@@ -49,4 +59,5 @@ __all__ = [
     "probe_oda",
     "probe_tesseract",
     "run_ocr_on_image_bytes",
+    "run_ocr_with_details",
 ]

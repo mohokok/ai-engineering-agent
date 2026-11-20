@@ -62,6 +62,9 @@ class Project(Base):
     research_runs: Mapped[list["ResearchRun"]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )
+    review_reports: Mapped[list["ReviewReport"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
     issues: Mapped[list["Issue"]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )
@@ -204,7 +207,7 @@ class TaskStep(Base):
 
 
 class Deliverable(Base):
-    """Generated consultancy deliverable with mandatory review classification."""
+    """Generated consultancy deliverable with mandatory review classification and file provenance."""
 
     __tablename__ = "deliverables"
     __table_args__ = (classification_check_constraint(),)
@@ -219,6 +222,9 @@ class Deliverable(Base):
     file_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("files.id", ondelete="SET NULL"), nullable=True
     )
+    report_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("review_reports.id", ondelete="SET NULL"), index=True, nullable=True
+    )
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     deliverable_type: Mapped[str] = mapped_column(String(64), nullable=False)
     discipline: Mapped[str] = mapped_column(
@@ -230,6 +236,12 @@ class Deliverable(Base):
     )
     status: Mapped[str] = mapped_column(String(32), default="draft", nullable=False)
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    folder_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    relative_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    mime_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
@@ -239,6 +251,47 @@ class Deliverable(Base):
     )
 
     project: Mapped["Project"] = relationship(back_populates="deliverables")
+    review_report: Mapped["ReviewReport | None"] = relationship(back_populates="deliverables")
+
+
+class ReviewReport(Base):
+    """Structured Step 09 review findings report persisted with revision and provenance metadata."""
+
+    __tablename__ = "review_reports"
+    __table_args__ = (classification_check_constraint(),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    project_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("projects.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    task_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("tasks.id", ondelete="SET NULL"), index=True, nullable=True
+    )
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    discipline: Mapped[str] = mapped_column(
+        String(64), default="multidisciplinary", nullable=False
+    )
+    language: Mapped[str] = mapped_column(String(16), default="ar", nullable=False)
+    classification: Mapped[str] = mapped_column(
+        String(32), default="Preliminary", nullable=False
+    )
+    revision: Mapped[str] = mapped_column(String(32), default="Rev 01", nullable=False)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="generated", nullable=False)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    structured_payload_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    token_usage_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    estimated_prompt_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, index=True, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+    project: Mapped["Project"] = relationship(back_populates="review_reports")
+    deliverables: Mapped[list["Deliverable"]] = relationship(back_populates="review_report")
 
 
 class ResearchRun(Base):

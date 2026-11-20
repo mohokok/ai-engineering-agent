@@ -1,6 +1,7 @@
 import type {
   CadUnitChoice,
   ConnectionTestOut,
+  DeliverableListResponse,
   DrawingVisionSummaryOut,
   ExtractionCapabilitiesOut,
   FileExtractionDetailOut,
@@ -18,6 +19,9 @@ import type {
   ResearchRunCreateRequest,
   ResearchRunDetailOut,
   ResearchSourceListResponse,
+  ReviewReportDetailOut,
+  ReviewReportGenerateRequest,
+  ReviewReportListResponse,
   SearchProviderName,
   SupportedExtensionsResponse,
   TaskComplexity,
@@ -334,4 +338,69 @@ export function listResearchSources(options?: {
   return requestJson<ResearchSourceListResponse>(
     q ? `/api/research/sources?${q}` : "/api/research/sources"
   );
+}
+
+export function generateReviewReport(
+  projectId: string,
+  payload: ReviewReportGenerateRequest
+): Promise<ReviewReportDetailOut> {
+  return requestJson<ReviewReportDetailOut>(
+    `/api/projects/${encodeURIComponent(projectId)}/review-reports`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }
+  );
+}
+
+export function listProjectReviewReports(
+  projectId: string
+): Promise<ReviewReportListResponse> {
+  return requestJson<ReviewReportListResponse>(
+    `/api/projects/${encodeURIComponent(projectId)}/review-reports`
+  );
+}
+
+export function getReviewReportDetail(reportId: string): Promise<ReviewReportDetailOut> {
+  return requestJson<ReviewReportDetailOut>(
+    `/api/review-reports/${encodeURIComponent(reportId)}`
+  );
+}
+
+export function enhanceReviewReportAi(
+  reportId: string,
+  complexity: "fast" | "deep" = "fast"
+): Promise<ReviewReportDetailOut> {
+  return requestJson<ReviewReportDetailOut>(
+    `/api/review-reports/${encodeURIComponent(reportId)}/ai-synthesize`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ complexity }),
+    }
+  );
+}
+
+export function listDeliverables(options?: {
+  project_id?: string;
+  folder_name?: string;
+  format?: string;
+}): Promise<DeliverableListResponse> {
+  const params = new URLSearchParams();
+  if (options?.project_id) {
+    params.set("project_id", options.project_id);
+  }
+  if (options?.folder_name) {
+    params.set("folder_name", options.folder_name);
+  }
+  if (options?.format) {
+    params.set("format", options.format);
+  }
+  const q = params.toString();
+  return requestJson<DeliverableListResponse>(q ? `/api/deliverables?${q}` : "/api/deliverables");
+}
+
+export function getDeliverableDownloadUrl(deliverableId: string): string {
+  return `/api/deliverables/${encodeURIComponent(deliverableId)}/download`;
 }

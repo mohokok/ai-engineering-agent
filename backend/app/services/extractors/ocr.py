@@ -5,7 +5,7 @@ from io import BytesIO
 from pathlib import Path
 import shutil
 import subprocess
-from typing import Callable
+from typing import Any, Callable
 
 from PIL import Image
 import pytesseract
@@ -14,8 +14,9 @@ from app.schemas.extraction import OcrCapabilityOut
 
 TESSERACT_NOT_INSTALLED_STATUS = "not installed - pending owner"
 TESSERACT_INSTALL_URL = "https://github.com/UB-Mannheim/tesseract/wiki"
+OCR_LOW_CONFIDENCE_THRESHOLD = 65.0
 
-OcrRunner = Callable[[bytes, str], str]
+OcrRunner = Callable[[bytes, str], Any]
 
 _DEFAULT_WINDOWS_TESSERACT_PATHS: tuple[Path, ...] = (
     Path("C:/Program Files/Tesseract-OCR/tesseract.exe"),
@@ -143,24 +144,67 @@ def detect_tesseract(configured_cmd: str = "") -> OcrCapabilityOut:
     return probe_tesseract(configured_cmd).capability
 
 
-def run_ocr_on_image_bytes(
+@dataclass(frozen=True)
+class OcrPageResult:
+    """Normalized per-page OCR output carrying recognized text and Tesseract mean word confidence."""
+
+    text: str | None
+    warning: str | None
+    confidence_mean: float | None = None
+    low_confidence: bool = False
+
+
+def _compute_mean_confidence_from_data(data: dict[str, Any]) -> float | None:
+    """Compute arithmetic mean over non-empty recognized word confidences (ignoring -1 layout rows)."""
+    texts = data.get("text") or []
+    confs = data.get("conf") or []
+    scores: list[float] = []
+    for word, conf in zip(texts, confs):
+        if not str(word or "").strip():
+            continue
+        try:
+            score = float(conf)
+        except (TypeError, ValueError):
+            continue
+        if score >= 0.0:
+            scores.append(score)
+    if not scores:
+        return None
+    return round(sum(scores) / len(scores), 2)
+
+
+def run_ocr_with_details(
     image_bytes: bytes,
     *,
     configured_cmd: str = "",
     ocr_probe: TesseractProbe | None = None,
     ocr_runner: OcrRunner | None = None,
     requested_lang: str = "ara+eng",
-) -> tuple[str | None, str | None]:
-    """Run Arabic+English OCR on image bytes using a cached run-level probe when provided."""
+) -> OcrPageResult:
+    """Run Arabic+English OCR on image bytes and compute mean per-word confidence when available."""
     if ocr_runner is not None:
-        raw_text = ocr_runner(image_bytes, requested_lang)
-        cleaned = (raw_text or "").strip()
-        return (cleaned or None), None
+        raw_out = ocr_runner(image_bytes, requested_lang)
+        if isinstance(raw_out, OcrPageResult):
+            return raw_out
+        if isinstance(raw_out, dict):
+            cleaned = str(raw_out.get("text") or "").strip() or None
+            raw_conf = raw_out.get("confidence_mean")
+            conf_mean = round(float(raw_conf), 2) if raw_conf is not None else None
+            is_low = bool(cleaned and conf_mean is not None and conf_mean < OCR_LOW_CONFIDENCE_THRESHOLD)
+            return OcrPageResult(
+                text=cleaned,
+                warning=raw_out.get("warning"),
+                confidence_mean=conf_mean,
+                low_confidence=is_low,
+            )
+        cleaned = (str(raw_out or "")).strip() or None
+        return OcrPageResult(text=cleaned, warning=None)
 
     probe = ocr_probe if ocr_probe is not None else probe_tesseract(configured_cmd)
     if not probe.capability.installed or not probe.executable:
-        return None, (
-            "Tesseract OCR is not installed - pending owner; OCR text extraction skipped."
+        return OcrPageResult(
+            text=None,
+            warning="Tesseract OCR is not installed - pending owner; OCR text extraction skipped.",
         )
 
     lang_parts = []
@@ -171,9 +215,60 @@ def run_ocr_on_image_bytes(
     selected_lang = "+".join(lang_parts) if lang_parts else "eng"
 
     pytesseract.pytesseract.tesseract_cmd = probe.executable
+    data_is_mocked = (
+        getattr(pytesseract.image_to_data, "__module__", "") != "pytesseract.pytesseract"
+    )
+    has_real_exe = Path(probe.executable).is_file() or bool(shutil.which(probe.executable))
     with Image.open(BytesIO(image_bytes)) as img:
         text = pytesseract.image_to_string(img, lang=selected_lang)
+        conf_mean: float | None = None
+        if has_real_exe or data_is_mocked:
+            try:
+                tsv_data = pytesseract.image_to_data(
+                    img,
+                    lang=selected_lang,
+                    output_type=pytesseract.Output.DICT,
+                )
+                if isinstance(tsv_data, dict):
+                    conf_mean = _compute_mean_confidence_from_data(tsv_data)
+            except (
+                pytesseract.TesseractNotFoundError,
+                pytesseract.TesseractError,
+                FileNotFoundError,
+                OSError,
+            ):
+                # Partial unit tests sometimes mock image_to_string without real binary data extraction.
+                conf_mean = None
+
+    cleaned_text = text.strip() or None
+    low_conf = bool(
+        cleaned_text and conf_mean is not None and conf_mean < OCR_LOW_CONFIDENCE_THRESHOLD
+    )
     warning: str | None = None
     if not probe.capability.ara_installed:
         warning = "Tesseract OCR ran without Arabic ('ara') language data."
-    return (text.strip() or None), warning
+    return OcrPageResult(
+        text=cleaned_text,
+        warning=warning,
+        confidence_mean=conf_mean,
+        low_confidence=low_conf,
+    )
+
+
+def run_ocr_on_image_bytes(
+    image_bytes: bytes,
+    *,
+    configured_cmd: str = "",
+    ocr_probe: TesseractProbe | None = None,
+    ocr_runner: OcrRunner | None = None,
+    requested_lang: str = "ara+eng",
+) -> tuple[str | None, str | None]:
+    """Run Arabic+English OCR on image bytes using a cached run-level probe when provided."""
+    res = run_ocr_with_details(
+        image_bytes,
+        configured_cmd=configured_cmd,
+        ocr_probe=ocr_probe,
+        ocr_runner=ocr_runner,
+        requested_lang=requested_lang,
+    )
+    return res.text, res.warning

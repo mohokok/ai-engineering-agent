@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { fetchHealth } from "./api";
 import { AssignmentsView } from "./components/AssignmentsView";
+import { DeliverablesView } from "./components/DeliverablesView";
 import { ProjectWorkspaceView } from "./components/ProjectWorkspaceView";
 import { ProviderSettingsView } from "./components/ProviderSettingsView";
 import { ResearchView } from "./components/ResearchView";
 import type { HealthPayload, Lang } from "./types";
 
-type ActiveTab = "projects" | "assignments" | "research" | "settings";
+type ActiveTab = "projects" | "assignments" | "research" | "deliverables" | "settings";
 
 const COPY: Record<
   Lang,
@@ -23,12 +24,13 @@ const COPY: Record<
     projectsTab: string;
     assignmentsTab: string;
     researchTab: string;
+    deliverablesTab: string;
     settingsTab: string;
   }
 > = {
   ar: {
     title: "الوكيل الهندسي الاستشاري المحلي",
-    subtitle: "الخطوة 08 — البحث الهندسي المضبوط وسجل المصادر الموثّق (إلى جانب CAD/BIM والمستندات)",
+    subtitle: "الخطوة 09 — مراجعة المستندات والمخططات وتوليد تقارير النتائج والمخرجات (DOCX + PDF)",
     classificationLabel: "التصنيف: أولي (Preliminary)",
     toggleLang: "Switch to English (LTR)",
     refreshHealth: "تحديث فحص الخادم",
@@ -39,11 +41,12 @@ const COPY: Record<
     projectsTab: "المشاريع والملفات",
     assignmentsTab: "المهام والتكليفات",
     researchTab: "البحث وسجل المصادر",
+    deliverablesTab: "التقارير والمخرجات",
     settingsTab: "إعدادات Gemini والمزودين",
   },
   en: {
     title: "Local AI Engineering Consultancy Agent",
-    subtitle: "Step 08 — Controlled Internet Research & Persisted Source Log",
+    subtitle: "Step 09 — Document & Drawing Review Findings Report (DOCX + PDF Deliverables)",
     classificationLabel: "Classification: Preliminary",
     toggleLang: "التبديل إلى العربية (RTL)",
     refreshHealth: "Refresh Health Check",
@@ -54,6 +57,7 @@ const COPY: Record<
     projectsTab: "Projects & Files",
     assignmentsTab: "New Assignment & History",
     researchTab: "Research & Source Log",
+    deliverablesTab: "Deliverables & Reports",
     settingsTab: "AI Provider Settings",
   },
 };
@@ -172,6 +176,13 @@ export function App({
           </button>
           <button
             type="button"
+            className={`btn ${activeTab === "deliverables" ? "" : "btn-secondary"}`}
+            onClick={() => setActiveTab("deliverables")}
+          >
+            {text.deliverablesTab}
+          </button>
+          <button
+            type="button"
             className={`btn ${activeTab === "settings" ? "" : "btn-secondary"}`}
             onClick={() => setActiveTab("settings")}
           >
@@ -185,6 +196,8 @@ export function App({
           <AssignmentsView lang={lang} />
         ) : activeTab === "research" ? (
           <ResearchView lang={lang} />
+        ) : activeTab === "deliverables" ? (
+          <DeliverablesView lang={lang} />
         ) : (
           <ProviderSettingsView lang={lang} />
         )}

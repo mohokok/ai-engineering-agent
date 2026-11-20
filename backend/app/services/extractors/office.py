@@ -15,7 +15,12 @@ from openpyxl.utils import get_column_letter
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 
-from app.schemas.extraction import ExtractedItem, ExtractionCounts, ExtractionStatus
+from app.schemas.extraction import (
+    ExtractedItem,
+    ExtractionCounts,
+    ExtractionStatus,
+    PageReconciliationOut,
+)
 
 _FIXED_DECIMAL_RE = re.compile(r"^0\.(0+)")
 
@@ -31,6 +36,7 @@ class ExtractedPayload:
     ocr_status: str = "not_needed"
     ocr_dpi: int | float | None = None
     status: ExtractionStatus = "extracted"
+    page_reconciliation: PageReconciliationOut | None = None
 
 
 class _SafeExcelReader(ExcelReader):
