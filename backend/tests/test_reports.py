@@ -446,3 +446,123 @@ def test_step09_ai_enhance_caps_prompt_enforces_ref_links_versions_cleanly_and_c
         blocked = client.post(f"/api/review-reports/{v1['id']}/ai-synthesize", json={"complexity": "fast"})
         assert blocked.status_code == 429
         assert len(captured_prompts) == 1
+
+
+def test_step09_only_cites_reliable_text_and_excludes_failed_blank_cid_reversed_or_low_confidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Step 09 findings/facts must NEVER cite garbled CID, reversed Arabic, blank/failed, or low-confidence OCR pages."""
+    from app.db.models import FileExtraction
+
+    # Mixed PDF: Page 1 has clean reliable spec; Page 2 has literal (cid:101)(cid:102) + reversed Arabic tokens
+    mixed_doc = pymupdf.open()
+    p1 = mixed_doc.new_page()
+    p1.insert_text((50, 80), "Valid Design Note: Column C1 design load = 850.00 kN.", fontsize=12)
+    p2 = mixed_doc.new_page()
+    p2.insert_text((50, 80), "GARBLED_DO_NOT_CITE (cid:101)(cid:102) يف نم ىلع ىلإ", fontsize=12)
+    mixed_pdf = mixed_doc.tobytes()
+    mixed_doc.close()
+
+    settings = _test_settings(tmp_path)
+
+    # 1. Run extraction with Tesseract unavailable -> Page 1 = text, Page 2 = failed (native_text_unreliable)
+    with monkeypatch.context() as m:
+        m.setattr("app.services.extractors.ocr._DEFAULT_WINDOWS_TESSERACT_PATHS", ())
+        m.setattr("app.services.extractors.ocr.shutil.which", lambda *_a, **_kw: None)
+
+        app = create_app(settings)
+        with TestClient(app) as client:
+            proj = client.post("/api/projects", json={"name": "Reliability Gate Project", "code": "REL-09"}).json()
+            pid = proj["id"]
+            up = client.post(
+                f"/api/projects/{pid}/files",
+                files=[("files", ("mixed_spec.pdf", mixed_pdf, "application/pdf"))],
+            ).json()
+            fid = up["items"][0]["file"]["id"]
+            ext_res = client.post(f"/api/files/{fid}/extract")
+            assert ext_res.status_code == 201
+            assert ext_res.json()["status"] == "partial_ocr_unavailable"
+            assert ext_res.json()["ocr_status"] == "partial_ocr_unavailable"
+
+            rep = client.post(
+                f"/api/projects/{pid}/review-reports",
+                json={"language": "en", "classification": "For Review", "use_ai": False},
+            ).json()
+
+    serialized = str(rep)
+    assert "Column C1 design load = 850.00 kN" in serialized
+    assert "GARBLED_DO_NOT_CITE" not in serialized
+    assert "(cid:101)" not in serialized
+    assert any("page:2" in g for g in rep["gaps_or_unextracted"])
+    # Verified facts and findings MUST cite only EXT-* linked to clean Page 1 (never Page 2 garbled text)
+    assert any("Column C1 design load = 850.00 kN" in vf["text"] for vf in rep["verified_facts"])
+    assert any("Page Reliability" in f["location_or_drawing_ref"] for f in rep["findings"])
+
+    # 2. Inject blank + low-confidence OCR + recovered reliable OCR cases -> only clean text is cited!
+    with app.state.session_factory() as db:
+        ext_row = db.get(FileExtraction, ext_res.json()["id"])
+        assert ext_row is not None
+        payload_copy = dict(ext_row.payload_json)
+        payload_copy["items"] = [
+            {
+                "item_index": 1,
+                "item_type": "ocr_text",
+                "source_file": "mixed_spec.pdf",
+                "file_id": fid,
+                "version_number": 1,
+                "page_or_sheet": "page:1",
+                "location": "ocr_full_page",
+                "text": "مخطط الأعمدة الموثوق: حمل العمود 1250.00 kN",
+                "raw_native_text": "RAW_REVERSED_NEVER_CITE يف نم ىلع",
+                "native_text_unreliable": True,
+                "ocr_confidence_mean": 92.4,
+                "ocr_low_confidence": False,
+                "page_status": "ocr_text",
+                "extraction_method": "ocr",
+            },
+            {
+                "item_index": 2,
+                "item_type": "ocr_text",
+                "source_file": "mixed_spec.pdf",
+                "file_id": fid,
+                "version_number": 1,
+                "page_or_sheet": "page:2",
+                "location": "ocr_full_page",
+                "text": "LOWCONF_NOISE_DO_NOT_CITE",
+                "ocr_confidence_mean": 38.0,
+                "ocr_low_confidence": True,
+                "page_status": "ocr_text",
+                "extraction_method": "ocr",
+            },
+            {
+                "item_index": 3,
+                "item_type": "ocr_text",
+                "source_file": "mixed_spec.pdf",
+                "file_id": fid,
+                "version_number": 1,
+                "page_or_sheet": "page:3",
+                "location": "ocr_full_page",
+                "text": None,
+                "page_status": "ocr_empty_or_blank",
+                "extraction_method": "ocr",
+            },
+        ]
+        ext_row.status = "extracted"
+        ext_row.ocr_status = "ocr_applied (native text unreliable)"
+        ext_row.payload_json = payload_copy
+        db.commit()
+
+    with TestClient(app) as client:
+        rep2 = client.post(
+            f"/api/projects/{pid}/review-reports",
+            json={"language": "ar", "classification": "For Review", "use_ai": False},
+        ).json()
+
+    serialized2 = str(rep2)
+    assert "مخطط الأعمدة الموثوق: حمل العمود 1250.00 kN" in serialized2
+    assert "RAW_REVERSED_NEVER_CITE" not in serialized2
+    assert "LOWCONF_NOISE_DO_NOT_CITE" not in serialized2
+    assert any("page:2" in g and "38.0%" in g for g in rep2["gaps_or_unextracted"])
+    assert any("page:3" in g and "ocr_empty_or_blank" in g for g in rep2["gaps_or_unextracted"])
+

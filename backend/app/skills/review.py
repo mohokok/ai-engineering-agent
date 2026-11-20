@@ -31,6 +31,7 @@ from app.schemas.reports import (
     StatementCategory,
 )
 from app.services.extraction import STEP07_EXTRACTABLE_EXTENSIONS, extract_project_file
+from app.services.extractors.pdf_and_image import assess_native_pdf_text_reliability
 from app.services.files import FileRecordNotFoundError
 from app.services.provider_settings import (
     _load_provider_config,
@@ -272,14 +273,47 @@ def collect_project_evidence_index(
         cad_summary = drawing_inv if (drawing_inv and drawing_inv.get("kind") == "cad_dxf") else None
         ifc_summary = drawing_inv if (drawing_inv and drawing_inv.get("kind") == "bim_ifc") else None
 
-        # Index bounded representative items (max 15 items per file so registry stays sharp and bounded)
+        # Index only items that pass PDF text reliability / OCR confidence gates (max 15 verified items per file).
         per_file_refs: list[SourceLocationRef] = []
-        for idx, item in enumerate(items[:15]):
+        skipped_page_notes: list[str] = []
+        low_conf_page_notes: list[str] = []
+        for idx, item in enumerate(items):
+            page_label = str(item.get("page_or_sheet") or f"v{pf.current_version}")
+            page_status = item.get("page_status")
             raw_txt = str(item.get("text") or "").strip()
             if not raw_txt and item.get("cached_value") is not None:
                 raw_txt = f"Formula {item.get('formula') or ''} => {item.get('cached_value')}"
-            if not raw_txt:
+
+            # Track pages that failed sanity checks, OCR blank/failed, or low-confidence OCR without citing them.
+            if page_status in ("failed", "ocr_empty_or_blank"):
+                reason_detail = str(item.get("page_error") or page_status)
+                skipped_page_notes.append(f"{page_label} ({reason_detail})")
                 continue
+
+            if item.get("native_text_unreliable") and page_status != "ocr_text" and item.get("extraction_method") != "ocr":
+                skipped_page_notes.append(f"{page_label} (native_text_unreliable without OCR)")
+                continue
+
+            if raw_txt:
+                is_unreliable_txt, unreliable_reason = assess_native_pdf_text_reliability(raw_txt)
+                if is_unreliable_txt:
+                    skipped_page_notes.append(
+                        f"{page_label} (rejected text sanity check: {unreliable_reason})"
+                    )
+                    continue
+
+            if item.get("ocr_low_confidence"):
+                conf_val = item.get("ocr_confidence_mean")
+                low_conf_page_notes.append(
+                    f"{page_label} (OCR mean confidence={conf_val}%)"
+                    if conf_val is not None
+                    else f"{page_label} (low OCR confidence)"
+                )
+                continue
+
+            if not raw_txt or len(per_file_refs) >= 15:
+                continue
+
             ref = _add_source_ref(
                 bundle,
                 SourceLocationRef(
@@ -289,7 +323,7 @@ def collect_project_evidence_index(
                     file_id=pf.id,
                     extraction_id=latest_ext.id,
                     source_name=pf.original_filename,
-                    page_or_sheet=str(item.get("page_or_sheet") or f"v{pf.current_version}"),
+                    page_or_sheet=page_label,
                     location=str(item.get("location") or f"item #{idx + 1}"),
                     excerpt=raw_txt[:400],
                 ),
@@ -310,7 +344,7 @@ def collect_project_evidence_index(
                         source_links=[ref],
                     )
                 )
-            elif len(bundle.verified_facts) < 25 and idx < 4:
+            elif len(bundle.verified_facts) < 25 and len(per_file_refs) <= 4:
                 bundle.verified_facts.append(
                     CategorizedStatement(
                         category="verified_fact",
@@ -319,6 +353,7 @@ def collect_project_evidence_index(
                     )
                 )
 
+        has_verified_text_ref = bool(per_file_refs)
         if not per_file_refs:
             fallback_ref = _add_source_ref(
                 bundle,
@@ -331,12 +366,44 @@ def collect_project_evidence_index(
                     source_name=pf.original_filename,
                     page_or_sheet=f"Extraction v{latest_ext.version_number} r{latest_ext.extraction_version}",
                     location=pf.stored_relative_path,
-                    excerpt=f"Extraction status={latest_ext.status}; items={len(items)}.",
+                    excerpt=f"Extraction status={latest_ext.status}; verified_text_items=0/{len(items)}.",
                 ),
             )
             per_file_refs.append(fallback_ref)
 
         primary_ref = per_file_refs[0]
+
+        if skipped_page_notes or low_conf_page_notes:
+            note_parts: list[str] = []
+            if skipped_page_notes:
+                note_parts.append("unverified/blank/failed pages: " + ", ".join(skipped_page_notes[:8]))
+            if low_conf_page_notes:
+                note_parts.append("low-confidence OCR pages: " + ", ".join(low_conf_page_notes[:8]))
+            gap_summary = (
+                f"صفحات مستبعدة من الاستشهاد الموثّق في '{pf.original_filename}' لعدم اجتياز فحص الموثوقية/الدقة: "
+                + "; ".join(note_parts)
+                if is_ar
+                else f"Pages in '{pf.original_filename}' excluded from verified citations (failed sanity/OCR check): "
+                + "; ".join(note_parts)
+            )
+            bundle.gaps_or_unextracted.append(gap_summary)
+            bundle.findings.append(
+                ReviewFinding(
+                    finding_id=next_finding_id(),
+                    discipline="Document Control",
+                    severity="medium",
+                    location_or_drawing_ref=f"{pf.original_filename} — Page Reliability & OCR Gate",
+                    evidence=gap_summary,
+                    recommendation=(
+                        "تحقق يدوياً من الصفحات المستبعدة أو منخفضة الثقة وأعد المسح بجودة أعلى قبل الاعتماد."
+                        if is_ar
+                        else "Manually inspect excluded/blank/low-confidence pages or re-scan cleanly before sign-off."
+                    ),
+                    status="needs_verification",
+                    statement_category="assumption",
+                    source_links=[primary_ref],
+                )
+            )
 
         # Partial OCR warning
         if latest_ext.status == "partial_ocr_unavailable":
@@ -525,8 +592,8 @@ def collect_project_evidence_index(
                     source_links=[bim_ref],
                 )
             )
-        elif not cad_summary and items:
-            # General document/spreadsheet finding anchored to primary_ref
+        elif not cad_summary and has_verified_text_ref:
+            # General document/spreadsheet finding anchored strictly to text that passed reliability checks
             bundle.findings.append(
                 ReviewFinding(
                     finding_id=next_finding_id(),
