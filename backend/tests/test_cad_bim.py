@@ -120,6 +120,9 @@ def test_capabilities_oda_resolution_priority_absent_dwg_and_matrix(
         assert matrix[".dwg"]["support_level"] == "converted_via_oda"
         assert ".rvt" in matrix[".rvt / .rfa / .rte"]["extension"]
         assert matrix[".rvt / .rfa / .rte"]["support_level"] == "not_supported"
+        other_row = matrix[".doc .xls .ppt .rtf .ods .html .json .xml .svg .landxml"]
+        assert other_row["support_level"] == "stored_read_only"
+        assert "stored as read-only original, not extracted" in other_row["notes"].lower()
 
         project_id, _ = _create_project(client)
         f_dwg = _upload_file(client, project_id, "missing_oda.dwg", dwg_bytes, "application/acad")

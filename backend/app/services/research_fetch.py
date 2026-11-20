@@ -25,16 +25,31 @@ from app.schemas.research import (
 MAX_FETCH_BYTES = 10 * 1024 * 1024  # 10 MB cap per fetched page or PDF
 MAX_EXTRACTED_CHARS = 12_000
 FETCH_TIMEOUT_SECONDS = 15.0
-DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+DEFAULT_USER_AGENT = (
+    "LocalAIEngineeringAgent/0.8 (Consultancy Research Client; +local-desktop-app)"
+)
+_PRIMARY_FETCH_HEADERS: dict[str, str] = {
+    "User-Agent": DEFAULT_USER_AGENT,
+    "Accept": "text/html,application/xhtml+xml,application/pdf,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9,ar;q=0.8",
+}
+_RETRY_MINIMAL_HEADERS: dict[str, str] = {
+    "User-Agent": DEFAULT_USER_AGENT,
+    "Accept": "*/*",
+    "Accept-Encoding": "gzip, deflate",
+}
+OWNER_MANUAL_UPLOAD_ACTION = (
+    "download the document yourself and upload it in Projects & Files; it will be cited as owner-provided"
+)
 
 _SEARCH_PROVIDER_METADATA: tuple[dict[str, Any], ...] = (
     {
         "id": "duckduckgo_lite",
-        "label": "DuckDuckGo Lite (Free, Zero API Key)",
+        "label": "DuckDuckGo Lite (Best-Effort Free, Zero API Key)",
         "requires_api_key": False,
         "is_default": True,
-        "pricing_summary": "Free, no API key or credit card required.",
-        "notes": "Default search index; snippets are discarded and every target URL is fetched directly.",
+        "pricing_summary": "Free, no API key or credit card required (best-effort only).",
+        "notes": "Best-effort free search; if rate-limited, recommend Tavily (free API key entered in Settings), Crossref, or direct URLs.",
     },
     {
         "id": "crossref",
@@ -366,19 +381,20 @@ def _search_duckduckgo_lite(
     resp = client.get(
         "https://lite.duckduckgo.com/lite/",
         params={"q": query},
-        headers={"User-Agent": "curl/8.0"},
+        headers=_PRIMARY_FETCH_HEADERS,
     )
-    if resp.status_code == 202:
-        raise ProviderError(
-            "DuckDuckGo Lite returned HTTP 202 (rate-limited or anti-bot challenge); "
-            "try Crossref, enter explicit URLs, or configure a Search API key (Tavily/Serper)."
-        )
     if resp.status_code != 200:
-        raise ProviderError(f"DuckDuckGo Lite returned HTTP {resp.status_code}.")
+        raise ProviderError(
+            f"DuckDuckGo Lite (best-effort only) returned HTTP {resp.status_code}. "
+            "Recommend entering a free Tavily Search API key in Settings, trying Crossref Peer-Reviewed, "
+            "passing direct URLs, or uploading the document in Projects & Files as owner-provided."
+        )
     lower_body = resp.text.lower()
     if "captcha" in lower_body or "anomaly" in lower_body:
         raise ProviderError(
-            "DuckDuckGo Lite presented an anti-bot challenge; blocked without bypassing CAPTCHA."
+            "DuckDuckGo Lite (best-effort only) presented an anti-bot challenge (blocked without bypassing). "
+            "Recommend entering a free Tavily Search API key in Settings, trying Crossref Peer-Reviewed, "
+            "or passing direct URLs / owner-provided uploads."
         )
     doc = lxml_html.fromstring(resp.text)
     candidates: list[SearchCandidate] = []
@@ -542,9 +558,14 @@ def search_web_candidates(
     except ProviderError:
         raise
     except httpx.HTTPError as exc:
+        extra_hint = (
+            " Recommend entering a free Tavily Search API key in Settings or using Crossref / direct URLs."
+            if provider_name == "duckduckgo_lite"
+            else ""
+        )
         raise ProviderError(
             sanitize_secret_text(
-                f"Search provider '{provider_name}' network error ({exc.__class__.__name__}: {exc})",
+                f"Search provider '{provider_name}' network error ({exc.__class__.__name__}: {exc}).{extra_hint}",
                 api_key,
             )
         ) from exc
@@ -656,6 +677,37 @@ def _detect_injection_signals(text: str) -> list[str]:
     return hits
 
 
+def _inaccessible_record(
+    *,
+    url: str,
+    final_url: str,
+    source_name: str,
+    publication_date: str | None,
+    source_priority_tier: SourcePriorityTier,
+    priority_rank: int,
+    source_type: str,
+    http_status: int | None,
+    reason: str,
+) -> FetchedSourceRecord:
+    return FetchedSourceRecord(
+        url=url,
+        final_url=final_url,
+        source_name=source_name[:512],
+        publication_date=publication_date,
+        source_priority_tier=source_priority_tier,
+        priority_rank=priority_rank,
+        reliability_rating="unreviewed",
+        source_type=source_type,
+        access_status="inaccessible",
+        reviewed=False,
+        http_status=http_status,
+        failure_reason=reason,
+        extracted_text=None,
+        excerpt=None,
+        injection_signals=[],
+    )
+
+
 def fetch_page_evidence(
     url: str,
     *,
@@ -664,7 +716,7 @@ def fetch_page_evidence(
     pub_date_hint: str | None = None,
     http_transport: httpx.BaseTransport | None = None,
 ) -> FetchedSourceRecord:
-    """Fetch a single URL directly and classify it cleanly as reviewed or inaccessible/unreviewed."""
+    """Fetch a single URL directly with honest headers (+1 Referer-less retry) and classify reviewed/unreviewed."""
     allow_private = http_transport is not None
     default_tier, default_rank, default_rating, default_stype = classify_source_priority(
         url, title=candidate_title, hint_tier=hint_tier
@@ -674,22 +726,16 @@ def fetch_page_evidence(
     try:
         safe_url = validate_public_http_url(url, allow_private_for_test=allow_private)
     except ValueError as exc:
-        return FetchedSourceRecord(
+        return _inaccessible_record(
             url=url,
             final_url=url,
-            source_name=fallback_name[:512],
+            source_name=fallback_name,
             publication_date=pub_date_hint,
             source_priority_tier="unverified",
             priority_rank=99,
-            reliability_rating="unreviewed",
             source_type=default_stype,
-            access_status="inaccessible",
-            reviewed=False,
             http_status=None,
-            failure_reason=f"Blocked URL ({exc})",
-            extracted_text=None,
-            excerpt=None,
-            injection_signals=[],
+            reason=f"Blocked URL ({exc})",
         )
 
     try:
@@ -699,103 +745,82 @@ def fetch_page_evidence(
             max_redirects=5,
             transport=http_transport,
         ) as client:
-            resp = client.get(safe_url, headers={"User-Agent": DEFAULT_USER_AGENT})
+            resp = client.get(safe_url, headers=_PRIMARY_FETCH_HEADERS)
+            if resp.status_code in (403, 406, 429):
+                # Retry ONCE cleanly with standard Accept-Encoding and an explicitly Referer-less request
+                with httpx.Client(
+                    timeout=FETCH_TIMEOUT_SECONDS,
+                    follow_redirects=True,
+                    max_redirects=5,
+                    transport=http_transport,
+                ) as retry_client:
+                    resp = retry_client.get(safe_url, headers=_RETRY_MINIMAL_HEADERS)
     except httpx.TimeoutException:
-        return FetchedSourceRecord(
+        return _inaccessible_record(
             url=url,
             final_url=safe_url,
-            source_name=fallback_name[:512],
+            source_name=fallback_name,
             publication_date=pub_date_hint,
             source_priority_tier=default_tier,
             priority_rank=default_rank,
-            reliability_rating="unreviewed",
             source_type=default_stype,
-            access_status="inaccessible",
-            reviewed=False,
             http_status=None,
-            failure_reason="Request timed out; document unreviewed.",
-            extracted_text=None,
-            excerpt=None,
-            injection_signals=[],
+            reason=f"Request timed out (unreviewed); {OWNER_MANUAL_UPLOAD_ACTION}.",
         )
     except Exception as exc:
-        return FetchedSourceRecord(
+        return _inaccessible_record(
             url=url,
             final_url=safe_url,
-            source_name=fallback_name[:512],
+            source_name=fallback_name,
             publication_date=pub_date_hint,
             source_priority_tier=default_tier,
             priority_rank=default_rank,
-            reliability_rating="unreviewed",
             source_type=default_stype,
-            access_status="inaccessible",
-            reviewed=False,
             http_status=None,
-            failure_reason=f"Network/fetch failure ({exc.__class__.__name__}); document unreviewed.",
-            extracted_text=None,
-            excerpt=None,
-            injection_signals=[],
+            reason=f"Network/fetch failure ({exc.__class__.__name__}) — document unreviewed; {OWNER_MANUAL_UPLOAD_ACTION}.",
         )
 
     final_url = str(resp.url)
     try:
         validate_public_http_url(final_url, allow_private_for_test=allow_private)
     except ValueError as exc:
-        return FetchedSourceRecord(
+        return _inaccessible_record(
             url=url,
             final_url=final_url,
-            source_name=fallback_name[:512],
+            source_name=fallback_name,
             publication_date=pub_date_hint,
             source_priority_tier="unverified",
             priority_rank=99,
-            reliability_rating="unreviewed",
             source_type=default_stype,
-            access_status="inaccessible",
-            reviewed=False,
             http_status=resp.status_code,
-            failure_reason=f"Redirect target rejected ({exc}); document unreviewed.",
-            extracted_text=None,
-            excerpt=None,
-            injection_signals=[],
+            reason=f"Redirect target rejected ({exc}) — unreviewed.",
         )
 
     if resp.status_code >= 400:
-        return FetchedSourceRecord(
+        return _inaccessible_record(
             url=url,
             final_url=final_url,
-            source_name=fallback_name[:512],
+            source_name=fallback_name,
             publication_date=pub_date_hint,
             source_priority_tier=default_tier,
             priority_rank=default_rank,
-            reliability_rating="unreviewed",
             source_type=default_stype,
-            access_status="inaccessible",
-            reviewed=False,
             http_status=resp.status_code,
-            failure_reason=f"HTTP {resp.status_code} response; document could not be accessed and was NOT reviewed.",
-            extracted_text=None,
-            excerpt=None,
-            injection_signals=[],
+            reason=f"HTTP {resp.status_code} response — document could not be accessed and was NOT reviewed; {OWNER_MANUAL_UPLOAD_ACTION}.",
         )
 
     raw_bytes = resp.content[: MAX_FETCH_BYTES + 1]
     if len(raw_bytes) > MAX_FETCH_BYTES:
-        return FetchedSourceRecord(
+        return _inaccessible_record(
             url=url,
             final_url=final_url,
-            source_name=fallback_name[:512],
+            source_name=fallback_name,
             publication_date=pub_date_hint,
             source_priority_tier=default_tier,
             priority_rank=default_rank,
-            reliability_rating="unreviewed",
             source_type=default_stype,
-            access_status="inaccessible",
-            reviewed=False,
             http_status=resp.status_code,
-            failure_reason=f"Document exceeded {MAX_FETCH_BYTES // (1024 * 1024)} MB limit; unreviewed.",
-            extracted_text=None,
-            excerpt=None,
-            injection_signals=[],
+            reason=f"Document exceeded {MAX_FETCH_BYTES // (1024 * 1024)} MB limit (unreviewed); {OWNER_MANUAL_UPLOAD_ACTION}.",
         )
 
     content_type = str(resp.headers.get("content-type") or "").lower()
@@ -818,77 +843,53 @@ def fetch_page_evidence(
                     raw_bytes, fallback_url=final_url, last_modified=last_mod
                 )
             if any(marker in lower_raw for marker in _BOT_OR_PAYWALL_MARKERS) and len(text) < 1200:
-                return FetchedSourceRecord(
+                return _inaccessible_record(
                     url=url,
                     final_url=final_url,
-                    source_name=(src_name or fallback_name)[:512],
+                    source_name=src_name or fallback_name,
                     publication_date=pub_date or pub_date_hint,
                     source_priority_tier=default_tier,
                     priority_rank=default_rank,
-                    reliability_rating="unreviewed",
                     source_type="pdf" if is_pdf else default_stype,
-                    access_status="inaccessible",
-                    reviewed=False,
                     http_status=resp.status_code,
-                    failure_reason="Paywall, login gate, or anti-bot challenge detected; document unreviewed.",
-                    extracted_text=None,
-                    excerpt=None,
-                    injection_signals=[],
+                    reason=f"HTTP {resp.status_code} paywall, login gate, or anti-bot challenge detected — unreviewed; {OWNER_MANUAL_UPLOAD_ACTION}.",
                 )
         else:
-            return FetchedSourceRecord(
+            return _inaccessible_record(
                 url=url,
                 final_url=final_url,
-                source_name=fallback_name[:512],
+                source_name=fallback_name,
                 publication_date=pub_date_hint,
                 source_priority_tier=default_tier,
                 priority_rank=default_rank,
-                reliability_rating="unreviewed",
                 source_type=default_stype,
-                access_status="inaccessible",
-                reviewed=False,
                 http_status=resp.status_code,
-                failure_reason=f"Unsupported content-type '{content_type}'; document unreviewed.",
-                extracted_text=None,
-                excerpt=None,
-                injection_signals=[],
+                reason=f"Unsupported content-type '{content_type}' — unreviewed; {OWNER_MANUAL_UPLOAD_ACTION}.",
             )
     except Exception as exc:
-        return FetchedSourceRecord(
+        return _inaccessible_record(
             url=url,
             final_url=final_url,
-            source_name=fallback_name[:512],
+            source_name=fallback_name,
             publication_date=pub_date_hint,
             source_priority_tier=default_tier,
             priority_rank=default_rank,
-            reliability_rating="unreviewed",
             source_type=default_stype,
-            access_status="inaccessible",
-            reviewed=False,
             http_status=resp.status_code,
-            failure_reason=f"Failed to parse document ({exc.__class__.__name__}); unreviewed.",
-            extracted_text=None,
-            excerpt=None,
-            injection_signals=[],
+            reason=f"Failed to parse document ({exc.__class__.__name__}) — unreviewed; {OWNER_MANUAL_UPLOAD_ACTION}.",
         )
 
     if not text.strip():
-        return FetchedSourceRecord(
+        return _inaccessible_record(
             url=url,
             final_url=final_url,
-            source_name=(src_name or fallback_name)[:512],
+            source_name=src_name or fallback_name,
             publication_date=pub_date or pub_date_hint,
             source_priority_tier=default_tier,
             priority_rank=default_rank,
-            reliability_rating="unreviewed",
             source_type="pdf" if is_pdf else default_stype,
-            access_status="inaccessible",
-            reviewed=False,
             http_status=resp.status_code,
-            failure_reason="Document returned empty readable text; marked unreviewed.",
-            extracted_text=None,
-            excerpt=None,
-            injection_signals=[],
+            reason=f"Document returned empty readable text — unreviewed; {OWNER_MANUAL_UPLOAD_ACTION}.",
         )
 
     tier, rank, rating, stype = classify_source_priority(

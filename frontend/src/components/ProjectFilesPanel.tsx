@@ -221,6 +221,143 @@ function shortHash(hash: string | null): string {
   return `${hash.slice(0, 12)}…${hash.slice(-6)}`;
 }
 
+const MATRIX_COLUMN_LABELS: Record<
+  Lang,
+  { format: string; category: string; support: string; tool: string; notes: string }
+> = {
+  ar: {
+    format: "الصيغة / الامتداد",
+    category: "الفئة",
+    support: "مستوى الدعم",
+    tool: "الأداة / المحرك",
+    notes: "الملاحظات والحدود",
+  },
+  en: {
+    format: "Format",
+    category: "Category",
+    support: "Support",
+    tool: "Tool / Library",
+    notes: "Notes",
+  },
+};
+
+const SUPPORT_LEVEL_LABELS: Record<Lang, Record<string, string>> = {
+  ar: {
+    native: "أصلي (Native)",
+    converted_via_oda: "محوّل عبر ODA",
+    stored_read_only: "محفوظ للقراءة فقط (دون استخراج)",
+    not_supported: "غير مدعوم",
+  },
+  en: {
+    native: "native",
+    converted_via_oda: "converted_via_oda",
+    stored_read_only: "stored_read_only",
+    not_supported: "not_supported",
+  },
+};
+
+function translateToolStatus(lang: Lang, status: string): string {
+  if (lang === "en") {
+    return status;
+  }
+  const lower = status.toLowerCase();
+  if (lower === "installed") {
+    return "مثبّت وجاهز";
+  }
+  if (lower.includes("not installed")) {
+    return "غير مثبّت — بانتظار المالك";
+  }
+  if (lower.includes("missing ara") || lower.includes("ara")) {
+    return "مثبّت (حزمة العربية ara مفقودة)";
+  }
+  return status;
+}
+
+function translateToolMessage(lang: Lang, kind: "ocr" | "oda", installed: boolean, version: string | null, rawMsg: string): string {
+  if (lang === "en") {
+    return rawMsg;
+  }
+  if (kind === "ocr") {
+    return installed
+      ? `محرك Tesseract OCR متاح (${version || "مثبّت"})؛ يدعم العربية والإنجليزية (ara+eng) للاستخراج الضوئي بدقة 300 DPI.`
+      : "محرك Tesseract OCR غير مثبّت — بانتظار المالك لتشغيل التعرف الضوئي للصفحات المصوّرة (ara+eng).";
+  }
+  return installed
+    ? `محوّل ODA File Converter متاح (${version || "مثبّت"})؛ يحوّل ملفات .dwg إلى .dxf معزولة في 03_Analysis مع إبقاء الأصل للقراءة فقط.`
+    : "محوّل ODA File Converter غير مثبّت — بانتظار المالك؛ التحويل عبر ODA مطلوب لقراءة ملفات .dwg الثنائية.";
+}
+
+function translateMatrixRow(
+  lang: Lang,
+  row: { extension: string; category: string; support_level: string; provider_or_tool: string; notes: string }
+): { category: string; provider_or_tool: string; notes: string } {
+  if (lang === "en") {
+    return row;
+  }
+  const ext = row.extension.toLowerCase();
+  if (ext === ".dxf") {
+    return {
+      category: "رسومات CAD متجهة",
+      provider_or_tool: "ezdxf + معاينة PyMuPDF",
+      notes: "استخراج أصلي للطبقات والبلوكات والنصوص والأبعاد ومساحات البوليلاين والهاتش (مع استبعاد الجزر) و$INSUNITS ومعاينة PNG.",
+    };
+  }
+  if (ext === ".dwg") {
+    return {
+      category: "رسومات CAD ثنائية",
+      provider_or_tool: "ODA File Converter ← DXF ← ezdxf",
+      notes: "لا يُقرأ ثنائياً مباشرة؛ يبقى ملف .dwg الأصلي للقراءة فقط ويُحوَّل إلى DXF معزول في 03_Analysis قبل الاستخراج الحتمي.",
+    };
+  }
+  if (ext === ".ifc") {
+    return {
+      category: "نماذج BIM",
+      provider_or_tool: "ifcopenshell",
+      notes: "استخراج أصلي لوحدات IfcProject والطوابق وIfcSpace والجدران والأبواب والنوافذ وخصائص Pset_*/Qto_* دون اختراع مساحات.",
+    };
+  }
+  if (ext === ".pdf") {
+    return {
+      category: "مستندات ولوحات PDF",
+      provider_or_tool: "pdfplumber + PyMuPDF + Tesseract OCR + Gemini Vision",
+      notes: "نصوص وجداول أصلية، معاينات PNG بدقة 150 DPI، تعرف ضوئي 300 DPI (ara+eng)، وتلخيص بصري اختياري (غير قياسي).",
+    };
+  }
+  if (ext.includes(".docx")) {
+    return {
+      category: "مستندات وجداول مكتبية",
+      provider_or_tool: "python-docx و openpyxl و csv و python-pptx",
+      notes: "استخراج حتمي يحفظ الصيغ الرياضية والقيم المخزنة وإحداثيات الخلايا والنصوص العربية بدقة.",
+    };
+  }
+  if (ext.includes(".png")) {
+    return {
+      category: "صور نقطية",
+      provider_or_tool: "Pillow + Tesseract OCR (ara+eng)",
+      notes: "بيانات وصفية أصلية + تعرف ضوئي عند توفر Tesseract.",
+    };
+  }
+  if (ext.includes(".rvt")) {
+    return {
+      category: "نماذج Revit الخاصة",
+      provider_or_tool: "غير مدعوم مباشرة",
+      notes: "قم بتصدير النموذج إلى IFC أو DXF/PDF من داخل Revit قبل الرفع؛ القراءة الأصلية لملفات .rvt غير مدعومة.",
+    };
+  }
+  if (ext.includes(".doc ")) {
+    return {
+      category: "صيغ أخرى مقبولة",
+      provider_or_tool: "محفوظ للقراءة فقط (دون استخراج)",
+      notes: "صيغ أخرى مقبولة (.doc .xls .ppt .rtf .ods .html .json .xml .svg .landxml): تُحفظ كأصل للقراءة فقط ولا يُستخرج محتواها.",
+    };
+  }
+  return {
+    category: "صيغ CAD / ثلاثية أبعاد مؤجلة",
+    provider_or_tool: "غير مدعوم حالياً",
+    notes: "حوّل الملف إلى DXF أو IFC أو PDF لإجراء الاستخراج الهندسي الحتمي.",
+  };
+}
+
 export interface ProjectFilesPanelProps {
   lang: Lang;
   projectId: string;
@@ -412,8 +549,16 @@ export function ProjectFilesPanel({
             style={{ marginTop: 0 }}
           >
             <strong>{copy.ocrLabel}:</strong>{" "}
-            <span dir="ltr">{capabilities.ocr.status}</span> —{" "}
-            <span>{capabilities.ocr.message}</span>
+            <span dir="auto">{translateToolStatus(lang, capabilities.ocr.status)}</span> —{" "}
+            <span dir="auto">
+              {translateToolMessage(
+                lang,
+                "ocr",
+                capabilities.ocr.installed,
+                capabilities.ocr.version,
+                capabilities.ocr.message
+              )}
+            </span>
           </div>
 
           {capabilities.oda && (
@@ -424,8 +569,16 @@ export function ProjectFilesPanel({
               style={{ marginTop: 0 }}
             >
               <strong>{copy.odaLabel}:</strong>{" "}
-              <span dir="ltr">{capabilities.oda.status}</span> —{" "}
-              <span>{capabilities.oda.message}</span>
+              <span dir="auto">{translateToolStatus(lang, capabilities.oda.status)}</span> —{" "}
+              <span dir="auto">
+                {translateToolMessage(
+                  lang,
+                  "oda",
+                  capabilities.oda.installed,
+                  capabilities.oda.version,
+                  capabilities.oda.message
+                )}
+              </span>
             </div>
           )}
 
@@ -438,37 +591,41 @@ export function ProjectFilesPanel({
                 <table className="files-table">
                   <thead>
                     <tr>
-                      <th>Format</th>
-                      <th>Category</th>
-                      <th>Support</th>
-                      <th>Tool / Library</th>
-                      <th>Notes</th>
+                      <th>{MATRIX_COLUMN_LABELS[lang].format}</th>
+                      <th>{MATRIX_COLUMN_LABELS[lang].category}</th>
+                      <th>{MATRIX_COLUMN_LABELS[lang].support}</th>
+                      <th>{MATRIX_COLUMN_LABELS[lang].tool}</th>
+                      <th>{MATRIX_COLUMN_LABELS[lang].notes}</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {capabilities.format_support_matrix.map((row) => (
-                      <tr key={row.extension}>
-                        <td dir="ltr">
-                          <code>{row.extension}</code>
-                        </td>
-                        <td dir="auto">{row.category}</td>
-                        <td dir="ltr">
-                          <span
-                            className={`badge ${
-                              row.support_level === "native"
-                                ? "badge-connected"
-                                : row.support_level === "converted_via_oda"
-                                  ? ""
-                                  : "badge-warn"
-                            }`}
-                          >
-                            {row.support_level}
-                          </span>
-                        </td>
-                        <td dir="ltr">{row.provider_or_tool}</td>
-                        <td dir="auto">{row.notes}</td>
-                      </tr>
-                    ))}
+                    {capabilities.format_support_matrix.map((row) => {
+                      const translated = translateMatrixRow(lang, row);
+                      return (
+                        <tr key={row.extension}>
+                          <td dir="ltr">
+                            <code>{row.extension}</code>
+                          </td>
+                          <td dir="auto">{translated.category}</td>
+                          <td dir="auto">
+                            <span
+                              className={`badge ${
+                                row.support_level === "native"
+                                  ? "badge-connected"
+                                  : row.support_level === "converted_via_oda" ||
+                                      row.support_level === "stored_read_only"
+                                    ? ""
+                                    : "badge-warn"
+                              }`}
+                            >
+                              {SUPPORT_LEVEL_LABELS[lang][row.support_level] || row.support_level}
+                            </span>
+                          </td>
+                          <td dir="auto">{translated.provider_or_tool}</td>
+                          <td dir="auto">{translated.notes}</td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>

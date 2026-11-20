@@ -2,18 +2,22 @@ import { FormEvent, useCallback, useEffect, useState } from "react";
 import {
   getResearchCapabilities,
   getResearchRunDetail,
+  listProjectFiles,
   listProjects,
   listResearchRuns,
   runControlledResearch,
 } from "../api";
 import type {
   Lang,
+  OwnerProvidedSourceInput,
   ProjectClassification,
+  ProjectFileOut,
   ProjectSummary,
   ResearchCapabilitiesOut,
   ResearchRunDetailOut,
   ResearchRunSummaryOut,
   SearchProviderName,
+  SourcePriorityTier,
   TaskComplexity,
 } from "../types";
 
@@ -23,6 +27,9 @@ interface ResearchCopy {
   policyBanner: string;
   projectLabel: string;
   allProjectsOption: string;
+  ownerFilesLabel: string;
+  ownerFilesHint: string;
+  ownerTierLabel: string;
   queryLabel: string;
   queryPlaceholder: string;
   urlsLabel: string;
@@ -30,6 +37,8 @@ interface ResearchCopy {
   providerLabel: string;
   maxResultsLabel: string;
   complexityLabel: string;
+  complexityFast: string;
+  complexityDeep: string;
   classificationLabel: string;
   aiToggleLabel: string;
   submitBtn: string;
@@ -59,30 +68,111 @@ interface ResearchCopy {
   colRating: string;
   colReviewState: string;
   reviewedTag: string;
+  ownerProvidedTag: string;
   inaccessibleTag: string;
+  unrankedTag: string;
   errorPrefix: string;
 }
 
+const PROVIDER_LABELS: Record<Lang, Record<string, string>> = {
+  ar: {
+    duckduckgo_lite: "DuckDuckGo Lite (أفضل جهد — مجاني بدون مفتاح)",
+    crossref: "Crossref الأبحاث المحكمة (مجاني بدون مفتاح)",
+    tavily: "Tavily API (مُوصى به — مفتاح مجاني في الإعدادات)",
+    serper: "Serper.dev بحث جوجل (مفتاح اختياري في الإعدادات)",
+    brave: "Brave Search (مفتاح اختياري في الإعدادات)",
+  },
+  en: {
+    duckduckgo_lite: "DuckDuckGo Lite (Best-Effort Free, Zero Key)",
+    crossref: "Crossref Peer-Reviewed (Free, Zero Key)",
+    tavily: "Tavily API (Recommended Free Key in Settings)",
+    serper: "Serper.dev (Optional Key in Keyring)",
+    brave: "Brave Search (Optional Key in Keyring)",
+  },
+};
+
+const RUN_STATUS_LABELS: Record<Lang, Record<string, string>> = {
+  ar: {
+    completed: "مكتمل",
+    partial_inaccessible: "جزئي (توجد مستندات متعذرة)",
+    no_accessible_sources: "لا توجد مصادر متاحة (دون استهلاك AI)",
+    failed: "فشل التنفيذ",
+  },
+  en: {
+    completed: "completed",
+    partial_inaccessible: "partial_inaccessible",
+    no_accessible_sources: "no_accessible_sources",
+    failed: "failed",
+  },
+};
+
+const TIER_LABELS: Record<Lang, Record<string, string>> = {
+  ar: {
+    official_regulations: "تشريعات ولوائح رسمية",
+    standards_bodies: "هيئات المواصفات القياسية",
+    government: "منشورات حكومية",
+    manufacturer: "وثائق الشركات المصنعة",
+    peer_reviewed: "أبحاث علمية محكمة",
+    reputable: "مراجع تقنية موثوقة",
+    unverified: "غير موثق",
+  },
+  en: {
+    official_regulations: "official_regulations",
+    standards_bodies: "standards_bodies",
+    government: "government",
+    manufacturer: "manufacturer",
+    peer_reviewed: "peer_reviewed",
+    reputable: "reputable",
+    unverified: "unverified",
+  },
+};
+
+const RATING_LABELS: Record<Lang, Record<string, string>> = {
+  ar: {
+    high_official_regulation: "عالٍ — لائحة/تشريع رسمي",
+    high_standards_body: "عالٍ — هيئة مواصفات",
+    high_government: "عالٍ — مرجع حكومي",
+    medium_manufacturer: "متوسط — وثيقة مصنّع",
+    medium_peer_reviewed: "متوسط — ورقة محكمة",
+    low_reputable_reference: "منخفض — مرجع موثوق",
+    unreviewed: "غير مراجَع",
+  },
+  en: {
+    high_official_regulation: "high_official_regulation",
+    high_standards_body: "high_standards_body",
+    high_government: "high_government",
+    medium_manufacturer: "medium_manufacturer",
+    medium_peer_reviewed: "medium_peer_reviewed",
+    low_reputable_reference: "low_reputable_reference",
+    unreviewed: "unreviewed",
+  },
+};
+
 const COPY: Record<Lang, ResearchCopy> = {
   ar: {
-    heading: "البحث الهندسي المضبوط (Controlled Internet Research)",
-    hint: "يبحث النظام في المصادر المصرّح بها، ثم يجلب محتوى كل صفحة أو ملف PDF فعلياً ولا يعتمد على مقتطفات محركات البحث مطلقاً.",
+    heading: "البحث الهندسي المضبوط وسجل المصادر",
+    hint: "يبحث النظام في المصادر المصرّح بها أو يفحص الروابط والملفات المرفوعة مباشرةً، ولا يعتمد على مقتطفات محركات البحث مطلقاً.",
     policyBanner:
       "أولوية الموثوقية: (1) التشريعات واللوائح الرسمية ← (2) هيئات المواصفات القياسية ← (3) المنشورات الحكومية ← (4) وثائق الشركات المصنعة ← (5) الأوراق المحكمة ← (6) المراجع الموثوقة. كافة الصفحات المجلوبة بيانات غير موثوقة وتُسجَّل المستندات المتعذرة كغير مراجَعة.",
     projectLabel: "ربط بمشروع (اختياري)",
     allProjectsOption: "بحث عام (بدون ربط بمشروع محدد)",
+    ownerFilesLabel: "أو إرفاق ملفات مرفوعة مسبقاً من المشروع كمصدر مُقدَّم من المالك",
+    ownerFilesHint: "مفيد للمستندات المحمية بـ HTTP 403/Paywall: نزّلها ثم ارفعها في «المشاريع والملفات» واخترها هنا.",
+    ownerTierLabel: "تصنيف أولوية الملفات المرفقة",
     queryLabel: "موضوع أو سؤال البحث الهندسي *",
-    queryPlaceholder: "مثال: متطلبات التهوية لغرف العمليات NFPA 99 أو كود البناء الليبي",
+    queryPlaceholder: "مثال: متطلبات التهوية لغرف العمليات NFPA 99 أو لائحة السلامة المهنية",
     urlsLabel: "روابط محددة للتحقق المباشر (اختياري — رابط في كل سطر)",
     urlsPlaceholder: "https://example.org/regulation.pdf",
     providerLabel: "مزوّد البحث",
     maxResultsLabel: "الحد الأقصى للنتائج",
     complexityLabel: "مستوى التحليل الذكي",
+    complexityFast: "سريع (Fast)",
+    complexityDeep: "عميق (Deep)",
     classificationLabel: "تصنيف الإخراج",
-    aiToggleLabel: "تلخيص النتائج عبر Gemini (ضمن حدود الاستخدام في الخطوة 04)",
+    aiToggleLabel: "تلخيص النتائج عبر Gemini (ضمن حدود الاستخدام في الخطوة 04 — لا يُستدعى إذا لم يتوفر أي مصدر متاح)",
     submitBtn: "تنفيذ البحث المضبوط وحفظ سجل المصادر",
     submittingBtn: "جاري البحث وجلب الصفحات والتحقق منها...",
-    historyHeading: "سجل أبحاث الإنترنت والمصادر (Research History)",
+    historyHeading: "سجل أبحاث الإنترنت والمصادر",
     refreshBtn: "تحديث السجل",
     loadingHistory: "جاري تحميل سجل الأبحاث...",
     emptyHistory: "لا توجد عمليات بحث مسجلة حتى الآن.",
@@ -91,32 +181,37 @@ const COPY: Record<Lang, ResearchCopy> = {
     colDate: "التاريخ",
     colQuery: "الاستعلام",
     colProvider: "المزود",
-    colSources: "المصادر (متاح/متعذر)",
+    colSources: "المصادر (متاح / مالك / متعذر)",
     colStatus: "الحالة",
     colClass: "التصنيف",
     colActions: "عرض",
-    unreviewedHeading: "مستندات تعذر الوصول إليها (غير مراجَعة — UNREVIEWED)",
+    unreviewedHeading: "مستندات تعذر الوصول إليها (غير مراجَعة — يُرجى تنزيلها ورفعها يدوياً)",
     injectionHeading: "محاولات حقن تعليمات تم تجاهلها وتحييدها بأمان",
-    findingsHeading: "النتائج الموثقة من صفحات تم التحقق من قراءتها",
-    sourceLogHeading: "جدول سجل المصادر الكامل (Source Log)",
-    colPriority: "الأولوية",
+    findingsHeading: "النتائج الموثقة من مصادر تم التحقق من قراءتها",
+    sourceLogHeading: "جدول سجل المصادر الكامل",
+    colPriority: "تصنيف الأولوية",
     colSourceName: "المصدر والرابط",
     colPubDate: "تاريخ النشر",
     colAccessDate: "تاريخ الوصول",
     colExtracted: "المعلومات المستخلصة",
     colRating: "تقييم الموثوقية",
-    colReviewState: "المراجعة",
+    colReviewState: "حالة المراجعة",
     reviewedTag: "تمت المراجعة",
+    ownerProvidedTag: "مُقدَّم من المالك (تمت المراجعة)",
     inaccessibleTag: "متعذر — غير مراجَع",
+    unrankedTag: "غير مصنّف",
     errorPrefix: "تعذر إتمام البحث: ",
   },
   en: {
     heading: "Controlled Internet Research & Citation Log",
-    hint: "Executes web search and directly fetches full target pages or PDFs. Search-engine snippets are discarded and never treated as engineering evidence.",
+    hint: "Executes web search and directly fetches full target pages/PDFs or reads owner-uploaded files. Search-engine snippets are discarded and never treated as evidence.",
     policyBanner:
       "Priority Order: (1) Official Regulations → (2) Standards Bodies → (3) Government → (4) Manufacturers → (5) Peer-Reviewed → (6) Reputable References. All fetched pages are isolated as untrusted data; inaccessible documents are marked UNREVIEWED.",
     projectLabel: "Link to Project (optional)",
     allProjectsOption: "General / Unlinked Research",
+    ownerFilesLabel: "Attach Uploaded Project Files as Owner-Provided Sources (optional)",
+    ownerFilesHint: "For HTTP 403/paywalled standards: download the document yourself and upload it in Projects & Files, then attach it here.",
+    ownerTierLabel: "Priority Tier for Attached Owner Files",
     queryLabel: "Engineering Research Query *",
     queryPlaceholder: "e.g., Operating theatre ACH ventilation NFPA 99 ASHRAE 170",
     urlsLabel: "Explicit URLs to Fetch & Verify Directly (optional, one per line)",
@@ -124,8 +219,10 @@ const COPY: Record<Lang, ResearchCopy> = {
     providerLabel: "Search Backend",
     maxResultsLabel: "Max Results",
     complexityLabel: "AI Complexity",
+    complexityFast: "Fast",
+    complexityDeep: "Deep",
     classificationLabel: "Classification",
-    aiToggleLabel: "Synthesize via Gemini AI (enforces Step 04 usage limits)",
+    aiToggleLabel: "Synthesize via Gemini AI (enforces Step 04 limits; skipped when 0 sources accessible)",
     submitBtn: "Run Controlled Research & Save Source Log",
     submittingBtn: "Searching & fetching target pages...",
     historyHeading: "Research History (Source Provenance)",
@@ -137,15 +234,15 @@ const COPY: Record<Lang, ResearchCopy> = {
     colDate: "Timestamp",
     colQuery: "Query",
     colProvider: "Provider",
-    colSources: "Sources (Reviewed / Unreviewed)",
+    colSources: "Sources (Web / Owner / Blocked)",
     colStatus: "Status",
     colClass: "Classification",
     colActions: "Inspect",
-    unreviewedHeading: "Inaccessible Documents (Explicitly Marked UNREVIEWED)",
+    unreviewedHeading: "Inaccessible Documents (UNREVIEWED — Download & Upload in Projects & Files)",
     injectionHeading: "Untrusted Prompt-Injection Attempts Safely Ignored",
-    findingsHeading: "Verified Findings (Grounded in Fetched Sources Only)",
+    findingsHeading: "Verified Findings (Grounded in Reviewed Sources Only)",
     sourceLogHeading: "Complete Persisted Source Log",
-    colPriority: "Priority",
+    colPriority: "Priority Tier",
     colSourceName: "Source Name & URL",
     colPubDate: "Published",
     colAccessDate: "Accessed",
@@ -153,7 +250,9 @@ const COPY: Record<Lang, ResearchCopy> = {
     colRating: "Reliability Rating",
     colReviewState: "Status",
     reviewedTag: "Reviewed",
+    ownerProvidedTag: "Owner-Provided (Reviewed)",
     inaccessibleTag: "Inaccessible — Unreviewed",
+    unrankedTag: "unranked",
     errorPrefix: "Research operation failed: ",
   },
 };
@@ -181,6 +280,9 @@ export function ResearchView({
   const copy = COPY[lang];
 
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
+  const [projectFiles, setProjectFiles] = useState<ProjectFileOut[]>([]);
+  const [selectedFileIds, setSelectedFileIds] = useState<string[]>([]);
+  const [ownerFileTier, setOwnerFileTier] = useState<SourcePriorityTier>("official_regulations");
   const [capabilities, setCapabilities] = useState<ResearchCapabilitiesOut | null>(
     initialCapabilities
   );
@@ -223,6 +325,17 @@ export function ResearchView({
     void loadHistory();
   }, [loadHistory]);
 
+  useEffect(() => {
+    setSelectedFileIds([]);
+    if (!projectId) {
+      setProjectFiles([]);
+      return;
+    }
+    void listProjectFiles(projectId)
+      .then((res) => setProjectFiles(res.files))
+      .catch(() => setProjectFiles([]));
+  }, [projectId]);
+
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
     setSubmitting(true);
@@ -231,11 +344,16 @@ export function ResearchView({
       .split(/\r?\n/)
       .map((line) => line.trim())
       .filter(Boolean);
+    const ownerFiles: OwnerProvidedSourceInput[] = selectedFileIds.map((fileId) => ({
+      file_id: fileId,
+      priority_tier: ownerFileTier,
+    }));
     try {
       const detail = await runControlledResearch({
         query,
         project_id: projectId || null,
         urls,
+        owner_files: ownerFiles,
         search_provider: searchProvider,
         max_results: maxResults,
         complexity,
@@ -245,6 +363,7 @@ export function ResearchView({
       setActiveRun(detail);
       setQuery("");
       setUrlsText("");
+      setSelectedFileIds([]);
       await loadHistory();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -289,7 +408,7 @@ export function ResearchView({
                 className={`badge ${p.is_default || p.key_configured || !p.requires_api_key ? "badge-connected" : ""}`}
                 title={p.pricing_summary}
               >
-                {p.label}
+                {PROVIDER_LABELS[lang][p.id] || p.label}
               </span>
             ))}
           </div>
@@ -315,11 +434,11 @@ export function ResearchView({
                 value={searchProvider}
                 onChange={(e) => setSearchProvider(e.target.value as SearchProviderName)}
               >
-                <option value="duckduckgo_lite">DuckDuckGo Lite (Free, No Key)</option>
-                <option value="crossref">Crossref Peer-Reviewed (Free, No Key)</option>
-                <option value="tavily">Tavily API (Optional Key in Keyring)</option>
-                <option value="serper">Serper.dev (Optional Key in Keyring)</option>
-                <option value="brave">Brave Search (Optional Key in Keyring)</option>
+                <option value="duckduckgo_lite">{PROVIDER_LABELS[lang].duckduckgo_lite}</option>
+                <option value="crossref">{PROVIDER_LABELS[lang].crossref}</option>
+                <option value="tavily">{PROVIDER_LABELS[lang].tavily}</option>
+                <option value="serper">{PROVIDER_LABELS[lang].serper}</option>
+                <option value="brave">{PROVIDER_LABELS[lang].brave}</option>
               </select>
             </label>
 
@@ -372,6 +491,48 @@ export function ResearchView({
             />
           </label>
 
+          {projectFiles.length > 0 && (
+            <div className="status-box" style={{ marginTop: 0 }}>
+              <div style={{ fontWeight: 600, marginBottom: "0.35rem" }}>{copy.ownerFilesLabel}</div>
+              <p className="muted-hint" style={{ marginTop: 0, marginBottom: "0.5rem" }}>
+                {copy.ownerFilesHint}
+              </p>
+              <label style={{ display: "inline-flex", gap: "0.5rem", alignItems: "center", marginBottom: "0.5rem" }}>
+                <span>{copy.ownerTierLabel}:</span>
+                <select
+                  value={ownerFileTier}
+                  onChange={(e) => setOwnerFileTier(e.target.value as SourcePriorityTier)}
+                >
+                  <option value="official_regulations">{TIER_LABELS[lang].official_regulations}</option>
+                  <option value="standards_bodies">{TIER_LABELS[lang].standards_bodies}</option>
+                  <option value="government">{TIER_LABELS[lang].government}</option>
+                  <option value="manufacturer">{TIER_LABELS[lang].manufacturer}</option>
+                  <option value="peer_reviewed">{TIER_LABELS[lang].peer_reviewed}</option>
+                  <option value="reputable">{TIER_LABELS[lang].reputable}</option>
+                </select>
+              </label>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem" }}>
+                {projectFiles.map((f) => {
+                  const checked = selectedFileIds.includes(f.id);
+                  return (
+                    <label key={f.id} style={{ display: "inline-flex", gap: "0.35rem", alignItems: "center" }}>
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() =>
+                          setSelectedFileIds((prev) =>
+                            checked ? prev.filter((id) => id !== f.id) : [...prev, f.id]
+                          )
+                        }
+                      />
+                      <span dir="auto">{f.original_filename}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           <div style={{ display: "flex", flexWrap: "wrap", gap: "1rem", alignItems: "center" }}>
             <label style={{ display: "flex", alignItems: "center", gap: "0.45rem" }}>
               <input
@@ -389,8 +550,8 @@ export function ResearchView({
                   value={complexity}
                   onChange={(e) => setComplexity(e.target.value as TaskComplexity)}
                 >
-                  <option value="fast">Fast</option>
-                  <option value="deep">Deep</option>
+                  <option value="fast">{copy.complexityFast}</option>
+                  <option value="deep">{copy.complexityDeep}</option>
                 </select>
               </label>
             )}
@@ -463,19 +624,19 @@ export function ResearchView({
                     <td dir="auto">
                       <strong>{r.query}</strong>
                     </td>
-                    <td dir="ltr">
-                      <code>{r.search_provider}</code>
+                    <td dir="auto">
+                      <span>{PROVIDER_LABELS[lang][r.search_provider] || r.search_provider}</span>
                     </td>
                     <td dir="ltr">
-                      {r.accessible_sources} / {r.inaccessible_sources} (total {r.total_sources})
+                      {r.accessible_sources} / {r.owner_provided_sources ?? 0} / {r.inaccessible_sources}
                     </td>
-                    <td dir="ltr">
+                    <td dir="auto">
                       <span
                         className={`badge ${
                           r.status === "completed" ? "badge-connected" : "badge-warn"
                         }`}
                       >
-                        {r.status}
+                        {RUN_STATUS_LABELS[lang][r.status] || r.status}
                       </span>
                     </td>
                     <td>
@@ -506,8 +667,11 @@ export function ResearchView({
             </h4>
             <div className="badge-group">
               <span className="badge">{activeRun.classification}</span>
-              <span className="badge" dir="ltr">
-                {activeRun.search_provider}
+              <span className="badge" dir="auto">
+                {PROVIDER_LABELS[lang][activeRun.search_provider] || activeRun.search_provider}
+              </span>
+              <span className="badge" dir="auto">
+                {RUN_STATUS_LABELS[lang][activeRun.status] || activeRun.status}
               </span>
               <span className="badge" dir="ltr">
                 {activeRun.token_usage.total_tokens} tokens
@@ -590,8 +754,12 @@ export function ResearchView({
               <tbody>
                 {activeRun.sources.map((src) => (
                   <tr key={src.id}>
-                    <td dir="ltr">
-                      #{src.priority_rank} ({src.source_priority_tier})
+                    <td dir="auto">
+                      {src.reviewed ? (
+                        <span>{TIER_LABELS[lang][src.source_priority_tier] || src.source_priority_tier}</span>
+                      ) : (
+                        <span className="badge badge-warn">{copy.unrankedTag}</span>
+                      )}
                     </td>
                     <td dir="auto">
                       <div>
@@ -604,14 +772,18 @@ export function ResearchView({
                     <td dir="ltr">{src.publication_date || "—"}</td>
                     <td dir="ltr">{formatDate(src.access_date)}</td>
                     <td dir="auto">{src.extracted_info || src.failure_reason || "—"}</td>
-                    <td dir="ltr">
-                      <code>{src.reliability_rating}</code>
+                    <td dir="auto">
+                      <code>{RATING_LABELS[lang][src.reliability_rating] || src.reliability_rating}</code>
                     </td>
                     <td>
                       <span
                         className={`badge ${src.reviewed ? "badge-connected" : "badge-warn"}`}
                       >
-                        {src.reviewed ? copy.reviewedTag : copy.inaccessibleTag}
+                        {src.access_status === "owner_provided"
+                          ? copy.ownerProvidedTag
+                          : src.reviewed
+                            ? copy.reviewedTag
+                            : copy.inaccessibleTag}
                       </span>
                     </td>
                   </tr>

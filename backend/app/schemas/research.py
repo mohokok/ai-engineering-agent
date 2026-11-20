@@ -39,7 +39,7 @@ ReliabilityRating = Literal[
     "unreviewed",
 ]
 
-AccessStatus = Literal["accessible", "inaccessible", "partial"]
+AccessStatus = Literal["accessible", "owner_provided", "inaccessible", "partial"]
 
 
 class SearchProviderOptionOut(BaseModel):
@@ -89,6 +89,14 @@ class SearchProviderKeySaveRequest(BaseModel):
         return cleaned
 
 
+class OwnerProvidedSourceInput(BaseModel):
+    """Uploaded project file attached explicitly by the owner as cited research evidence."""
+
+    file_id: str = Field(..., min_length=1, max_length=64)
+    priority_tier: SourcePriorityTier = "official_regulations"
+    publication_date: str | None = Field(default=None, max_length=64)
+
+
 class ResearchRunRequest(BaseModel):
     """Request payload for running controlled internet research and persisting a source log."""
 
@@ -96,6 +104,7 @@ class ResearchRunRequest(BaseModel):
     project_id: str | None = Field(default=None, max_length=64)
     task_id: str | None = Field(default=None, max_length=64)
     urls: list[str] = Field(default_factory=list, max_length=10)
+    owner_files: list[OwnerProvidedSourceInput] = Field(default_factory=list, max_length=10)
     search_provider: SearchProviderName = "duckduckgo_lite"
     max_results: int = Field(default=5, ge=1, le=10)
     complexity: TaskComplexity = "fast"
@@ -195,6 +204,7 @@ class ResearchRunSummaryOut(BaseModel):
     error_message: str | None = None
     total_sources: int = 0
     accessible_sources: int = 0
+    owner_provided_sources: int = 0
     inaccessible_sources: int = 0
     token_usage: TaskTokenUsageOut = Field(default_factory=TaskTokenUsageOut)
     artifact_relative_path: str | None = None

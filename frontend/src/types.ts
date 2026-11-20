@@ -364,7 +364,7 @@ export interface OdaCapabilityOut {
 export interface FormatSupportEntry {
   extension: string;
   category: string;
-  support_level: "native" | "converted_via_oda" | "not_supported";
+  support_level: "native" | "converted_via_oda" | "stored_read_only" | "not_supported";
   provider_or_tool: string;
   notes: string;
 }
@@ -592,7 +592,7 @@ export interface ResearchSourceOut {
   source_type: string;
   source_priority_tier: SourcePriorityTier | string;
   priority_rank: number;
-  access_status: "accessible" | "inaccessible" | "partial" | string;
+  access_status: "accessible" | "owner_provided" | "inaccessible" | "partial" | string;
   reviewed: boolean;
   http_status: number | null;
   failure_reason: string | null;
@@ -612,6 +612,7 @@ export interface ResearchRunSummaryOut {
   error_message: string | null;
   total_sources: number;
   accessible_sources: number;
+  owner_provided_sources?: number;
   inaccessible_sources: number;
   token_usage: TaskTokenUsageOut;
   artifact_relative_path: string | null;
@@ -635,11 +636,18 @@ export interface ResearchSourceListResponse {
   classification: ProjectClassification | string;
 }
 
+export interface OwnerProvidedSourceInput {
+  file_id: string;
+  priority_tier: SourcePriorityTier;
+  publication_date?: string | null;
+}
+
 export interface ResearchRunCreateRequest {
   query: string;
   project_id?: string | null;
   task_id?: string | null;
   urls?: string[];
+  owner_files?: OwnerProvidedSourceInput[];
   search_provider?: SearchProviderName;
   max_results?: number;
   complexity?: TaskComplexity;

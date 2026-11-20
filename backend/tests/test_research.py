@@ -554,6 +554,162 @@ def test_research_usage_limits_ssrf_and_optional_search_keyring(
             assert aud is not None
 
 
+def test_research_403_refererless_retry_zero_accessible_skips_gemini_and_owner_provided_upload(
+    tmp_path: Path,
+) -> None:
+    """Verify honest UA, single Referer-less retry, zero-LLM cost guard on 0 accessible sources, and owner-provided upload."""
+    seen_headers: list[dict[str, str]] = []
+    seen_ddg_headers: list[dict[str, str]] = []
+    retry_succeed_calls = {"count": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        hdrs = {k.lower(): v for k, v in request.headers.items()}
+        if url.startswith("https://lite.duckduckgo.com/lite/"):
+            seen_ddg_headers.append(hdrs)
+            return httpx.Response(202, text="Please wait challenge")
+        if url == "https://www.osha.gov/laws-regs/regulations/standardnumber/1910/1910.37":
+            seen_headers.append(hdrs)
+            return httpx.Response(403, text="Forbidden")
+        if url == "https://nfpa.org/retry-once":
+            retry_succeed_calls["count"] += 1
+            if retry_succeed_calls["count"] == 1:
+                return httpx.Response(403, text="First attempt rejected")
+            return httpx.Response(200, text="<html><title>Recovered After Retry</title><body>Means of egress minimum width 915 mm.</body></html>")
+        return httpx.Response(404, text="Not Found")
+
+    llm_calls = {"count": 0}
+
+    def client_factory(_key: str) -> Any:
+        class _Models:
+            def list(self) -> list[Any]:
+                return []
+
+            def generate_content(self, **_kwargs: Any) -> Any:
+                llm_calls["count"] += 1
+                return SimpleNamespace(
+                    text="{}",
+                    parsed={
+                        "summary": "Synthesized from owner-provided uploaded regulation file.",
+                        "verified_findings": [
+                            {
+                                "claim": "OSHA 1910.37 requires free and unobstructed exit access (min 28 inches / 711 mm).",
+                                "source_name": "osha_1910_37_owner.txt",
+                                "source_url": _latest_owner_url["val"],
+                                "publication_date": "2024-05-01",
+                                "priority_tier": "official_regulations",
+                            }
+                        ],
+                        "unreviewed_or_inaccessible": [],
+                        "standards_and_gaps": [],
+                        "injection_attempts_ignored": [],
+                        "assumptions": [],
+                        "suggested_classification": "Preliminary",
+                    },
+                    usage_metadata=SimpleNamespace(prompt_token_count=110, candidates_token_count=35, total_token_count=145),
+                )
+
+        return SimpleNamespace(models=_Models())
+
+    _latest_owner_url = {"val": ""}
+    app = create_app(
+        _test_settings(tmp_path),
+        secret_store=_InMemorySecretStore({"gemini": "test-key-fix8"}),
+        provider_client_factory=client_factory,
+        research_http_transport=httpx.MockTransport(handler),
+    )
+
+    with TestClient(app) as client:
+        # 1. Mocked 403 site: transparent honest UA, single Referer-less retry, ZERO LLM call when 0 accessible
+        res_403 = client.post(
+            "/api/research/runs",
+            json={
+                "query": "OSHA 1910.37 exit routes",
+                "urls": ["https://www.osha.gov/laws-regs/regulations/standardnumber/1910/1910.37"],
+                "classification": "Preliminary",
+                "synthesize_with_ai": True,
+            },
+        )
+        assert res_403.status_code == 201, res_403.text
+        d403 = res_403.json()
+        assert llm_calls["count"] == 0
+        assert d403["token_usage"]["total_tokens"] == 0
+        assert d403["status"] == "no_accessible_sources"
+        assert "no accessible sources" in d403["summary"].lower()
+
+        # Verify 2 attempts (initial + 1 retry), honest app User-Agent (never curl/browser spoof), and Referer-less retry
+        assert len(seen_headers) == 2
+        for h in seen_headers:
+            assert "localaiengineeringagent" in h["user-agent"].lower()
+            assert "curl" not in h["user-agent"].lower()
+            assert "mozilla" not in h["user-agent"].lower()
+            assert "referer" not in h
+        assert "accept-encoding" in seen_headers[1]
+
+        src403 = d403["sources"][0]
+        assert src403["reviewed"] is False
+        assert src403["access_status"] == "inaccessible"
+        assert src403["http_status"] == 403
+        assert src403["reliability_rating"] == "unreviewed"
+        assert "403" in src403["failure_reason"]
+        assert "download the document yourself and upload it in projects & files; it will be cited as owner-provided" in src403["failure_reason"].lower()
+
+        # 2. DuckDuckGo best-effort 202 recommends Tavily first and uses honest UA (no curl)
+        ddg_res = client.post("/api/research/runs", json={"query": "exit routes", "search_provider": "duckduckgo_lite"})
+        assert ddg_res.status_code == 502
+        assert "tavily" in ddg_res.json()["detail"].lower()
+        assert len(seen_ddg_headers) == 1
+        assert "localaiengineeringagent" in seen_ddg_headers[0]["user-agent"].lower()
+        assert "curl" not in seen_ddg_headers[0]["user-agent"].lower()
+
+        # 3. Single Referer-less retry recovers a transient 403 -> 200
+        rec_res = client.post(
+            "/api/research/runs",
+            json={"query": "egress retry", "urls": ["https://nfpa.org/retry-once"], "synthesize_with_ai": False},
+        )
+        assert rec_res.status_code == 201
+        assert retry_succeed_calls["count"] == 2
+        assert rec_res.json()["accessible_sources"] == 1
+        assert rec_res.json()["sources"][0]["reviewed"] is True
+
+        # 4. Owner-provided path: upload regulation text in Projects & Files, attach to research -> reviewed=True, access_status='owner_provided'
+        project_id, _ = _create_project(client)
+        up = client.post(
+            f"/api/projects/{project_id}/files",
+            files=[("files", ("osha_1910_37_owner.txt", b"29 CFR 1910.37 Maintenance safeguards for exit routes: minimum width 28 inches (711 mm).", "text/plain"))],
+        )
+        assert up.status_code == 201
+        file_id = up.json()["items"][0]["file"]["id"]
+        _latest_owner_url["val"] = f"project-file://{file_id}/v1"
+
+        res_owner = client.post(
+            "/api/research/runs",
+            json={
+                "query": "OSHA 1910.37 owner upload check",
+                "project_id": project_id,
+                "owner_files": [
+                    {
+                        "file_id": file_id,
+                        "priority_tier": "official_regulations",
+                        "publication_date": "2024-05-01",
+                    }
+                ],
+                "synthesize_with_ai": True,
+            },
+        )
+        assert res_owner.status_code == 201, res_owner.text
+        d_own = res_owner.json()
+        assert llm_calls["count"] == 1
+        assert d_own["owner_provided_sources"] == 1
+        assert d_own["token_usage"]["total_tokens"] == 145
+        own_src = d_own["sources"][0]
+        assert own_src["access_status"] == "owner_provided"
+        assert own_src["reviewed"] is True
+        assert own_src["source_priority_tier"] == "official_regulations"
+        assert own_src["reliability_rating"] == "high_official_regulation"
+        assert "711 mm" in own_src["extracted_info"]
+
+
 _RUN_REAL_RESEARCH = os.getenv("RUN_REAL_RESEARCH", "").strip().lower() in {"1", "true", "yes"}
 
 
@@ -563,16 +719,19 @@ _RUN_REAL_RESEARCH = os.getenv("RUN_REAL_RESEARCH", "").strip().lower() in {"1",
     reason="Opt-in live web test: set RUN_REAL_RESEARCH=1 to execute live search + direct HTTP fetch",
 )
 def test_optin_real_live_controlled_research_no_client_data(tmp_path: Path) -> None:
-    """Opt-in live network check using free Crossref Open API without paid keys or client data."""
+    """Opt-in live network check verifying at least 1 public gov URL returns accessible>=1 alongside blocked 403 OSHA URL."""
     app = create_app(_test_settings(tmp_path), secret_store=_InMemorySecretStore())
     with TestClient(app) as client:
         project_id, _ = _create_project(client)
         res = client.post(
             "/api/research/runs",
             json={
-                "query": "ASHRAE 170 hospital operating room ventilation",
+                "query": "Building regulations and OSHA 1910.37 exit route access check",
                 "project_id": project_id,
-                "search_provider": "crossref",
+                "urls": [
+                    "https://www.legislation.gov.uk/uksi/2010/2214/contents",
+                    "https://www.osha.gov/laws-regs/regulations/standardnumber/1910/1910.37",
+                ],
                 "max_results": 2,
                 "classification": "Preliminary",
                 "synthesize_with_ai": False,
@@ -580,7 +739,8 @@ def test_optin_real_live_controlled_research_no_client_data(tmp_path: Path) -> N
         )
         assert res.status_code == 201, res.text
         data = res.json()
-        assert data["total_sources"] >= 1
+        assert data["total_sources"] == 2
+        assert data["accessible_sources"] >= 1
         print(
             f"\nLIVE RESEARCH SAMPLE: provider={data['search_provider']} | total={data['total_sources']} "
             f"| accessible={data['accessible_sources']} | inaccessible={data['inaccessible_sources']} "
@@ -590,5 +750,5 @@ def test_optin_real_live_controlled_research_no_client_data(tmp_path: Path) -> N
             print(
                 f"SOURCE tier={s['source_priority_tier']} rating={s['reliability_rating']} "
                 f"reviewed={s['reviewed']} url={s['url']} pub={s['publication_date']} "
-                f"http={s['http_status']} info={(s['extracted_info'] or '')[:120]!r}"
+                f"http={s['http_status']} info={(s['extracted_info'] or '')[:140]!r}"
             )

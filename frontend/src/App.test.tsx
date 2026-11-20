@@ -1245,11 +1245,71 @@ describe("App Step 08 Controlled Internet Research UI (RTL/LTR)", () => {
       />
     );
     expect(htmlEn).toContain("Controlled Internet Research");
-    expect(htmlEn).toContain("Inaccessible Documents (Explicitly Marked UNREVIEWED)");
+    expect(htmlEn).toContain("UNREVIEWED — Download &amp; Upload in Projects &amp; Files");
     expect(htmlEn).toContain("https://iso.org/standard/paywalled.html");
     expect(htmlEn).toContain("Untrusted Prompt-Injection Attempts Safely Ignored");
     expect(htmlEn).toContain("high_standards_body");
     expect(htmlEn).toContain("Inaccessible — Unreviewed");
+    expect(htmlEn).toContain("unranked");
+    expect(htmlEn).not.toContain("#99");
+
+    // Verify Arabic translation of providers, statuses, tiers, and unranked label
+    const htmlAr = renderToStaticMarkup(
+      <ResearchView
+        lang="ar"
+        initialRuns={[sampleSummary]}
+        initialDetail={sampleDetail}
+      />
+    );
+    expect(htmlAr).toContain("DuckDuckGo Lite (أفضل جهد");
+    expect(htmlAr).toContain("جزئي (توجد مستندات متعذرة)");
+    expect(htmlAr).toContain("هيئات المواصفات القياسية");
+    expect(htmlAr).toContain("غير مصنّف");
+    expect(htmlAr).not.toContain("#99");
+
+    // Verify Arabic translation of Step 06/07 status lines & Format Support Matrix
+    const matrixAr = renderToStaticMarkup(
+      <ProjectFilesPanel
+        lang="ar"
+        projectId="proj-ar-matrix"
+        initialFiles={[]}
+        initialCapabilities={{
+          ocr: {
+            installed: true,
+            status: "installed",
+            version: "5.5.3",
+            languages: ["ara", "eng"],
+            ara_installed: true,
+            eng_installed: true,
+            install_url: "https://github.com/UB-Mannheim/tesseract/wiki",
+            message: "installed",
+          },
+          oda: {
+            installed: false,
+            status: "not installed - pending owner",
+            version: null,
+            install_url: "https://www.opendesign.com/guestfiles/oda_file_converter",
+            message: "not installed",
+          },
+          format_support_matrix: [
+            {
+              extension: ".doc .xls .ppt .rtf .ods .html .json .xml .svg .landxml",
+              category: "Other Accepted Formats",
+              support_level: "stored_read_only",
+              provider_or_tool: "Stored Read-Only (Not Extracted)",
+              notes: "other accepted formats (.doc .xls .ppt .rtf .ods .html .json .xml .svg .landxml): stored as read-only original, not extracted.",
+            },
+          ],
+          supported_extensions: [".dxf", ".pdf"],
+          cad_bim_deferred_extensions: [".rvt"],
+          classification: "Preliminary",
+        }}
+      />
+    );
+    expect(matrixAr).toContain("مثبّت وجاهز");
+    expect(matrixAr).toContain("غير مثبّت — بانتظار المالك");
+    expect(matrixAr).toContain("محفوظ للقراءة فقط (دون استخراج)");
+    expect(matrixAr).toContain("تُحفظ كأصل للقراءة فقط ولا يُستخرج محتواها");
 
     const fetchMock = vi
       .fn()

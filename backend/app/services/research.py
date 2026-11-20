@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.agents.orchestrator import _encode_untrusted_json_block, _normalize_assumptions
 from app.core.config import Settings
 from app.db.base import new_uuid
-from app.db.models import AuditLog, Project, ResearchRun, ResearchSource, Task
+from app.db.models import AuditLog, FileExtraction, Project, ProjectFile, ResearchRun, ResearchSource, Task
 from app.providers.base import (
     LLMRequest,
     ProviderConfigError,
@@ -24,6 +24,7 @@ from app.providers.base import (
 )
 from app.providers.secrets import SecretStore
 from app.schemas.research import (
+    OwnerProvidedSourceInput,
     ResearchCapabilitiesOut,
     ResearchRunDetailOut,
     ResearchRunRequest,
@@ -34,12 +35,15 @@ from app.schemas.research import (
     SourcePriorityTier,
 )
 from app.schemas.tasks import TaskTokenUsageOut
+from app.services.extraction import extract_project_file
 from app.services.projects import ProjectNotFoundError
 from app.services.provider_settings import execute_provider_request
 from app.services.research_fetch import (
     FetchedSourceRecord,
+    MAX_EXTRACTED_CHARS,
     SOURCE_PRIORITY_SPEC,
     SearchCandidate,
+    _detect_injection_signals,
     fetch_page_evidence,
     list_search_provider_options,
     search_web_candidates,
@@ -114,7 +118,8 @@ def _parse_structured_output(raw: dict[str, Any] | None) -> ResearchSynthesisPay
 
 def _to_run_summary_out(row: ResearchRun, sources: list[ResearchSource]) -> ResearchRunSummaryOut:
     accessible = sum(1 for s in sources if s.access_status == "accessible" and s.reviewed)
-    inaccessible = len(sources) - accessible
+    owner_provided = sum(1 for s in sources if s.access_status == "owner_provided" and s.reviewed)
+    inaccessible = len(sources) - (accessible + owner_provided)
     usage = TokenUsage(**(row.token_usage_json or {})) if isinstance(row.token_usage_json, dict) else TokenUsage()
     return ResearchRunSummaryOut(
         id=row.id,
@@ -128,6 +133,7 @@ def _to_run_summary_out(row: ResearchRun, sources: list[ResearchSource]) -> Rese
         error_message=row.error_message,
         total_sources=len(sources),
         accessible_sources=accessible,
+        owner_provided_sources=owner_provided,
         inaccessible_sources=inaccessible,
         token_usage=TaskTokenUsageOut(
             prompt_tokens=usage.prompt_tokens,
@@ -202,7 +208,7 @@ def normalize_research_synthesis(
     parsed = ResearchSynthesisPayload.model_validate(raw_parsed)
     accessible_map: dict[str, FetchedSourceRecord] = {}
     for rec in fetched_records:
-        if rec.reviewed and rec.access_status == "accessible":
+        if rec.reviewed and rec.access_status in ("accessible", "owner_provided"):
             accessible_map[rec.url] = rec
             accessible_map[rec.final_url] = rec
 
@@ -256,11 +262,15 @@ def _deterministic_summary_without_ai(
     fetched_records: list[FetchedSourceRecord],
     owner_classification: str,
 ) -> ResearchSynthesisPayload:
-    accessible = [r for r in fetched_records if r.reviewed and r.access_status == "accessible"]
-    inaccessible = [r for r in fetched_records if not r.reviewed or r.access_status != "accessible"]
+    accessible = [
+        r for r in fetched_records if r.reviewed and r.access_status in ("accessible", "owner_provided")
+    ]
+    inaccessible = [
+        r for r in fetched_records if not r.reviewed or r.access_status == "inaccessible"
+    ]
     findings = [
         ResearchVerifiedFinding(
-            claim=r.excerpt or "Fetched accessible page text preserved verbatim in source log.",
+            claim=r.excerpt or "Extracted verified content preserved verbatim in source log.",
             source_name=r.source_name,
             source_url=r.url,
             publication_date=r.publication_date,
@@ -277,17 +287,97 @@ def _deterministic_summary_without_ai(
         for r in fetched_records
         for sig in r.injection_signals
     ]
-    return ResearchSynthesisPayload(
-        summary=(
-            f"Fetched {len(accessible)} accessible source(s) and recorded {len(inaccessible)} "
+    if not accessible:
+        summary_text = (
+            f"No accessible sources were retrieved for '{query}' "
+            f"(0 reviewed, {len(inaccessible)} inaccessible/unreviewed). "
+            "No AI synthesis call was made to avoid unnecessary token usage; "
+            "download blocked documents yourself and upload them in Projects & Files so they can be cited as owner-provided."
+        )
+    else:
+        summary_text = (
+            f"Reviewed {len(accessible)} source(s) (web/owner-provided) and recorded {len(inaccessible)} "
             f"inaccessible/unreviewed URL(s) for query '{query}' (AI synthesis disabled)."
-        ),
+        )
+    return ResearchSynthesisPayload(
+        summary=summary_text,
         verified_findings=findings,
         unreviewed_or_inaccessible=unreviewed,
         standards_and_gaps=[],
         injection_attempts_ignored=ignored,
         assumptions=[],
         suggested_classification=owner_classification,  # type: ignore[arg-type]
+    )
+
+
+def _load_owner_provided_source(
+    db: Session,
+    settings: Settings,
+    owner_item: OwnerProvidedSourceInput,
+    *,
+    expected_project_id: str | None,
+) -> FetchedSourceRecord:
+    """Resolve an owner-uploaded ProjectFile + deterministic FileExtraction as reviewed evidence."""
+    pf = db.get(ProjectFile, owner_item.file_id)
+    if pf is None:
+        raise ProjectNotFoundError(f"Owner-provided project file '{owner_item.file_id}' was not found.")
+    if expected_project_id and pf.project_id != expected_project_id:
+        raise ValueError(
+            f"Owner-provided file '{pf.original_filename}' does not belong to the selected project."
+        )
+
+    latest_ext = db.scalar(
+        select(FileExtraction)
+        .where(
+            FileExtraction.file_id == pf.id,
+            FileExtraction.version_number == pf.current_version,
+            FileExtraction.status.in_(("extracted", "partial_ocr_unavailable")),
+        )
+        .order_by(FileExtraction.extraction_version.desc())
+    )
+    if latest_ext is None:
+        detail = extract_project_file(db, settings, pf.id)
+        raw_items = [item.model_dump() for item in detail.items]
+    else:
+        payload_data = latest_ext.payload_json if isinstance(latest_ext.payload_json, dict) else {}
+        raw_items = list(payload_data.get("items") or [])
+
+    chunks: list[str] = []
+    total_len = 0
+    for item in raw_items:
+        txt = str(item.get("text") or "").strip()
+        if not txt:
+            continue
+        loc = str(item.get("page_or_sheet") or "")
+        piece = f"[{loc}] {txt}" if loc else txt
+        chunks.append(piece)
+        total_len += len(piece)
+        if total_len >= MAX_EXTRACTED_CHARS:
+            break
+    full_text = "\n".join(chunks)[:MAX_EXTRACTED_CHARS].strip()
+    if not full_text:
+        full_text = f"Owner-provided uploaded file '{pf.original_filename}' (no extractable text items found)."
+
+    rank, rating, _stype = SOURCE_PRIORITY_SPEC.get(
+        owner_item.priority_tier, (6, "low_reputable_reference", "reference")
+    )
+    virtual_url = f"project-file://{pf.id}/v{pf.current_version}"
+    return FetchedSourceRecord(
+        url=virtual_url,
+        final_url=virtual_url,
+        source_name=pf.original_filename,
+        publication_date=owner_item.publication_date,
+        source_priority_tier=owner_item.priority_tier,
+        priority_rank=rank,
+        reliability_rating=rating,
+        source_type="owner_provided",
+        access_status="owner_provided",
+        reviewed=True,
+        http_status=None,
+        failure_reason=None,
+        extracted_text=full_text,
+        excerpt=full_text[:1200].strip(),
+        injection_signals=_detect_injection_signals(full_text),
     )
 
 
@@ -305,7 +395,7 @@ def _persist_source_rows(
     for rec in sorted(fetched_records, key=lambda r: (r.priority_rank, r.url)):
         relevant_info = (
             rec.excerpt
-            if rec.reviewed and rec.access_status == "accessible"
+            if rec.reviewed and rec.access_status in ("accessible", "owner_provided")
             else f"UNREVIEWED — Document inaccessible: {rec.failure_reason or 'fetch failed'}"
         )
         row = ResearchSource(
@@ -353,25 +443,17 @@ def execute_research_query(
         if task_row is None:
             raise ProjectNotFoundError(f"Task '{request_payload.task_id}' was not found.")
 
-    # 1. Discover candidate URLs if explicit URLs weren't solely supplied (or merge search + explicit URLs)
+    # 1. Discover candidate URLs via web search only when explicit URLs / owner files were not provided directly
     candidates: list[SearchCandidate] = []
-    search_error: str | None = None
-    if request_payload.query:
-        try:
-            candidates = search_web_candidates(
-                request_payload.query,
-                provider_name=request_payload.search_provider,
-                max_results=request_payload.max_results,
-                secret_store=secret_store,
-                http_transport=http_transport,
-            )
-        except ProviderConfigError:
-            if not request_payload.urls:
-                raise
-        except Exception as exc:
-            search_error = sanitize_secret_text(str(exc))
-            if not request_payload.urls:
-                raise
+    has_explicit_inputs = bool(request_payload.urls or request_payload.owner_files)
+    if request_payload.query and not has_explicit_inputs:
+        candidates = search_web_candidates(
+            request_payload.query,
+            provider_name=request_payload.search_provider,
+            max_results=request_payload.max_results,
+            secret_store=secret_store,
+            http_transport=http_transport,
+        )
 
     merged_candidates: list[SearchCandidate] = list(candidates)
     seen_urls = {c.url for c in merged_candidates}
@@ -392,7 +474,7 @@ def execute_research_query(
     merged_candidates.sort(key=lambda c: c.priority_rank)
     merged_candidates = merged_candidates[: max(request_payload.max_results, len(request_payload.urls))]
 
-    # 2. Fetch every candidate URL directly (snippets are never evidence!)
+    # 2. Fetch every web URL directly (snippets are never evidence!) + load owner-provided files
     accessed_at = datetime.now(timezone.utc)
     fetched_records: list[FetchedSourceRecord] = [
         fetch_page_evidence(
@@ -404,10 +486,23 @@ def execute_research_query(
         )
         for cand in merged_candidates
     ]
+    for owner_item in request_payload.owner_files:
+        fetched_records.append(
+            _load_owner_provided_source(
+                db,
+                settings,
+                owner_item,
+                expected_project_id=request_payload.project_id,
+            )
+        )
 
     run_id = new_uuid()
     accessible_count = sum(1 for r in fetched_records if r.reviewed and r.access_status == "accessible")
-    inaccessible_count = len(fetched_records) - accessible_count
+    owner_provided_count = sum(
+        1 for r in fetched_records if r.reviewed and r.access_status == "owner_provided"
+    )
+    reviewed_count = accessible_count + owner_provided_count
+    inaccessible_count = len(fetched_records) - reviewed_count
 
     run_row = ResearchRun(
         id=run_id,
@@ -432,7 +527,7 @@ def execute_research_query(
     )
 
     usage = TokenUsage()
-    if request_payload.synthesize_with_ai:
+    if request_payload.synthesize_with_ai and reviewed_count > 0:
         prompt_text = build_research_synthesis_prompt(request_payload.query, fetched_records)
         llm_req = LLMRequest(
             prompt=prompt_text,
@@ -500,12 +595,12 @@ def execute_research_query(
             request_payload.classification,
         )
 
-    if search_error:
-        synthesis.standards_and_gaps.append(
-            f"Search backend returned warning (explicit URLs still evaluated): {search_error}"
-        )
-
-    run_status = "partial_inaccessible" if inaccessible_count > 0 else "completed"
+    if reviewed_count == 0:
+        run_status = "no_accessible_sources"
+    elif inaccessible_count > 0:
+        run_status = "partial_inaccessible"
+    else:
+        run_status = "completed"
     run_row.status = run_status
     run_row.summary = synthesis.summary
     run_row.structured_output_json = synthesis.model_dump()
