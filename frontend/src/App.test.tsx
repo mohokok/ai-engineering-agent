@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { App } from "./App";
 import {
+  confirmExtractionDrawingUnit,
   createProject,
   createTask,
   deleteProviderApiKey,
@@ -961,6 +962,134 @@ describe("Step 07 CAD/BIM inventory, ODA status, and Vision Summary disclaimer U
     expect(out.ai_interpretation_only).toBe(true);
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/extractions/ext-1/vision-summary",
+      expect.objectContaining({ method: "POST" })
+    );
+  });
+
+  it("renders doubtful-units warning, owner confirm control, raw CP1256 block names, and calls confirm-unit endpoint", async () => {
+    const capabilities: ExtractionCapabilitiesOut = {
+      ocr: {
+        installed: true,
+        status: "installed",
+        version: "5.5.3",
+        languages: ["ara", "eng"],
+        ara_installed: true,
+        eng_installed: true,
+        install_url: "https://github.com/UB-Mannheim/tesseract/wiki",
+        message: "installed",
+      },
+      oda: {
+        installed: true,
+        status: "installed",
+        version: "27.10.0",
+        install_url: "https://www.opendesign.com/guestfiles/oda_file_converter",
+        message: "installed",
+      },
+      format_support_matrix: [],
+      supported_extensions: [".dxf", ".dwg"],
+      cad_bim_deferred_extensions: [".rvt"],
+      classification: "Preliminary",
+    };
+
+    const doubtfulExtraction: FileExtractionDetailOut = {
+      id: "ext-doubt-1",
+      project_id: "proj-7b",
+      file_id: "f-dxf-7b",
+      source_file: "synthetic_doubtful.dxf",
+      folder_name: "02_Original_Drawings",
+      extension: ".dxf",
+      version_number: 1,
+      extraction_version: 1,
+      source_sha256: "deadbeef1234567890",
+      sha256_before: "deadbeef1234567890",
+      sha256_after: "deadbeef1234567890",
+      original_unchanged: true,
+      status: "extracted",
+      ocr_status: "not_applicable",
+      cad_units: "in ($INSUNITS=1; DOUBTFUL)",
+      units_doubtful: true,
+      units_status: "doubtful",
+      owner_confirmed_unit: null,
+      drawing_inventory: {
+        kind: "cad_dxf",
+        layers: [{ name: "0", color: 7, linetype: "Continuous", modelspace_entities: 2, paperspace_entities: 0, total_entities: 2 }],
+        blocks: [
+          {
+            name: "شجرة ملونة",
+            raw_name: "ÔÌÑÉ ãáæäÉ",
+            insert_count: 1,
+            definition_entities: 3,
+            is_xref: false,
+          },
+        ],
+        closed_areas: [
+          {
+            handle: "2B0",
+            layer: "0",
+            type: "LWPOLYLINE",
+            area_native: 7032.67,
+            area_native_unit: "sq_in",
+            area_m2: null,
+            perimeter_native: 412.5,
+          },
+        ],
+      },
+      vision_summaries: [],
+      classification: "Preliminary",
+      counts: {
+        pages: 0,
+        sheets: 0,
+        slides: 0,
+        tables: 0,
+        formulas: 0,
+        text_items: 0,
+        ocr_items: 0,
+        rendered_page_images: 0,
+        layers: 1,
+        blocks: 1,
+        block_inserts: 1,
+        entities: 5,
+        dimensions: 3,
+        polylines: 1,
+        closed_areas: 1,
+        total_items: 6,
+      },
+      warnings: ["units doubtful - owner must confirm drawing unit"],
+      rendered_page_images: [],
+      artifact_relative_path: "03_Analysis/extractions/f-dxf-7b/v1/r1/extraction.json",
+      error_message: null,
+      created_at: "2026-11-20T00:00:00Z",
+      ocr: capabilities.ocr,
+      oda: capabilities.oda,
+      items: [],
+    };
+
+    const html = renderToStaticMarkup(
+      <ProjectFilesPanel
+        lang="en"
+        projectId="proj-7b"
+        initialFiles={[]}
+        initialCapabilities={capabilities}
+        initialExtraction={doubtfulExtraction}
+      />
+    );
+
+    expect(html).toContain("units doubtful - owner must confirm drawing unit");
+    expect(html).toContain("Confirm Unit");
+    expect(html).toContain("7032.67 sq_in");
+    expect(html).toContain("شجرة ملونة");
+    expect(html).toContain("ÔÌÑÉ ãáæäÉ");
+
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      new Response(JSON.stringify({ ...doubtfulExtraction, owner_confirmed_unit: "m", units_doubtful: false }), {
+        status: 200,
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const updated = await confirmExtractionDrawingUnit("ext-doubt-1", "m");
+    expect(updated.owner_confirmed_unit).toBe("m");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/extractions/ext-doubt-1/confirm-unit",
       expect.objectContaining({ method: "POST" })
     );
   });

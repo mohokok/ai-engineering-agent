@@ -1,5 +1,6 @@
 import { ChangeEvent, DragEvent, useCallback, useEffect, useRef, useState } from "react";
 import {
+  confirmExtractionDrawingUnit,
   extractProjectFile,
   getExtractionCapabilities,
   getExtractionPageImageUrl,
@@ -10,6 +11,7 @@ import {
   uploadProjectFiles,
 } from "../api";
 import type {
+  CadUnitChoice,
   DrawingVisionSummaryOut,
   ExtractionCapabilitiesOut,
   FileExtractionDetailOut,
@@ -65,6 +67,10 @@ interface FilesPanelCopy {
   visionLoadingBtn: string;
   inventoryHeading: string;
   rawJsonLabel: string;
+  confirmUnitLabel: string;
+  confirmUnitBtn: string;
+  confirmingUnitBtn: string;
+  unitsDoubtfulTitle: string;
 }
 
 const FILES_COPY: Record<Lang, FilesPanelCopy> = {
@@ -115,6 +121,10 @@ const FILES_COPY: Record<Lang, FilesPanelCopy> = {
     visionLoadingBtn: "جاري التلخيص البصري...",
     inventoryHeading: "جدول جرد الرسومات ونماذج BIM (Drawing & BIM Inventory)",
     rawJsonLabel: "عرض JSON المهيكل الكامل للاستخراج",
+    confirmUnitLabel: "تأكيد وحدة الرسم الهندسية من المالك",
+    confirmUnitBtn: "تأكيد الوحدة",
+    confirmingUnitBtn: "جاري الحفظ...",
+    unitsDoubtfulTitle: "تنبيه: وحدات الرسم مشكوك فيها — يجب تأكيد الوحدة من المالك قبل اعتماد m²",
   },
   en: {
     heading: "Project Files & Version History",
@@ -163,6 +173,10 @@ const FILES_COPY: Record<Lang, FilesPanelCopy> = {
     visionLoadingBtn: "Summarizing via Gemini Vision...",
     inventoryHeading: "Drawing & BIM Inventory Table",
     rawJsonLabel: "Inspect Full Normalized Extraction JSON",
+    confirmUnitLabel: "Owner-Confirmed Drawing Unit",
+    confirmUnitBtn: "Confirm Unit",
+    confirmingUnitBtn: "Confirming...",
+    unitsDoubtfulTitle: "units doubtful - owner must confirm drawing unit",
   },
 };
 
@@ -235,6 +249,10 @@ export function ProjectFilesPanel({
   const [loading, setLoading] = useState<boolean>(false);
   const [uploading, setUploading] = useState<boolean>(false);
   const [extractingFileId, setExtractingFileId] = useState<string | null>(null);
+  const [confirmingUnit, setConfirmingUnit] = useState<boolean>(false);
+  const [selectedCadUnit, setSelectedCadUnit] = useState<CadUnitChoice>(
+    (initialExtraction?.owner_confirmed_unit as CadUnitChoice | undefined) || "m"
+  );
   const [summarizingVision, setSummarizingVision] = useState<boolean>(false);
   const [activeExtraction, setActiveExtraction] =
     useState<FileExtractionDetailOut | null>(initialExtraction);
@@ -299,6 +317,19 @@ export function ProjectFilesPanel({
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setExtractingFileId(null);
+    }
+  }
+
+  async function handleConfirmDrawingUnit(extractionId: string) {
+    setConfirmingUnit(true);
+    setError(null);
+    try {
+      const updated = await confirmExtractionDrawingUnit(extractionId, selectedCadUnit);
+      setActiveExtraction(updated);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setConfirmingUnit(false);
     }
   }
 
@@ -629,9 +660,54 @@ export function ProjectFilesPanel({
                   Units: {activeExtraction.cad_units}
                 </span>
               )}
+              {activeExtraction.units_doubtful && (
+                <span className="badge badge-warn" dir="ltr">
+                  units doubtful
+                </span>
+              )}
               <span className="badge">{activeExtraction.classification}</span>
             </div>
           </div>
+
+          {((activeExtraction.drawing_inventory as Record<string, unknown> | null)?.kind ===
+            "cad_dxf" ||
+            activeExtraction.units_doubtful) && (
+            <div
+              className={`status-box ${activeExtraction.units_doubtful ? "notice-box" : "status-ok"}`}
+              style={{ marginTop: 0, marginBottom: "0.75rem" }}
+            >
+              {activeExtraction.units_doubtful && (
+                <div style={{ fontWeight: 600, marginBottom: "0.35rem" }}>
+                  {copy.unitsDoubtfulTitle}
+                </div>
+              )}
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", alignItems: "center" }}>
+                <label>
+                  <span>{copy.confirmUnitLabel}: </span>
+                  <select
+                    value={selectedCadUnit}
+                    onChange={(e) => setSelectedCadUnit(e.target.value as CadUnitChoice)}
+                  >
+                    <option value="m">m (meters)</option>
+                    <option value="cm">cm (centimeters)</option>
+                    <option value="mm">mm (millimeters)</option>
+                    <option value="ft">ft (feet)</option>
+                    <option value="in">in (inches)</option>
+                    <option value="yd">yd (yards)</option>
+                    <option value="unitless">unitless (keep m2 null)</option>
+                  </select>
+                </label>
+                <button
+                  type="button"
+                  className="btn btn-compact"
+                  disabled={confirmingUnit}
+                  onClick={() => void handleConfirmDrawingUnit(activeExtraction.id)}
+                >
+                  {confirmingUnit ? copy.confirmingUnitBtn : copy.confirmUnitBtn}
+                </button>
+              </div>
+            </div>
+          )}
 
           {activeExtraction.original_unchanged && (
             <div className="status-box status-ok" style={{ marginTop: 0, marginBottom: "0.75rem" }}>
@@ -817,6 +893,11 @@ export function ProjectFilesPanel({
                                 <tr key={`${String(l.name)}-${i}`}>
                                   <td dir="auto">
                                     <code>{String(l.name)}</code>
+                                    {Boolean(l.raw_name) && (
+                                      <span style={{ opacity: 0.75, marginInlineStart: "0.35rem" }}>
+                                        (raw: <code dir="ltr">{String(l.raw_name)}</code>)
+                                      </span>
+                                    )}
                                   </td>
                                   <td dir="ltr">{String(l.color ?? "")}</td>
                                   <td dir="ltr">{String(l.linetype ?? "")}</td>
@@ -881,6 +962,11 @@ export function ProjectFilesPanel({
                                 <tr key={`${String(b.name)}-${i}`}>
                                   <td dir="auto">
                                     <code>{String(b.name)}</code>
+                                    {Boolean(b.raw_name) && (
+                                      <span style={{ opacity: 0.75, marginInlineStart: "0.35rem" }}>
+                                        (raw: <code dir="ltr">{String(b.raw_name)}</code>)
+                                      </span>
+                                    )}
                                   </td>
                                   <td dir="ltr">{String(b.insert_count ?? 0)}</td>
                                   <td dir="ltr">{String(b.definition_entities ?? 0)}</td>

@@ -414,7 +414,9 @@ export interface ExtractedItem {
   start_column_letter?: string | null;
   row_numbers?: number[] | null;
   layer?: string | null;
+  raw_layer?: string | null;
   block_name?: string | null;
+  raw_block_name?: string | null;
   entity_handle?: string | null;
   cad_space?: string | null;
   area?: number | null;
@@ -464,6 +466,18 @@ export interface DrawingVisionSummaryOut {
   classification: ProjectClassification | string;
 }
 
+export type CadUnitChoice =
+  | "unitless"
+  | "mm"
+  | "cm"
+  | "dm"
+  | "m"
+  | "km"
+  | "in"
+  | "ft"
+  | "yd"
+  | "mi";
+
 export interface FileExtractionSummaryOut {
   id: string;
   project_id: string;
@@ -483,6 +497,9 @@ export interface FileExtractionSummaryOut {
   converter_status?: string | null;
   converted_artifact_relative_path?: string | null;
   cad_units?: string | null;
+  units_doubtful?: boolean;
+  units_status?: string | null;
+  owner_confirmed_unit?: string | null;
   drawing_inventory?: Record<string, unknown> | null;
   vision_summaries?: DrawingVisionSummaryOut[];
   classification: ProjectClassification | string;

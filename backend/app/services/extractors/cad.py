@@ -1,7 +1,9 @@
-"""Deterministic CAD DXF reader (layers, blocks, text, dimensions, polylines, areas, units, PNG preview)."""
+"""Deterministic CAD DXF reader (layers, blocks, text, dimensions, polylines, areas, units, CP1256 decoding, PNG preview)."""
 
 import math
+import re
 from pathlib import Path
+from statistics import median
 from typing import Any
 
 import ezdxf
@@ -11,7 +13,7 @@ from ezdxf.addons.drawing.pymupdf import PyMuPdfBackend
 import ezdxf.math
 from ezdxf.path import from_hatch, nesting
 
-from app.schemas.extraction import ExtractedItem, ExtractionMethod
+from app.schemas.extraction import CadUnitChoice, ExtractedItem, ExtractionMethod
 from app.services.extractors.office import ExtractedPayload, _strip_with_raw
 
 # DXF header $INSUNITS code -> (unit_label, linear_scale_to_meters, native_area_unit)
@@ -30,7 +32,360 @@ _DXF_INSUNITS_MAP: dict[int, tuple[str, float | None, str | None]] = {
     14: ("dm", 0.1, "dm2"),
 }
 
+CAD_UNIT_SCALE_MAP: dict[str, tuple[float | None, str]] = {
+    label: (scale, area_u or f"{label}_sq")
+    for label, scale, area_u in _DXF_INSUNITS_MAP.values()
+}
+
+UNITS_DOUBTFUL_WARNING = "units doubtful - owner must confirm drawing unit"
+
 _THREE_D_ENTITY_TYPES = frozenset({"3DSOLID", "MESH", "SURFACE", "BODY", "3DFACE"})
+_TOKEN_SPLIT_RE = re.compile(r"([\s_\-/\\|.,:;()\[\]{}+=]+)")
+_ASCII_ALPHA_RE = re.compile(r"[A-Za-z]")
+_ARABIC_SCRIPT_RE = re.compile(r"[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]")
+_NUMBER_ONLY_RE = re.compile(r"^\s*([+-]?\d+(?:[.,]\d+)?)\s*(?:m|cm|mm|in|ft)?\s*$", re.IGNORECASE)
+
+
+def _to_legacy_8bit_bytes(segment: str) -> bytes | None:
+    """Convert Latin-1 / CP1252-decoded legacy ANSI chars back into raw 8-bit bytes if possible."""
+    out = bytearray()
+    for ch in segment:
+        code = ord(ch)
+        if code <= 0xFF:
+            out.append(code)
+        else:
+            try:
+                encoded = ch.encode("cp1252")
+            except UnicodeEncodeError:
+                return None
+            out.extend(encoded)
+    return bytes(out)
+
+
+def _is_cp1256_arabic_char(ch: str) -> bool:
+    code = ord(ch)
+    return (
+        0x0621 <= code <= 0x064A
+        or 0x064B <= code <= 0x0652
+        or 0x0660 <= code <= 0x0669
+        or ch in {"پ", "چ", "ژ", "گ", "ک", "ی", "،", "؛", "؟", "\u0640"}
+    )
+
+
+def _try_decode_cp1256_token(token: str) -> tuple[str | None, int, int]:
+    """Return (decoded_token, high_byte_count, decoded_standard_arabic_count) for a non-ASCII token."""
+    if not token or _ASCII_ALPHA_RE.search(token):
+        return None, 0, 0
+    high_count = sum(1 for ch in token if ord(ch) >= 0x80)
+    if high_count == 0:
+        return None, 0, 0
+    raw_bytes = _to_legacy_8bit_bytes(token)
+    if raw_bytes is None:
+        return None, 0, 0
+    try:
+        candidate = raw_bytes.decode("cp1256", errors="strict")
+    except UnicodeDecodeError:
+        return None, 0, 0
+    for c in candidate:
+        oc = ord(c)
+        if oc < 0x20 or (0x7F <= oc <= 0x9F):
+            return None, 0, 0
+    valid_high = sum(
+        1 for orig, dec in zip(token, candidate) if ord(orig) < 0x80 or _is_cp1256_arabic_char(dec)
+    )
+    if valid_high != len(token):
+        return None, 0, 0
+    arabic_letters = sum(1 for c in candidate if 0x0621 <= ord(c) <= 0x064A)
+    if arabic_letters == 0:
+        return None, 0, 0
+    return candidate, high_count, arabic_letters
+
+
+def _decode_cad_text(raw: str, *, header_codepage: str = "") -> tuple[str, str | None, str | None]:
+    """Decode DXF unicode escapes and legacy CP1256 Arabic mojibake while keeping raw strings."""
+    if not raw:
+        return "", None, None
+
+    working = raw
+    methods: list[str] = []
+    if hasattr(ezdxf, "has_dxf_unicode") and ezdxf.has_dxf_unicode(working):
+        decoded_u = ezdxf.decode_dxf_unicode(working)
+        if decoded_u != working:
+            working = decoded_u
+            methods.append("dxf_unicode")
+
+    # Never re-decode strings that already contain real Unicode Arabic script.
+    if _ARABIC_SCRIPT_RE.search(working):
+        return (
+            working,
+            raw if working != raw else None,
+            "+".join(methods) if methods else None,
+        )
+
+    if not any(ord(ch) >= 0x80 for ch in working):
+        return (
+            working,
+            raw if working != raw else None,
+            "+".join(methods) if methods else None,
+        )
+
+    parts = _TOKEN_SPLIT_RE.split(working)
+    token_candidates: list[tuple[str | None, int, int]] = []
+    has_strong_arabic_mojibake = False
+    for i, part in enumerate(parts):
+        if i % 2 == 1:
+            token_candidates.append((None, 0, 0))
+            continue
+        cand, high_cnt, arab_cnt = _try_decode_cp1256_token(part)
+        token_candidates.append((cand, high_cnt, arab_cnt))
+        if cand is not None and high_cnt >= 2 and arab_cnt >= 2:
+            has_strong_arabic_mojibake = True
+
+    explicit_1256 = "1256" in (header_codepage or "").upper()
+    if not (has_strong_arabic_mojibake or explicit_1256):
+        return (
+            working,
+            raw if working != raw else None,
+            "+".join(methods) if methods else None,
+        )
+
+    out_parts: list[str] = []
+    changed_cp1256 = False
+    for i, part in enumerate(parts):
+        cand, high_cnt, arab_cnt = token_candidates[i]
+        if cand is None:
+            out_parts.append(part)
+            continue
+        # Protect standalone Latin-1 diameter sign 'Ø' when no multi-char Arabic phrase exists
+        if part == "\u00d8" and not has_strong_arabic_mojibake:
+            out_parts.append(part)
+            continue
+        if high_cnt >= 2 or has_strong_arabic_mojibake or (explicit_1256 and arab_cnt >= 1):
+            out_parts.append(cand)
+            changed_cp1256 = True
+        else:
+            out_parts.append(part)
+
+    final = "".join(out_parts)
+    if changed_cp1256:
+        methods.append("cp1256_mojibake_decoded")
+    return (
+        final,
+        raw if final != raw else None,
+        "+".join(methods) if methods else None,
+    )
+
+
+def _assess_cad_unit_plausibility(
+    *,
+    insunits_raw: int,
+    declared_unit_label: str,
+    declared_scale_to_m: float | None,
+    dim_measurements: list[float],
+    dim_override_numbers: list[float],
+    dim_override_mismatches: int,
+    closed_areas_native: list[tuple[float, float]],
+    confirmed_unit: str | None = None,
+) -> dict[str, Any]:
+    """Assess whether declared CAD units are plausible against dimensions and closed areas."""
+    reasons: list[str] = []
+
+    if confirmed_unit is not None:
+        if confirmed_unit == "unitless":
+            return {
+                "units_doubtful": True,
+                "units_status": "unitless_owner_confirmed",
+                "owner_confirmed_unit": "unitless",
+                "effective_scale_to_m": None,
+                "effective_unit_label": "unitless",
+                "units_display": f"unitless (owner confirmed; file header {declared_unit_label}, $INSUNITS={insunits_raw})",
+                "warnings": [
+                    f"Owner confirmed drawing as unitless (header $INSUNITS={insunits_raw}); area_m2 kept null."
+                ],
+                "reasons": ["owner_confirmed_unitless"],
+            }
+        scale_to_m, _area_u = CAD_UNIT_SCALE_MAP[confirmed_unit]
+        warn_list: list[str] = []
+        if confirmed_unit != declared_unit_label:
+            warn_list.append(
+                f"Owner confirmed drawing unit '{confirmed_unit}' overriding file header "
+                f"$INSUNITS={insunits_raw} ({declared_unit_label}); raw native values preserved untouched."
+            )
+        return {
+            "units_doubtful": False,
+            "units_status": "owner_confirmed",
+            "owner_confirmed_unit": confirmed_unit,
+            "effective_scale_to_m": scale_to_m,
+            "effective_unit_label": confirmed_unit,
+            "units_display": f"{confirmed_unit} (owner confirmed; file header {declared_unit_label}, $INSUNITS={insunits_raw})",
+            "warnings": warn_list,
+            "reasons": [],
+        }
+
+    # Unconfirmed: check unitless/unknown header first
+    if insunits_raw == 0 or declared_scale_to_m is None:
+        return {
+            "units_doubtful": True,
+            "units_status": "unitless",
+            "owner_confirmed_unit": None,
+            "effective_scale_to_m": None,
+            "effective_unit_label": declared_unit_label,
+            "units_display": f"{declared_unit_label} ($INSUNITS={insunits_raw})",
+            "warnings": [
+                f"$INSUNITS={insunits_raw} ({declared_unit_label}): {UNITS_DOUBTFUL_WARNING}; "
+                "CAD areas and lengths are kept in raw native drawing units with area_m2 set to null."
+            ],
+            "reasons": ["missing_or_unitless_insunits"],
+        }
+
+    dims = [d for d in (dim_measurements + dim_override_numbers) if d > 1e-6]
+    med_dim = median(dims) if dims else None
+    med_dim_m = (med_dim * declared_scale_to_m) if med_dim is not None else None
+    max_area_native = max((a for a, _ in closed_areas_native), default=None)
+    max_perim_native = max((p for _, p in closed_areas_native if p > 0), default=None)
+    max_area_m2 = (
+        max_area_native * (declared_scale_to_m ** 2)
+        if max_area_native is not None
+        else None
+    )
+
+    if declared_unit_label in {"in", "ft", "yd", "uin", "mil"}:
+        if med_dim_m is not None and med_dim_m < 0.45:
+            reasons.append(
+                f"median dimension {round(med_dim, 4)} {declared_unit_label} converts to "
+                f"{round(med_dim_m, 4)} m (< 0.45 m), suggesting drawing may actually be in meters or cm"
+            )
+        if max_area_m2 is not None and max_area_native is not None:
+            if (max_area_native >= 10.0 and max_area_m2 < 12.0) or (
+                max_perim_native is not None and max_perim_native >= 40.0 and max_area_m2 < 12.0
+            ):
+                reasons.append(
+                    f"largest closed area {round(max_area_native, 4)} converts to only "
+                    f"{round(max_area_m2, 4)} m2 under {declared_unit_label} ($INSUNITS={insunits_raw})"
+                )
+    elif declared_unit_label == "mm":
+        if med_dim is not None and med_dim < 50.0:
+            reasons.append(
+                f"median dimension {round(med_dim, 4)} mm ({round(med_dim_m or 0.0, 4)} m) looks meter/cm-scaled"
+            )
+        if max_area_m2 is not None and max_area_native is not None and max_area_native >= 1.0 and max_area_m2 < 0.25:
+            reasons.append(
+                f"largest closed area {round(max_area_native, 4)} mm2 converts to {round(max_area_m2, 6)} m2"
+            )
+    elif declared_unit_label == "cm":
+        if med_dim is not None and med_dim < 15.0:
+            reasons.append(
+                f"median dimension {round(med_dim, 4)} cm ({round(med_dim_m or 0.0, 4)} m) looks meter-scaled"
+            )
+        if max_area_m2 is not None and max_area_native is not None and max_area_native >= 1.0 and max_area_m2 < 0.25:
+            reasons.append(
+                f"largest closed area {round(max_area_native, 4)} cm2 converts to {round(max_area_m2, 6)} m2"
+            )
+    elif declared_unit_label == "m":
+        if med_dim is not None and med_dim >= 400.0:
+            reasons.append(
+                f"median dimension {round(med_dim, 4)} declared as meters (>= 400 m) looks mm/cm-scaled"
+            )
+        if max_area_native is not None and max_area_native > 50_000.0:
+            reasons.append(
+                f"largest closed area {round(max_area_native, 2)} declared as m2 (> 50,000) looks mm/cm-scaled"
+            )
+
+    if dim_override_mismatches > 0 and med_dim is not None:
+        reasons.append(
+            f"{dim_override_mismatches} DIMENSION entity override value(s) diverge from raw geometry measurement"
+        )
+
+    if reasons:
+        detail = "; ".join(reasons)
+        return {
+            "units_doubtful": True,
+            "units_status": "doubtful",
+            "owner_confirmed_unit": None,
+            "effective_scale_to_m": None,
+            "effective_unit_label": declared_unit_label,
+            "units_display": f"{declared_unit_label} ($INSUNITS={insunits_raw}; DOUBTFUL)",
+            "warnings": [
+                f"{UNITS_DOUBTFUL_WARNING} — file header declares $INSUNITS={insunits_raw} ({declared_unit_label}), "
+                f"but geometry plausibility check flagged inconsistency: {detail}. "
+                "area_m2 is set to null until confirmed by the owner."
+            ],
+            "reasons": reasons,
+        }
+
+    return {
+        "units_doubtful": False,
+        "units_status": "plausible",
+        "owner_confirmed_unit": None,
+        "effective_scale_to_m": declared_scale_to_m,
+        "effective_unit_label": declared_unit_label,
+        "units_display": f"{declared_unit_label} ($INSUNITS={insunits_raw})",
+        "warnings": [],
+        "reasons": [],
+    }
+
+
+def apply_confirmed_cad_unit(
+    payload_data: dict[str, Any],
+    *,
+    confirmed_unit: CadUnitChoice,
+) -> dict[str, Any]:
+    """Return an updated CAD payload copy with area_m2 computed from owner-confirmed units without altering native values."""
+    scale_to_m, _ = CAD_UNIT_SCALE_MAP[confirmed_unit]
+    inv = dict(payload_data.get("drawing_inventory") or {})
+    insunits_raw = int(inv.get("insunits_code", 0) or 0)
+    declared_label = str(inv.get("declared_unit") or inv.get("units") or "unknown")
+    is_unitless = scale_to_m is None
+
+    updated = dict(payload_data)
+    updated["owner_confirmed_unit"] = confirmed_unit
+    updated["units_doubtful"] = is_unitless
+    updated["units_status"] = "unitless_owner_confirmed" if is_unitless else "owner_confirmed"
+    updated["cad_units"] = (
+        f"{confirmed_unit} (owner confirmed; file header {declared_label}, $INSUNITS={insunits_raw})"
+    )
+
+    new_closed_areas: list[dict[str, Any]] = []
+    for raw_entry in inv.get("closed_areas") or []:
+        entry = dict(raw_entry)
+        area_native = entry.get("area_native")
+        if area_native is not None and scale_to_m is not None:
+            entry["area_m2"] = round(float(area_native) * (scale_to_m ** 2), 6)
+        else:
+            entry["area_m2"] = None
+        new_closed_areas.append(entry)
+
+    inv["closed_areas"] = new_closed_areas
+    inv["units_doubtful"] = is_unitless
+    inv["units_status"] = updated["units_status"]
+    inv["owner_confirmed_unit"] = confirmed_unit
+    inv["confirmed_scale_to_m"] = scale_to_m
+    updated["drawing_inventory"] = inv
+
+    new_items: list[dict[str, Any]] = []
+    for raw_item in payload_data.get("items") or []:
+        item = dict(raw_item)
+        if item.get("item_type") == "cad_polyline_area" and isinstance(item.get("quantities"), dict):
+            q = dict(item["quantities"])
+            area_native = q.get("area_native")
+            if area_native is not None and scale_to_m is not None:
+                area_m2 = round(float(area_native) * (scale_to_m ** 2), 6)
+            else:
+                area_m2 = None
+            q["area_m2"] = area_m2
+            item["quantities"] = q
+        new_items.append(item)
+    updated["items"] = new_items
+
+    kept_warnings = [
+        w for w in (payload_data.get("warnings") or []) if UNITS_DOUBTFUL_WARNING not in w
+    ]
+    kept_warnings.append(
+        f"Owner confirmed drawing unit '{confirmed_unit}' (header declared $INSUNITS={insunits_raw}, {declared_label}); "
+        "raw native values preserved untouched."
+    )
+    updated["warnings"] = kept_warnings
+    return updated
 
 
 def _polygon_perimeter(points: list[tuple[float, float]], *, closed: bool) -> float:
@@ -118,6 +473,91 @@ def _render_modelspace_preview(doc: Any, msp: Any, out_png_path: Path) -> bool:
     return False
 
 
+def _append_closed_area_record(
+    *,
+    payload: ExtractedPayload,
+    area_inventory: list[dict[str, Any]],
+    pending: dict[str, Any],
+    idx: int,
+    source_file: str,
+    file_id: str | None,
+    version_number: int,
+    extraction_method: ExtractionMethod,
+    area_unit: str | None,
+    unit_label: str,
+    effective_scale_to_m: float | None,
+) -> int:
+    """Finalize one closed geometry / HATCH record with verified or null area_m2."""
+    native_area = float(pending["area_native"])
+    area_m2 = (
+        round(native_area * (effective_scale_to_m ** 2), 6)
+        if effective_scale_to_m is not None
+        else None
+    )
+    q_dict: dict[str, Any] = dict(pending["quantities"])
+    q_dict["area_m2"] = area_m2
+
+    ent_kind = str(pending["type"])
+    handle = str(pending["handle"])
+    ent_layer = str(pending["layer"])
+    raw_layer = pending.get("raw_layer")
+    cad_space = str(pending["space"])
+    page_label = str(pending["page_label"])
+    perim = pending.get("perimeter_native")
+
+    if ent_kind == "HATCH":
+        gross_area = float(q_dict["gross_area_native"])
+        hole_count = int(q_dict["island_count"])
+        hole_area = float(q_dict["net_subtracted_area_native"])
+        text = f"HATCH Net Area={native_area} {area_unit} (gross={gross_area}, islands={hole_count})"
+        if hole_count > 0:
+            payload.warnings.append(
+                f"HATCH entity handle={handle} on layer '{ent_layer}' contains {hole_count} island hole(s); "
+                f"net area={native_area} {area_unit} (gross={gross_area}, net_subtracted={hole_area})."
+            )
+    elif ent_kind == "CIRCLE":
+        radius_val = q_dict.get("radius")
+        m2_note = f" ({area_m2} m2)" if area_m2 is not None and area_unit != "m2" else ""
+        text = f"CIRCLE r={radius_val} {unit_label} | Area={native_area} {area_unit}{m2_note}"
+    else:
+        m2_note = f" ({area_m2} m2)" if area_m2 is not None and area_unit != "m2" else ""
+        text = f"Closed {ent_kind} | Area={native_area} {area_unit}{m2_note} | Perimeter={perim} {unit_label}"
+
+    idx += 1
+    payload.items.append(
+        ExtractedItem(
+            item_index=idx,
+            item_type="cad_polyline_area",
+            source_file=source_file,
+            file_id=file_id,
+            version_number=version_number,
+            page_or_sheet=page_label,
+            location=f"handle:{handle}|layer:{ent_layer}|{ent_kind}",
+            text=text,
+            unit_or_format=area_unit,
+            area=native_area,
+            perimeter_or_length=perim,
+            quantities=q_dict,
+            layer=ent_layer,
+            raw_layer=raw_layer,
+            entity_handle=handle,
+            cad_space=cad_space,
+            extraction_method=extraction_method,
+        )
+    )
+    inv_entry: dict[str, Any] = {
+        "handle": handle,
+        "layer": ent_layer,
+        "space": cad_space,
+        "type": ent_kind,
+        **q_dict,
+    }
+    if raw_layer:
+        inv_entry["raw_layer"] = raw_layer
+    area_inventory.append(inv_entry)
+    return idx
+
+
 def extract_dxf(
     path: Path,
     *,
@@ -127,28 +567,25 @@ def extract_dxf(
     file_id: str | None,
     version_number: int,
     extraction_method: ExtractionMethod = "native",
+    confirmed_unit: CadUnitChoice | None = None,
 ) -> tuple[ExtractedPayload, str | None, dict[str, Any]]:
     """Deterministically inventory DXF header units, layers, blocks, text, dimensions, and polyline areas."""
     payload = ExtractedPayload()
     output_pages_dir.mkdir(parents=True, exist_ok=True)
 
     doc = ezdxf.readfile(str(path))
+    header_codepage = str(doc.header.get("$DWGCODEPAGE", "") or "")
     insunits_raw = int(doc.header.get("$INSUNITS", 0) or 0)
     unit_label, scale_to_m, area_unit = _DXF_INSUNITS_MAP.get(
         insunits_raw, (f"insunits_{insunits_raw}", None, f"insunits_{insunits_raw}_sq")
     )
-    units_display = f"{unit_label} ($INSUNITS={insunits_raw})"
-
-    if insunits_raw == 0:
-        payload.warnings.append(
-            "$INSUNITS=0 (unitless): CAD areas and lengths are reported strictly in raw drawing units without assuming meters or millimeters."
-        )
 
     msp = doc.modelspace()
     layout_records: list[tuple[str, str, Any]] = [("modelspace", "Model", msp)]
     for lay in doc.layouts:
         if lay.name.lower() != "model":
-            layout_records.append(("paperspace", lay.name, lay))
+            lay_dec, _, _ = _decode_cad_text(str(lay.name), header_codepage=header_codepage)
+            layout_records.append(("paperspace", lay_dec or str(lay.name), lay))
 
     layer_entity_counts: dict[str, dict[str, int]] = {}
     block_insert_counts: dict[str, int] = {}
@@ -162,10 +599,10 @@ def extract_dxf(
     for cad_space, _lay_name, lay_obj in layout_records:
         for ent in lay_obj:
             dxftype = ent.dxftype()
-            ent_layer = str(getattr(ent.dxf, "layer", "0") or "0")
+            raw_ent_layer = str(getattr(ent.dxf, "layer", "0") or "0")
             entity_type_counts[dxftype] = entity_type_counts.get(dxftype, 0) + 1
             counts_bucket = layer_entity_counts.setdefault(
-                ent_layer, {"modelspace": 0, "paperspace": 0, "total": 0}
+                raw_ent_layer, {"modelspace": 0, "paperspace": 0, "total": 0}
             )
             counts_bucket[cad_space] += 1
             counts_bucket["total"] += 1
@@ -176,23 +613,32 @@ def extract_dxf(
                 if dxftype == "VIEWPORT":
                     paperspace_viewport_count += 1
             if dxftype == "INSERT":
-                blk_name = str(getattr(ent.dxf, "name", "") or "")
-                block_insert_counts[blk_name] = block_insert_counts.get(blk_name, 0) + 1
+                blk_name_raw = str(getattr(ent.dxf, "name", "") or "")
+                block_insert_counts[blk_name_raw] = block_insert_counts.get(blk_name_raw, 0) + 1
             elif dxftype in _THREE_D_ENTITY_TYPES:
                 three_d_count += 1
             elif dxftype == "ACAD_PROXY_ENTITY":
                 proxy_count += 1
 
-    # 1. Layers inventory
+    # 1. Layers inventory (with CP1256 Arabic decoding while preserving raw names)
     idx = 0
     layer_inventory: list[dict[str, Any]] = []
+    encoding_recovered_count = 0
     for layer in doc.layers:
-        l_name = str(layer.dxf.name)
-        l_counts = layer_entity_counts.get(l_name, {"modelspace": 0, "paperspace": 0, "total": 0})
+        raw_l_name = str(layer.dxf.name)
+        l_name, l_raw_orig, l_enc_method = _decode_cad_text(
+            raw_l_name, header_codepage=header_codepage
+        )
+        if l_raw_orig is not None:
+            encoding_recovered_count += 1
+        l_counts = layer_entity_counts.get(
+            raw_l_name,
+            layer_entity_counts.get(l_name, {"modelspace": 0, "paperspace": 0, "total": 0}),
+        )
         is_on = bool(layer.is_on())
         is_frozen = bool(layer.is_frozen())
         is_locked = bool(layer.is_locked())
-        l_props = {
+        l_props: dict[str, Any] = {
             "color": int(getattr(layer.dxf, "color", 7)),
             "linetype": str(getattr(layer.dxf, "linetype", "Continuous") or "Continuous"),
             "is_on": is_on,
@@ -202,6 +648,9 @@ def extract_dxf(
             "paperspace_entities": l_counts["paperspace"],
             "total_entities": l_counts["total"],
         }
+        if l_raw_orig is not None:
+            l_props["raw_name"] = l_raw_orig
+            l_props["encoding_recovered"] = l_enc_method
         idx += 1
         payload.items.append(
             ExtractedItem(
@@ -213,37 +662,50 @@ def extract_dxf(
                 page_or_sheet="dxf:layers",
                 location=f"layer:{l_name}",
                 text=f"Layer '{l_name}' | entities={l_counts['total']} (model={l_counts['modelspace']}, paper={l_counts['paperspace']})",
+                raw_text=l_raw_orig,
+                normalization_applied=l_enc_method,
                 layer=l_name,
+                raw_layer=l_raw_orig,
                 properties=l_props,
                 extraction_method=extraction_method,
             )
         )
-        layer_inventory.append({"name": l_name, **l_props})
+        layer_entry: dict[str, Any] = {"name": l_name, **l_props}
+        layer_inventory.append(layer_entry)
 
     # 2. Blocks & XREF detection (skip internal anonymous *Model_Space / *Paper_Space blocks)
     block_inventory: list[dict[str, Any]] = []
     xref_names: list[str] = []
     for blk in doc.blocks:
-        b_name = str(blk.name)
-        if b_name.startswith("*"):
+        raw_b_name = str(blk.name)
+        if raw_b_name.startswith("*"):
             continue
+        b_name, b_raw_orig, b_enc_method = _decode_cad_text(
+            raw_b_name, header_codepage=header_codepage
+        )
+        if b_raw_orig is not None:
+            encoding_recovered_count += 1
         block_entity = getattr(blk, "block", None)
         is_xref = bool(getattr(block_entity, "is_xref", False) or getattr(blk, "is_xref", False))
-        xref_path = (
+        xref_path_raw = (
             str(getattr(getattr(block_entity, "dxf", None), "xref_path", "") or "")
             if is_xref
             else ""
         )
+        xref_path, _, _ = _decode_cad_text(xref_path_raw, header_codepage=header_codepage)
         if is_xref:
             xref_names.append(b_name)
         def_entities = sum(1 for _ in blk)
-        ins_count = block_insert_counts.get(b_name, 0)
-        b_props = {
+        ins_count = block_insert_counts.get(raw_b_name, block_insert_counts.get(b_name, 0))
+        b_props: dict[str, Any] = {
             "definition_entities": def_entities,
             "insert_count": ins_count,
             "is_xref": is_xref,
             "xref_path": xref_path or None,
         }
+        if b_raw_orig is not None:
+            b_props["raw_name"] = b_raw_orig
+            b_props["encoding_recovered"] = b_enc_method
         idx += 1
         payload.items.append(
             ExtractedItem(
@@ -256,7 +718,10 @@ def extract_dxf(
                 location=f"block:{b_name}",
                 text=f"Block '{b_name}' | inserts={ins_count} | entities_in_def={def_entities}"
                 + (" [EXTERNAL XREF]" if is_xref else ""),
+                raw_text=b_raw_orig,
+                normalization_applied=b_enc_method,
                 block_name=b_name,
+                raw_block_name=b_raw_orig,
                 properties=b_props,
                 extraction_method=extraction_method,
             )
@@ -270,19 +735,33 @@ def extract_dxf(
 
     # 3. Entities across ModelSpace and PaperSpace (TEXT, MTEXT, ATTRIB, DIMENSION, LWPOLYLINE, POLYLINE, CIRCLE, HATCH)
     area_inventory: list[dict[str, Any]] = []
+    pending_areas: list[dict[str, Any]] = []
     text_samples: list[dict[str, Any]] = []
     dimension_inventory: list[dict[str, Any]] = []
+    dim_measurements: list[float] = []
+    dim_override_numbers: list[float] = []
+    dim_override_mismatches = 0
 
     for cad_space, lay_name, lay_obj in layout_records:
         page_label = f"dxf:{cad_space}:{lay_name}"
         for ent in lay_obj:
             dxftype = ent.dxftype()
             handle = str(getattr(ent.dxf, "handle", "") or "no_handle")
-            ent_layer = str(getattr(ent.dxf, "layer", "0") or "0")
+            raw_ent_layer = str(getattr(ent.dxf, "layer", "0") or "0")
+            ent_layer, ent_layer_raw, _ = _decode_cad_text(
+                raw_ent_layer, header_codepage=header_codepage
+            )
 
             if dxftype == "TEXT":
                 raw_t = str(getattr(ent.dxf, "text", "") or "")
-                cleaned_t, raw_orig, norm = _strip_with_raw(raw_t)
+                dec_t, dec_raw_orig, enc_note = _decode_cad_text(raw_t, header_codepage=header_codepage)
+                if dec_raw_orig is not None:
+                    encoding_recovered_count += 1
+                cleaned_t, strip_raw, strip_norm = _strip_with_raw(dec_t)
+                raw_kept = raw_t if (dec_raw_orig is not None or strip_raw is not None) else None
+                norm_label = (
+                    f"{enc_note}+{strip_norm}" if enc_note and strip_norm != "verbatim" else (enc_note or strip_norm)
+                )
                 if cleaned_t:
                     idx += 1
                     payload.items.append(
@@ -295,22 +774,43 @@ def extract_dxf(
                             page_or_sheet=page_label,
                             location=f"handle:{handle}|layer:{ent_layer}|TEXT",
                             text=cleaned_t,
-                            raw_text=raw_orig,
-                            normalization_applied=norm,
+                            raw_text=raw_kept,
+                            normalization_applied=norm_label,
                             layer=ent_layer,
+                            raw_layer=ent_layer_raw,
                             entity_handle=handle,
                             cad_space=cad_space,
                             extraction_method=extraction_method,
                         )
                     )
                     payload.counts.text_items += 1
-                    text_samples.append({"handle": handle, "layer": ent_layer, "space": cad_space, "type": "TEXT", "text": cleaned_t})
+                    sample_t: dict[str, Any] = {
+                        "handle": handle,
+                        "layer": ent_layer,
+                        "space": cad_space,
+                        "type": "TEXT",
+                        "text": cleaned_t,
+                    }
+                    if raw_kept is not None:
+                        sample_t["raw_text"] = raw_kept
+                    text_samples.append(sample_t)
 
             elif dxftype == "MTEXT":
                 raw_mt = str(getattr(ent, "text", "") or "")
-                plain_mt = str(ent.plain_text() or "").strip()
+                plain_mt_raw = str(ent.plain_text() or "").strip()
+                plain_mt, mt_dec_raw, mt_enc = _decode_cad_text(
+                    plain_mt_raw, header_codepage=header_codepage
+                )
+                if mt_dec_raw is not None:
+                    encoding_recovered_count += 1
                 if plain_mt:
                     idx += 1
+                    norm_mt = (
+                        f"{mt_enc}+mtext_formatting_stripped"
+                        if mt_enc and raw_mt != plain_mt_raw
+                        else (mt_enc or ("mtext_formatting_stripped" if raw_mt != plain_mt else "verbatim"))
+                    )
+                    raw_mt_kept = raw_mt if raw_mt != plain_mt else None
                     payload.items.append(
                         ExtractedItem(
                             item_index=idx,
@@ -321,25 +821,52 @@ def extract_dxf(
                             page_or_sheet=page_label,
                             location=f"handle:{handle}|layer:{ent_layer}|MTEXT",
                             text=plain_mt,
-                            raw_text=raw_mt if raw_mt != plain_mt else None,
-                            normalization_applied=(
-                                "mtext_formatting_stripped" if raw_mt != plain_mt else "verbatim"
-                            ),
+                            raw_text=raw_mt_kept,
+                            normalization_applied=norm_mt,
                             layer=ent_layer,
+                            raw_layer=ent_layer_raw,
                             entity_handle=handle,
                             cad_space=cad_space,
                             extraction_method=extraction_method,
                         )
                     )
                     payload.counts.text_items += 1
-                    text_samples.append({"handle": handle, "layer": ent_layer, "space": cad_space, "type": "MTEXT", "text": plain_mt})
+                    sample_mt: dict[str, Any] = {
+                        "handle": handle,
+                        "layer": ent_layer,
+                        "space": cad_space,
+                        "type": "MTEXT",
+                        "text": plain_mt,
+                    }
+                    if raw_mt_kept is not None:
+                        sample_mt["raw_text"] = raw_mt_kept
+                    text_samples.append(sample_mt)
 
             elif dxftype == "INSERT":
-                b_name = str(getattr(ent.dxf, "name", "") or "")
+                raw_ins_blk = str(getattr(ent.dxf, "name", "") or "")
+                b_name, b_raw_orig, _ = _decode_cad_text(
+                    raw_ins_blk, header_codepage=header_codepage
+                )
                 for attrib in getattr(ent, "attribs", ()):
-                    att_tag = str(getattr(attrib.dxf, "tag", "") or "")
-                    att_val = str(getattr(attrib.dxf, "text", "") or "")
-                    att_clean, att_raw, att_norm = _strip_with_raw(att_val)
+                    att_tag_raw = str(getattr(attrib.dxf, "tag", "") or "")
+                    att_tag, _, _ = _decode_cad_text(att_tag_raw, header_codepage=header_codepage)
+                    att_val_raw = str(getattr(attrib.dxf, "text", "") or "")
+                    att_val_dec, att_dec_raw, att_enc = _decode_cad_text(
+                        att_val_raw, header_codepage=header_codepage
+                    )
+                    if att_dec_raw is not None:
+                        encoding_recovered_count += 1
+                    att_clean, att_strip_raw, att_strip_norm = _strip_with_raw(att_val_dec)
+                    raw_att_kept = (
+                        att_val_raw
+                        if (att_dec_raw is not None or att_strip_raw is not None)
+                        else None
+                    )
+                    att_norm = (
+                        f"{att_enc}+{att_strip_norm}"
+                        if att_enc and att_strip_norm != "verbatim"
+                        else (att_enc or att_strip_norm)
+                    )
                     if att_clean:
                         idx += 1
                         att_handle = str(getattr(attrib.dxf, "handle", handle) or handle)
@@ -353,10 +880,12 @@ def extract_dxf(
                                 page_or_sheet=page_label,
                                 location=f"handle:{att_handle}|layer:{ent_layer}|ATTRIB:{att_tag}",
                                 text=f"{att_tag}={att_clean}" if att_tag else att_clean,
-                                raw_text=att_raw,
+                                raw_text=raw_att_kept,
                                 normalization_applied=att_norm,
                                 layer=ent_layer,
+                                raw_layer=ent_layer_raw,
                                 block_name=b_name,
+                                raw_block_name=b_raw_orig,
                                 entity_handle=att_handle,
                                 cad_space=cad_space,
                                 extraction_method=extraction_method,
@@ -367,6 +896,11 @@ def extract_dxf(
             elif dxftype == "DIMENSION":
                 payload.counts.dimensions += 1
                 override_raw = str(getattr(ent.dxf, "text", "") or "")
+                override_dec, override_raw_orig, _ = _decode_cad_text(
+                    override_raw, header_codepage=header_codepage
+                )
+                if override_raw_orig is not None:
+                    encoding_recovered_count += 1
                 measured: float | None = None
                 try:
                     val = ent.get_measurement()
@@ -374,18 +908,36 @@ def extract_dxf(
                         measured = round(float(val), 6)
                 except Exception:
                     measured = None
+                if measured is not None and measured > 0:
+                    dim_measurements.append(measured)
+
+                if override_dec and override_dec != "<>":
+                    m_ov = _NUMBER_ONLY_RE.match(override_dec)
+                    if m_ov:
+                        try:
+                            ov_num = float(m_ov.group(1).replace(",", "."))
+                            if math.isfinite(ov_num) and ov_num > 0:
+                                dim_override_numbers.append(ov_num)
+                                if measured is not None and measured > 0:
+                                    rel_diff = abs(ov_num - measured) / max(ov_num, measured)
+                                    if rel_diff > 0.25:
+                                        dim_override_mismatches += 1
+                        except ValueError:
+                            pass
 
                 override_note = (
-                    f"override='{override_raw}'" if override_raw and override_raw != "<>" else "override='<auto>'"
+                    f"override='{override_dec}'" if override_dec and override_dec != "<>" else "override='<auto>'"
                 )
                 meas_str = f"{measured} {unit_label}" if measured is not None else "unavailable"
                 idx += 1
-                dim_props = {
+                dim_props: dict[str, Any] = {
                     "dimtype": int(getattr(ent.dxf, "dimtype", 0)),
                     "measured_value": measured,
-                    "override_text": override_raw,
+                    "override_text": override_dec,
                     "unit": unit_label,
                 }
+                if override_raw_orig is not None:
+                    dim_props["raw_override_text"] = override_raw_orig
                 payload.items.append(
                     ExtractedItem(
                         item_index=idx,
@@ -396,9 +948,11 @@ def extract_dxf(
                         page_or_sheet=page_label,
                         location=f"handle:{handle}|layer:{ent_layer}|DIMENSION",
                         text=f"Dimension measured={meas_str} | {override_note}",
+                        raw_text=override_raw_orig,
                         unit_or_format=unit_label,
                         perimeter_or_length=measured,
                         layer=ent_layer,
+                        raw_layer=ent_layer_raw,
                         entity_handle=handle,
                         cad_space=cad_space,
                         properties=dim_props,
@@ -422,41 +976,26 @@ def extract_dxf(
                 perim = round(_polygon_perimeter(pts, closed=is_closed), 6) if len(pts) >= 2 else 0.0
                 if is_closed and len(pts) >= 3:
                     native_area = round(float(ezdxf.math.area(pts)), 6)
-                    area_m2 = round(native_area * (scale_to_m ** 2), 6) if scale_to_m is not None else None
                     payload.counts.closed_areas += 1
-                    q_dict: dict[str, Any] = {
-                        "area_native": native_area,
-                        "area_native_unit": area_unit,
-                        "perimeter_native": perim,
-                        "perimeter_unit": unit_label,
-                        "vertex_count": len(pts),
-                    }
-                    if area_m2 is not None:
-                        q_dict["area_m2"] = area_m2
-                    idx += 1
-                    payload.items.append(
-                        ExtractedItem(
-                            item_index=idx,
-                            item_type="cad_polyline_area",
-                            source_file=source_file,
-                            file_id=file_id,
-                            version_number=version_number,
-                            page_or_sheet=page_label,
-                            location=f"handle:{handle}|layer:{ent_layer}|LWPOLYLINE",
-                            text=f"Closed LWPOLYLINE | Area={native_area} {area_unit}"
-                            + (f" ({area_m2} m2)" if area_m2 is not None and area_unit != "m2" else "")
-                            + f" | Perimeter={perim} {unit_label}",
-                            unit_or_format=area_unit,
-                            area=native_area,
-                            perimeter_or_length=perim,
-                            quantities=q_dict,
-                            layer=ent_layer,
-                            entity_handle=handle,
-                            cad_space=cad_space,
-                            extraction_method=extraction_method,
-                        )
+                    pending_areas.append(
+                        {
+                            "handle": handle,
+                            "layer": ent_layer,
+                            "raw_layer": ent_layer_raw,
+                            "space": cad_space,
+                            "page_label": page_label,
+                            "type": "LWPOLYLINE",
+                            "area_native": native_area,
+                            "perimeter_native": perim,
+                            "quantities": {
+                                "area_native": native_area,
+                                "area_native_unit": area_unit,
+                                "perimeter_native": perim,
+                                "perimeter_unit": unit_label,
+                                "vertex_count": len(pts),
+                            },
+                        }
                     )
-                    area_inventory.append({"handle": handle, "layer": ent_layer, "space": cad_space, "type": "LWPOLYLINE", **q_dict})
                 else:
                     idx += 1
                     payload.items.append(
@@ -472,6 +1011,7 @@ def extract_dxf(
                             unit_or_format=unit_label,
                             perimeter_or_length=perim,
                             layer=ent_layer,
+                            raw_layer=ent_layer_raw,
                             entity_handle=handle,
                             cad_space=cad_space,
                             extraction_method=extraction_method,
@@ -488,39 +1028,26 @@ def extract_dxf(
                     perim = round(_polygon_perimeter(pts, closed=is_closed), 6) if len(pts) >= 2 else 0.0
                     if is_closed and len(pts) >= 3:
                         native_area = round(float(ezdxf.math.area(pts)), 6)
-                        area_m2 = round(native_area * (scale_to_m ** 2), 6) if scale_to_m is not None else None
                         payload.counts.closed_areas += 1
-                        q_dict = {
-                            "area_native": native_area,
-                            "area_native_unit": area_unit,
-                            "perimeter_native": perim,
-                            "perimeter_unit": unit_label,
-                            "vertex_count": len(pts),
-                        }
-                        if area_m2 is not None:
-                            q_dict["area_m2"] = area_m2
-                        idx += 1
-                        payload.items.append(
-                            ExtractedItem(
-                                item_index=idx,
-                                item_type="cad_polyline_area",
-                                source_file=source_file,
-                                file_id=file_id,
-                                version_number=version_number,
-                                page_or_sheet=page_label,
-                                location=f"handle:{handle}|layer:{ent_layer}|POLYLINE",
-                                text=f"Closed POLYLINE | Area={native_area} {area_unit} | Perimeter={perim} {unit_label}",
-                                unit_or_format=area_unit,
-                                area=native_area,
-                                perimeter_or_length=perim,
-                                quantities=q_dict,
-                                layer=ent_layer,
-                                entity_handle=handle,
-                                cad_space=cad_space,
-                                extraction_method=extraction_method,
-                            )
+                        pending_areas.append(
+                            {
+                                "handle": handle,
+                                "layer": ent_layer,
+                                "raw_layer": ent_layer_raw,
+                                "space": cad_space,
+                                "page_label": page_label,
+                                "type": "POLYLINE",
+                                "area_native": native_area,
+                                "perimeter_native": perim,
+                                "quantities": {
+                                    "area_native": native_area,
+                                    "area_native_unit": area_unit,
+                                    "perimeter_native": perim,
+                                    "perimeter_unit": unit_label,
+                                    "vertex_count": len(pts),
+                                },
+                            }
                         )
-                        area_inventory.append({"handle": handle, "layer": ent_layer, "space": cad_space, "type": "POLYLINE", **q_dict})
                 elif getattr(ent, "is_3d_polyline", False):
                     three_d_count += 1
 
@@ -529,39 +1056,26 @@ def extract_dxf(
                 if r > 0:
                     native_area = round(math.pi * (r ** 2), 6)
                     circumf = round(2.0 * math.pi * r, 6)
-                    area_m2 = round(native_area * (scale_to_m ** 2), 6) if scale_to_m is not None else None
                     payload.counts.closed_areas += 1
-                    q_dict = {
-                        "area_native": native_area,
-                        "area_native_unit": area_unit,
-                        "perimeter_native": circumf,
-                        "perimeter_unit": unit_label,
-                        "radius": round(r, 6),
-                    }
-                    if area_m2 is not None:
-                        q_dict["area_m2"] = area_m2
-                    idx += 1
-                    payload.items.append(
-                        ExtractedItem(
-                            item_index=idx,
-                            item_type="cad_polyline_area",
-                            source_file=source_file,
-                            file_id=file_id,
-                            version_number=version_number,
-                            page_or_sheet=page_label,
-                            location=f"handle:{handle}|layer:{ent_layer}|CIRCLE",
-                            text=f"CIRCLE r={round(r, 6)} {unit_label} | Area={native_area} {area_unit}",
-                            unit_or_format=area_unit,
-                            area=native_area,
-                            perimeter_or_length=circumf,
-                            quantities=q_dict,
-                            layer=ent_layer,
-                            entity_handle=handle,
-                            cad_space=cad_space,
-                            extraction_method=extraction_method,
-                        )
+                    pending_areas.append(
+                        {
+                            "handle": handle,
+                            "layer": ent_layer,
+                            "raw_layer": ent_layer_raw,
+                            "space": cad_space,
+                            "page_label": page_label,
+                            "type": "CIRCLE",
+                            "area_native": native_area,
+                            "perimeter_native": circumf,
+                            "quantities": {
+                                "area_native": native_area,
+                                "area_native_unit": area_unit,
+                                "perimeter_native": circumf,
+                                "perimeter_unit": unit_label,
+                                "radius": round(r, 6),
+                            },
+                        }
                     )
-                    area_inventory.append({"handle": handle, "layer": ent_layer, "space": cad_space, "type": "CIRCLE", **q_dict})
 
             elif dxftype == "HATCH":
                 try:
@@ -576,11 +1090,6 @@ def extract_dxf(
                         gross_area = round(max(0.0, gross_raw), 6)
                         hole_area = round(max(0.0, gross_area - native_area), 6)
                         if native_area > 0:
-                            area_m2 = (
-                                round(native_area * (scale_to_m ** 2), 6)
-                                if scale_to_m is not None
-                                else None
-                            )
                             payload.counts.closed_areas += 1
                             area_basis = (
                                 "net_outer_minus_islands"
@@ -589,56 +1098,77 @@ def extract_dxf(
                                 if hatch_style == 2 and len(sub_paths) > 1
                                 else "single_outer_loop"
                             )
-                            q_dict = {
-                                "area_native": native_area,
-                                "area_native_unit": area_unit,
-                                "gross_area_native": gross_area,
-                                "island_hole_area_native": hole_area,
-                                "island_count": hole_count,
-                                "area_basis": area_basis,
-                                "hatch_style": hatch_style,
-                                "pattern_name": str(getattr(ent.dxf, "pattern_name", "") or ""),
-                                "loop_count": len(sub_paths),
-                            }
-                            if area_m2 is not None:
-                                q_dict["area_m2"] = area_m2
-                            if hole_count > 0:
-                                payload.warnings.append(
-                                    f"HATCH entity handle={handle} on layer '{ent_layer}' contains {hole_count} island hole(s); net area={native_area} {area_unit} (gross={gross_area}, subtracted holes={hole_area})."
-                                )
-                            idx += 1
-                            payload.items.append(
-                                ExtractedItem(
-                                    item_index=idx,
-                                    item_type="cad_polyline_area",
-                                    source_file=source_file,
-                                    file_id=file_id,
-                                    version_number=version_number,
-                                    page_or_sheet=page_label,
-                                    location=f"handle:{handle}|layer:{ent_layer}|HATCH",
-                                    text=f"HATCH Net Area={native_area} {area_unit} (gross={gross_area}, islands={hole_count})",
-                                    unit_or_format=area_unit,
-                                    area=native_area,
-                                    quantities=q_dict,
-                                    layer=ent_layer,
-                                    entity_handle=handle,
-                                    cad_space=cad_space,
-                                    extraction_method=extraction_method,
-                                )
-                            )
-                            area_inventory.append(
+                            pat_raw = str(getattr(ent.dxf, "pattern_name", "") or "")
+                            pat_dec, _, _ = _decode_cad_text(pat_raw, header_codepage=header_codepage)
+                            pending_areas.append(
                                 {
                                     "handle": handle,
                                     "layer": ent_layer,
+                                    "raw_layer": ent_layer_raw,
                                     "space": cad_space,
+                                    "page_label": page_label,
                                     "type": "HATCH",
-                                    **q_dict,
+                                    "area_native": native_area,
+                                    "perimeter_native": None,
+                                    "quantities": {
+                                        "area_native": native_area,
+                                        "area_native_unit": area_unit,
+                                        "gross_area_native": gross_area,
+                                        "net_subtracted_area_native": hole_area,
+                                        "island_count": hole_count,
+                                        "area_basis": area_basis,
+                                        "hatch_style": hatch_style,
+                                        "pattern_name": pat_dec,
+                                        "loop_count": len(sub_paths),
+                                    },
                                 }
                             )
                 except Exception:
                     payload.warnings.append(
                         f"HATCH entity handle={handle} on layer '{ent_layer}' has complex/island boundaries that could not be polygonized deterministically."
                     )
+
+    # 4. Assess drawing unit plausibility BEFORE emitting metric m2 conversions
+    closed_pairs = [
+        (float(p["area_native"]), float(p.get("perimeter_native") or 0.0))
+        for p in pending_areas
+    ]
+    unit_assessment = _assess_cad_unit_plausibility(
+        insunits_raw=insunits_raw,
+        declared_unit_label=unit_label,
+        declared_scale_to_m=scale_to_m,
+        dim_measurements=dim_measurements,
+        dim_override_numbers=dim_override_numbers,
+        dim_override_mismatches=dim_override_mismatches,
+        closed_areas_native=closed_pairs,
+        confirmed_unit=confirmed_unit,
+    )
+    units_display = str(unit_assessment["units_display"])
+    units_doubtful = bool(unit_assessment["units_doubtful"])
+    units_status = str(unit_assessment["units_status"])
+    owner_confirmed_unit = unit_assessment["owner_confirmed_unit"]
+    effective_scale_to_m = unit_assessment["effective_scale_to_m"]
+    payload.warnings.extend(unit_assessment["warnings"])
+
+    if encoding_recovered_count > 0:
+        payload.warnings.append(
+            f"Recovered {encoding_recovered_count} legacy CP1256 Arabic string(s) into UTF-8 while keeping raw original values alongside."
+        )
+
+    for pending in pending_areas:
+        idx = _append_closed_area_record(
+            payload=payload,
+            area_inventory=area_inventory,
+            pending=pending,
+            idx=idx,
+            source_file=source_file,
+            file_id=file_id,
+            version_number=version_number,
+            extraction_method=extraction_method,
+            area_unit=area_unit,
+            unit_label=unit_label,
+            effective_scale_to_m=effective_scale_to_m,
+        )
 
     # Render ModelSpace PNG preview cleanly
     preview_filename = "page_001.png"
@@ -673,9 +1203,16 @@ def extract_dxf(
     inventory: dict[str, Any] = {
         "kind": "cad_dxf",
         "dxf_version": str(doc.dxfversion),
+        "dxf_codepage": header_codepage or None,
+        "declared_unit": unit_label,
         "units": unit_label,
         "insunits_code": insunits_raw,
         "area_unit": area_unit,
+        "units_doubtful": units_doubtful,
+        "units_status": units_status,
+        "owner_confirmed_unit": owner_confirmed_unit,
+        "unit_plausibility_reasons": unit_assessment["reasons"],
+        "cp1256_strings_recovered": encoding_recovered_count,
         "modelspace_entities": modelspace_entity_count,
         "paperspace_entities": paperspace_entity_count,
         "entity_type_counts": dict(sorted(entity_type_counts.items())),

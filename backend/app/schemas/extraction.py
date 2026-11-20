@@ -27,6 +27,7 @@ ExtractedItemType = Literal[
 ]
 ExtractionMethod = Literal["native", "ocr", "converted_oda", "hybrid", "ai_vision"]
 SupportLevel = Literal["native", "converted_via_oda", "not_supported"]
+CadUnitChoice = Literal["unitless", "mm", "cm", "dm", "m", "km", "in", "ft", "yd", "mi"]
 
 
 class OcrCapabilityOut(BaseModel):
@@ -97,7 +98,9 @@ class ExtractedItem(BaseModel):
     start_column_letter: str | None = None
     row_numbers: list[int] | None = None
     layer: str | None = None
+    raw_layer: str | None = None
     block_name: str | None = None
+    raw_block_name: str | None = None
     entity_handle: str | None = None
     cad_space: str | None = None
     area: float | None = None
@@ -138,6 +141,13 @@ class FileExtractionRequest(BaseModel):
     version_number: int | None = Field(default=None, ge=1)
     force_ocr: bool = False
     classification: ProjectClassification = "Preliminary"
+    confirmed_unit: CadUnitChoice | None = None
+
+
+class DrawingUnitConfirmRequest(BaseModel):
+    """Explicit owner confirmation of a CAD drawing's real linear unit."""
+
+    confirmed_unit: CadUnitChoice
 
 
 class FileExtractionSummaryOut(BaseModel):
@@ -161,6 +171,9 @@ class FileExtractionSummaryOut(BaseModel):
     converter_status: str | None = None
     converted_artifact_relative_path: str | None = None
     cad_units: str | None = None
+    units_doubtful: bool = False
+    units_status: str | None = None
+    owner_confirmed_unit: str | None = None
     drawing_inventory: dict[str, Any] | None = None
     vision_summaries: list[dict[str, Any]] = Field(default_factory=list)
     classification: ProjectClassification | str

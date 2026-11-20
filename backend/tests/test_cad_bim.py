@@ -201,11 +201,14 @@ def test_extract_dxf_inventory_arabic_units_deterministic_areas_and_edge_limits(
         f_u = _upload_file(client, project_id, "unitless_xref.dxf", unitless_buf.getvalue().encode("utf-8"), "application/dxf")
         res_u = client.post(f"/api/files/{f_u['id']}/extract").json()
         assert res_u["cad_units"] == "unitless ($INSUNITS=0)"
+        assert res_u["units_doubtful"] is True
+        assert res_u["units_status"] == "unitless"
         assert any("$INSUNITS=0 (unitless)" in w for w in res_u["warnings"])
+        assert any("units doubtful - owner must confirm drawing unit" in w for w in res_u["warnings"])
         assert any("External XREF block(s) detected" in w for w in res_u["warnings"])
         area_entry = res_u["drawing_inventory"]["closed_areas"][0]
         assert area_entry["area_native"] == 50.0
-        assert "area_m2" not in area_entry
+        assert area_entry["area_m2"] is None
 
 
 def test_dwg_conversion_pipeline_mocked_preserves_original_and_versions(
@@ -425,7 +428,8 @@ def test_extract_dxf_hatch_with_island_subtracts_hole_area(tmp_path: Path) -> No
         h = areas[0]
         assert h["type"] == "HATCH"
         assert h["gross_area_native"] == 100.0
-        assert h["island_hole_area_native"] == 20.0
+        assert h["net_subtracted_area_native"] == 20.0
+        assert "island_hole_area_native" not in h
         assert h["area_native"] == 80.0
         assert h["area_m2"] == 80.0
         assert h["island_count"] == 1
@@ -494,3 +498,190 @@ def test_dwg_refuses_existing_converted_run_dir_with_409(
     with pytest.raises(FileExistsError):
         convert_dwg_to_dxf(src_dwg, output_dxf_dir=existing_only, source_filename="dummy.dwg", oda_probe=probe)
     assert (existing_only / "keep.dxf").read_text(encoding="utf-8") == "DO-NOT-TOUCH"
+
+
+def test_extract_dxf_doubtful_inches_sets_null_area_m2_and_owner_confirm_unit(
+    tmp_path: Path,
+) -> None:
+    """DXF declaring inches ($INSUNITS=1) with metric dimensions/areas must null area_m2 until owner confirms."""
+    doc = ezdxf.new("R2018")
+    doc.header["$INSUNITS"] = 1  # inches (suspect when dims are 3.0, 4.0, 4.9 and area=7032.67)
+    msp = doc.modelspace()
+    msp.add_linear_dim(base=(0, 10), p1=(0, 0), p2=(3.0, 0)).render()
+    msp.add_linear_dim(base=(0, 12), p1=(0, 0), p2=(4.0, 0)).render()
+    msp.add_linear_dim(base=(0, 14), p1=(0, 0), p2=(4.9, 0)).render()
+    # Exact rectangle: w + h = 206.25 -> perimeter = 412.5, w * h = 7032.67 -> area = 7032.67
+    w_rect = 163.14246109
+    h_rect = 43.10753891
+    msp.add_lwpolyline([(0, 0), (w_rect, 0), (w_rect, h_rect), (0, h_rect)], close=True)
+    buf = StringIO()
+    doc.write(buf)
+    dxf_bytes = buf.getvalue().encode("utf-8")
+
+    # Also build a genuinely mm-scaled plan (3000 x 4000 mm -> 12.0 m2) to verify no false positive
+    mm_doc = ezdxf.new("R2018")
+    mm_doc.header["$INSUNITS"] = 4
+    mm_msp = mm_doc.modelspace()
+    mm_msp.add_linear_dim(base=(0, 4500), p1=(0, 0), p2=(3000.0, 0)).render()
+    mm_msp.add_linear_dim(base=(-500, 0), p1=(0, 0), p2=(0, 4000.0), angle=90).render()
+    mm_msp.add_lwpolyline([(0, 0), (3000.0, 0), (3000.0, 4000.0), (0, 4000.0)], close=True)
+    mm_buf = StringIO()
+    mm_doc.write(mm_buf)
+
+    settings = _test_settings(tmp_path)
+    app = create_app(settings)
+    with TestClient(app) as client:
+        project_id, workspace_slug = _create_project(client)
+        f_bad = _upload_file(client, project_id, "synthetic_inches_metric_scale.dxf", dxf_bytes, "application/dxf")
+        orig_sha = f_bad["sha256"]
+
+        res = client.post(f"/api/files/{f_bad['id']}/extract")
+        assert res.status_code == 201, res.text
+        data = res.json()
+        assert data["units_doubtful"] is True
+        assert data["units_status"] == "doubtful"
+        assert data["owner_confirmed_unit"] is None
+        assert any("units doubtful - owner must confirm drawing unit" in w for w in data["warnings"])
+
+        area_inv = data["drawing_inventory"]["closed_areas"][0]
+        assert area_inv["area_native"] == pytest.approx(7032.67, abs=1e-2)
+        assert area_inv["area_native_unit"] == "sq_in"
+        assert area_inv["perimeter_native"] == pytest.approx(412.5, abs=1e-2)
+        assert area_inv["area_m2"] is None
+        area_items = [i for i in data["items"] if i["item_type"] == "cad_polyline_area"]
+        assert len(area_items) == 1
+        assert area_items[0]["quantities"]["area_m2"] is None
+
+        # Owner explicitly confirms unit = 'm' per extraction
+        conf_res = client.post(
+            f"/api/extractions/{data['id']}/confirm-unit",
+            json={"confirmed_unit": "m"},
+        )
+        assert conf_res.status_code == 200, conf_res.text
+        confirmed = conf_res.json()
+        assert confirmed["units_doubtful"] is False
+        assert confirmed["units_status"] == "owner_confirmed"
+        assert confirmed["owner_confirmed_unit"] == "m"
+        assert "owner confirmed" in confirmed["cad_units"].lower()
+        assert confirmed["sha256_after"] == orig_sha
+        assert confirmed["original_unchanged"] is True
+
+        conf_area = confirmed["drawing_inventory"]["closed_areas"][0]
+        assert conf_area["area_native"] == pytest.approx(7032.67, abs=1e-2)
+        assert conf_area["area_native_unit"] == "sq_in"
+        assert conf_area["area_m2"] == pytest.approx(7032.67, abs=1e-2)
+        conf_item = [i for i in confirmed["items"] if i["item_type"] == "cad_polyline_area"][0]
+        assert conf_item["quantities"]["area_m2"] == pytest.approx(7032.67, abs=1e-2)
+
+        conf_artifact = (
+            settings.workspaces_dir
+            / workspace_slug
+            / f"03_Analysis/extractions/{f_bad['id']}/v1/r1/unit_confirmation_s1.json"
+        )
+        assert conf_artifact.is_file()
+        with app.state.session_factory() as db:
+            aud = db.scalar(
+                select(AuditLog).where(
+                    AuditLog.entity_id == data["id"],
+                    AuditLog.action == "file.drawing_unit_confirmed",
+                )
+            )
+            assert aud is not None
+            assert aud.details_json["confirmed_unit"] == "m"
+
+        # Re-extract passing confirmed_unit directly yields r2 already confirmed
+        res_r2 = client.post(
+            f"/api/files/{f_bad['id']}/extract",
+            json={"confirmed_unit": "m"},
+        )
+        assert res_r2.status_code == 201
+        d2 = res_r2.json()
+        assert d2["extraction_version"] == 2
+        assert d2["units_doubtful"] is False
+        assert d2["owner_confirmed_unit"] == "m"
+        assert d2["drawing_inventory"]["closed_areas"][0]["area_m2"] == pytest.approx(7032.67, abs=1e-2)
+
+        # Genuine millimeter drawing is NOT flagged as doubtful
+        f_mm = _upload_file(client, project_id, "valid_mm_room.dxf", mm_buf.getvalue().encode("utf-8"), "application/dxf")
+        mm_data = client.post(f"/api/files/{f_mm['id']}/extract").json()
+        assert mm_data["units_doubtful"] is False
+        assert mm_data["units_status"] == "plausible"
+        assert mm_data["drawing_inventory"]["closed_areas"][0]["area_m2"] == 12.0
+
+
+def test_extract_dxf_cp1256_mojibake_arabic_and_preserves_raw_and_latin(tmp_path: Path) -> None:
+    """CP1256 mojibake decoded from Latin-1/ANSI_1252 is recovered across blocks/layers/text while keeping raw strings."""
+    mojibake_block = "ÔÌÑÉ ãáæäÉ"  # 'شجرة ملونة'.encode('cp1256').decode('latin-1')
+    mojibake_phrase = "ÛÑÝÉ æ ãÎÒä"  # 'غرفة و مخزن'.encode('cp1256').decode('latin-1') (includes 1-letter 'و')
+    mojibake_layer = "ÃÚãÏÉ_Arch"  # 'أعمدة_Arch'
+
+    doc = ezdxf.new("R2018")
+    doc.header["$INSUNITS"] = 6
+    doc.header["$DWGCODEPAGE"] = "ANSI_1252"  # simulates ODA output losing CP1256 codepage
+    doc.layers.add(mojibake_layer)
+    blk = doc.blocks.new(mojibake_block)
+    blk.add_circle((0, 0), radius=0.5)
+    blk.add_attdef("TYPE", (0, 1))
+
+    msp = doc.modelspace()
+    ins = msp.add_blockref(mojibake_block, (2, 2))
+    ins.add_auto_attribs({"TYPE": mojibake_block})
+    msp.add_text(mojibake_phrase, dxfattribs={"layer": mojibake_layer, "insert": (1, 1)})
+    msp.add_text("Café", dxfattribs={"insert": (1, 2)})
+    msp.add_text("Résumé", dxfattribs={"insert": (1, 3)})
+    msp.add_text("Ø 20mm", dxfattribs={"insert": (1, 4)})
+    msp.add_text("20 m²", dxfattribs={"insert": (1, 5)})
+    msp.add_mtext(mojibake_block, dxfattribs={"layer": mojibake_layer, "insert": (2, 4)})
+    msp.add_linear_dim(
+        base=(0, 8),
+        p1=(0, 0),
+        p2=(5.0, 0),
+        text=mojibake_phrase,
+    ).render()
+
+    buf = StringIO()
+    doc.write(buf)
+    dxf_bytes = buf.getvalue().encode("utf-8")
+
+    settings = _test_settings(tmp_path)
+    app = create_app(settings)
+    with TestClient(app) as client:
+        project_id, _ = _create_project(client)
+        f_dxf = _upload_file(client, project_id, "cp1256_mojibake.dxf", dxf_bytes, "application/dxf")
+        res = client.post(f"/api/files/{f_dxf['id']}/extract")
+        assert res.status_code == 201, res.text
+        data = res.json()
+
+        inv = data["drawing_inventory"]
+        blocks_by_name = {b["name"]: b for b in inv["blocks"]}
+        assert "شجرة ملونة" in blocks_by_name
+        assert blocks_by_name["شجرة ملونة"]["raw_name"] == mojibake_block
+        assert blocks_by_name["شجرة ملونة"]["encoding_recovered"] == "cp1256_mojibake_decoded"
+        assert blocks_by_name["شجرة ملونة"]["insert_count"] == 1
+
+        layers_by_name = {l["name"]: l for l in inv["layers"]}
+        assert "أعمدة_Arch" in layers_by_name
+        assert layers_by_name["أعمدة_Arch"]["raw_name"] == mojibake_layer
+
+        text_items = [i for i in data["items"] if i["item_type"] == "text"]
+        texts = {i["text"]: i for i in text_items}
+        assert "غرفة و مخزن" in texts
+        assert texts["غرفة و مخزن"]["raw_text"] == mojibake_phrase
+        assert texts["غرفة و مخزن"]["layer"] == "أعمدة_Arch"
+        assert texts["غرفة و مخزن"]["raw_layer"] == mojibake_layer
+        assert "شجرة ملونة" in texts
+        assert texts["شجرة ملونة"]["layer"] == "أعمدة_Arch"
+        assert "TYPE=شجرة ملونة" in texts
+        assert texts["TYPE=شجرة ملونة"]["block_name"] == "شجرة ملونة"
+        assert texts["TYPE=شجرة ملونة"]["raw_block_name"] == mojibake_block
+        assert texts["TYPE=شجرة ملونة"]["raw_text"] == mojibake_block
+
+        dim_inv = inv["dimensions"][0]
+        assert dim_inv["override_text"] == "غرفة و مخزن"
+        assert dim_inv["raw_override_text"] == mojibake_phrase
+
+        # European Latin / diameter / unit symbols must NOT be falsely decoded as Arabic
+        assert "Café" in texts
+        assert "Résumé" in texts
+        assert "Ø 20mm" in texts
+        assert "20 m²" in texts

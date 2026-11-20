@@ -12,6 +12,7 @@ from app.db.session import get_db
 from app.providers.base import ProviderError
 from app.providers.secrets import SecretStore
 from app.schemas.extraction import (
+    DrawingUnitConfirmRequest,
     DrawingVisionSummaryOut,
     DrawingVisionSummaryRequest,
     ExtractionCapabilitiesOut,
@@ -24,6 +25,7 @@ from app.services.extraction import (
     ExtractionProcessingError,
     ExtractionRunConflictError,
     UnsupportedExtractionFormatError,
+    confirm_extraction_drawing_unit,
     extract_project_file,
     get_extraction_capabilities,
     get_extraction_detail,
@@ -116,6 +118,32 @@ def summarize_drawing_vision_endpoint(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except ProviderError as exc:
         _raise_provider_http_error(exc)
+
+
+@router.post(
+    "/extractions/{extraction_id}/confirm-unit",
+    response_model=FileExtractionDetailOut,
+)
+def confirm_extraction_drawing_unit_endpoint(
+    request: Request,
+    payload: DrawingUnitConfirmRequest,
+    extraction_id: str = ApiPath(..., min_length=1),
+    db: Session = Depends(get_db),
+) -> FileExtractionDetailOut:
+    """Record owner-confirmed linear drawing unit per extraction and compute area_m2 without altering native values."""
+    try:
+        return confirm_extraction_drawing_unit(
+            db,
+            _get_app_settings(request),
+            extraction_id,
+            request_payload=payload,
+        )
+    except ExtractionNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except (UnsupportedExtractionFormatError, WorkspacePathError) as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except ExtractionRunConflictError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
 @router.get("/files/{file_id}/extractions", response_model=FileExtractionListResponse)
