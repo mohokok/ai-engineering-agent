@@ -592,7 +592,9 @@ export interface ResearchSourceOut {
   source_type: string;
   source_priority_tier: SourcePriorityTier | string;
   priority_rank: number;
-  access_status: "accessible" | "owner_provided" | "inaccessible" | "partial" | string;
+  tier_is_provider_claim?: boolean;
+  tier_claim_label?: string | null;
+  access_status: "accessible" | "owner_provided" | "inaccessible" | "not_relevant" | "partial" | string;
   reviewed: boolean;
   http_status: number | null;
   failure_reason: string | null;
@@ -614,6 +616,12 @@ export interface ResearchRunSummaryOut {
   accessible_sources: number;
   owner_provided_sources?: number;
   inaccessible_sources: number;
+  not_relevant_sources?: number;
+  estimated_prompt_tokens?: number;
+  prompt_char_count?: number;
+  prompt_char_cap?: number;
+  step04_daily_tokens_remaining?: number | null;
+  step04_monthly_tokens_remaining?: number | null;
   token_usage: TaskTokenUsageOut;
   artifact_relative_path: string | null;
   created_at: string;

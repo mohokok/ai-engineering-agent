@@ -305,6 +305,20 @@ export function getResearchRunDetail(runId: string): Promise<ResearchRunDetailOu
   );
 }
 
+export function synthesizeResearchRun(
+  runId: string,
+  complexity: "fast" | "deep" = "fast"
+): Promise<ResearchRunDetailOut> {
+  return requestJson<ResearchRunDetailOut>(
+    `/api/research/runs/${encodeURIComponent(runId)}/synthesize`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ complexity }),
+    }
+  );
+}
+
 export function listResearchSources(options?: {
   project_id?: string;
   reviewed_only?: boolean;

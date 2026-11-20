@@ -19,6 +19,7 @@ from app.schemas.research import (
     ResearchRunDetailOut,
     ResearchRunRequest,
     ResearchSourceListResponse,
+    ResearchSynthesizeRequest,
     SearchProviderKeySaveRequest,
 )
 from app.services.projects import ProjectNotFoundError
@@ -28,6 +29,7 @@ from app.services.research import (
     get_research_run_detail,
     list_research_runs,
     list_research_sources,
+    synthesize_research_run,
 )
 from app.services.research_fetch import search_key_account_name
 from app.services.workspace import WorkspacePathError
@@ -161,6 +163,29 @@ def get_research_run_detail_endpoint(
         return get_research_run_detail(db, run_id)
     except ProjectNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@router.post("/runs/{run_id}/synthesize", response_model=ResearchRunDetailOut)
+def synthesize_research_run_endpoint(
+    run_id: str,
+    payload: ResearchSynthesizeRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> ResearchRunDetailOut:
+    """Execute capped Gemini synthesis after inspecting filtered sources and estimated tokens."""
+    try:
+        return synthesize_research_run(
+            db,
+            _get_settings(request),
+            _get_secret_store(request),
+            run_id,
+            complexity=payload.complexity,
+            client_factory=_get_client_factory(request),
+        )
+    except ProjectNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ProviderError as exc:
+        _raise_provider_http_error(exc)
 
 
 @router.get("/sources", response_model=ResearchSourceListResponse)

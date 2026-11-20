@@ -24,6 +24,12 @@ from app.schemas.research import (
 
 MAX_FETCH_BYTES = 10 * 1024 * 1024  # 10 MB cap per fetched page or PDF
 MAX_EXTRACTED_CHARS = 12_000
+MAX_EXCERPT_CHARS = 2_400
+MIN_SUBSTANTIVE_CHARS = 160
+MIN_SUBSTANTIVE_WORDS = 25
+MIN_PROSE_CHARS = 120
+MIN_PROSE_WORDS = 18
+MIN_PROSE_RATIO = 0.25
 FETCH_TIMEOUT_SECONDS = 15.0
 DEFAULT_USER_AGENT = (
     "LocalAIEngineeringAgent/0.8 (Consultancy Research Client; +local-desktop-app)"
@@ -170,7 +176,112 @@ _BOT_OR_PAYWALL_MARKERS = (
     "enable javascript and cookies to continue",
     "subscription required to view",
     "subscribe to continue reading",
+    "attention required!",
 )
+_LOGIN_PAYWALL_PATTERNS = (
+    "sign in to your personal account",
+    "sign in to your account",
+    "sign in now",
+    "sign up now",
+    "sign in",
+    "log in",
+    "username or email",
+    "forgot password",
+    "change password",
+    "current password",
+    "password",
+    "create an account",
+    "don't have a personal account",
+    "with a personal account, you can",
+    "incorrect email address",
+    "register for access",
+    "institutional access",
+    "institutional login",
+    "access through your institution",
+    "shibboleth",
+    "openathens",
+    "subscription required",
+    "subscribe to continue",
+    "purchase this article",
+    "buy this chapter",
+    "add to cart",
+    "full text access requires",
+    "save download print citation",
+)
+_COOKIE_WALL_PATTERNS = (
+    "accept cookies",
+    "accept all cookies",
+    "reject all cookies",
+    "cookie preferences",
+    "cookie settings",
+    "manage cookies",
+    "we use cookies to",
+    "your privacy choices",
+)
+_COUNTRY_LIST_MARKERS = (
+    "afghanistan",
+    "aland islands",
+    "albania",
+    "algeria",
+    "american samoa",
+    "andorra",
+    "angola",
+    "anguilla",
+    "antarctica",
+    "antigua and barbuda",
+    "argentina",
+    "armenia",
+    "aruba",
+    "azerbaijan",
+    "bahamas",
+    "bahrain",
+    "bangladesh",
+    "barbados",
+    "belarus",
+    "belize",
+    "benin",
+    "bermuda",
+    "bhutan",
+    "bolivia",
+    "botswana",
+    "brunei",
+    "bulgaria",
+    "burkina faso",
+    "burundi",
+    "cambodia",
+    "cameroon",
+    "cape verde",
+)
+_PHOTO_ARCHIVE_MARKERS = (
+    "photo archive",
+    "photograph archive",
+    "digital collections",
+    "digital archive",
+    "image archive",
+    "lantern slide",
+    "rights statement",
+    "archival photograph",
+    "visual resources",
+)
+_BOOK_LANDING_MARKERS = (
+    "bloomsbury collections",
+    "encyclopedia-chapter",
+    "buy print",
+    "buy ebook",
+    "recommend to your library",
+    "request permissions",
+    "purchase access",
+)
+_EN_QUERY_STOPWORDS = frozenset({
+    "the", "and", "for", "with", "from", "that", "this", "are", "was", "were",
+    "what", "which", "who", "how", "when", "where", "all", "any", "check",
+    "find", "search", "lookup", "verify", "review", "per", "about", "into",
+    "over", "under", "between", "using", "based", "note", "notes",
+})
+_AR_QUERY_STOPWORDS = frozenset({
+    "في", "من", "على", "إلى", "الى", "عن", "مع", "أو", "او", "أن", "إن",
+    "هذا", "هذه", "ذلك", "تلك", "الذي", "التي", "حول", "عبر", "وفق", "كل",
+})
 _DATE_META_NAMES = (
     "article:published_time",
     "og:published_time",
@@ -195,6 +306,9 @@ class SearchCandidate:
     priority_rank: int
     publication_date_hint: str | None = None
     source_name_hint: str | None = None
+    work_type: str | None = None
+    provider_name: str | None = None
+    tier_claim_label: str = "Domain/URL heuristic (provider/automated claim — unverified)"
 
 
 @dataclass
@@ -216,6 +330,8 @@ class FetchedSourceRecord:
     extracted_text: str | None
     excerpt: str | None
     injection_signals: list[str]
+    tier_is_provider_claim: bool = True
+    tier_claim_label: str = "Domain/URL heuristic (provider/automated claim — unverified)"
 
 
 def search_key_account_name(provider_id: str) -> str:
@@ -307,7 +423,9 @@ def classify_source_priority(
     hint_tier: SourcePriorityTier | None = None,
 ) -> tuple[SourcePriorityTier, int, ReliabilityRating, str]:
     """Classify source into the Plan's 6-tier reliability hierarchy deterministically."""
-    if hint_tier and hint_tier in SOURCE_PRIORITY_SPEC and hint_tier != "unverified":
+    if hint_tier == "unverified":
+        return "unverified", 99, "unrated", "unverified"
+    if hint_tier and hint_tier in SOURCE_PRIORITY_SPEC:
         rank, rating, stype = SOURCE_PRIORITY_SPEC[hint_tier]
         return hint_tier, rank, rating, stype
 
@@ -414,6 +532,8 @@ def _search_duckduckgo_lite(
                 source_priority_tier=tier,
                 priority_rank=rank,
                 source_name_hint=urlparse(target).hostname or target,
+                provider_name="duckduckgo_lite",
+                tier_claim_label="Claimed from URL/domain heuristic (unverified)",
             )
         )
         if len(candidates) >= max_results:
@@ -428,7 +548,7 @@ def _search_crossref(
 ) -> list[SearchCandidate]:
     resp = client.get(
         "https://api.crossref.org/works",
-        params={"query": query, "rows": max_results, "select": "DOI,title,URL,published,container-title"},
+        params={"query": query, "rows": max_results, "select": "DOI,title,URL,published,container-title,type"},
         headers={"User-Agent": DEFAULT_USER_AGENT},
     )
     if resp.status_code != 200:
@@ -449,8 +569,17 @@ def _search_crossref(
         if date_parts:
             pub_date = "-".join(str(p).zfill(2) if i > 0 else str(p) for i, p in enumerate(date_parts[:3]))
         containers = item.get("container-title") or []
-        src_hint = str(containers[0]).strip() if containers else "Crossref Peer-Reviewed"
-        tier, rank, _, _ = classify_source_priority(url, title=title, hint_tier="peer_reviewed")
+        src_hint = str(containers[0]).strip() if containers else "Crossref Record"
+        work_type = str(item.get("type") or "other").strip().lower()
+        # Do NOT blindly claim every Crossref record (e.g. 'book-chapter', 'other', photo archive) is peer-reviewed
+        if work_type in {"journal-article", "proceedings-article"}:
+            claimed_hint: SourcePriorityTier = "peer_reviewed"
+        elif work_type in {"book-chapter", "book", "monograph", "edited-book", "reference-entry", "report"}:
+            claimed_hint = "reputable"
+        else:
+            claimed_hint = "unverified"
+        tier, rank, _, _ = classify_source_priority(url, title=title, hint_tier=claimed_hint)
+        claim_label = f"Provider claim (crossref: {work_type}) — unverified until full text reviewed"
         candidates.append(
             SearchCandidate(
                 url=url,
@@ -459,6 +588,9 @@ def _search_crossref(
                 priority_rank=rank,
                 publication_date_hint=pub_date,
                 source_name_hint=src_hint,
+                work_type=work_type,
+                provider_name="crossref",
+                tier_claim_label=claim_label,
             )
         )
     return candidates
@@ -518,6 +650,8 @@ def _search_with_key_provider(
                 source_priority_tier=tier,
                 priority_rank=rank,
                 source_name_hint=urlparse(cleaned).hostname or cleaned,
+                provider_name=provider_name,
+                tier_claim_label=f"Provider claim ({provider_name}) + URL heuristic — unverified",
             )
         )
     return candidates
@@ -578,8 +712,8 @@ def _extract_html_metadata_and_text(
     *,
     fallback_url: str,
     last_modified: str | None = None,
-) -> tuple[str, str | None, str, str | None]:
-    """Extract (source_name, publication_date, clean_text, raw_lower_check) from HTML safely."""
+) -> tuple[str, str | None, str, str, str]:
+    """Extract (source_name, publication_date, clean_body_text, full_visible_text, lower_raw) from HTML."""
     decoded = raw_bytes.decode("utf-8", errors="replace")
     lower_raw = decoded.lower()
     tree = lxml_html.fromstring(decoded)
@@ -613,23 +747,74 @@ def _extract_html_metadata_and_text(
     if not pub_date and last_modified:
         pub_date = last_modified.strip()[:64]
 
-    # Strip active/hidden tags and HTML comments before reading visible page text
+    # Strip active/hidden tags and HTML comments before reading visible text
     for tag in ("script", "style", "noscript", "template", "iframe", "svg"):
         for el in tree.xpath(f"//{tag}"):
             parent = el.getparent()
             if parent is not None:
                 parent.remove(el)
-    from lxml import etree
-
     for comment in tree.xpath("//comment()"):
         parent = comment.getparent()
         if parent is not None:
             parent.remove(comment)
 
     body_nodes = tree.xpath("//body")
-    root_el = body_nodes[0] if body_nodes else tree
-    text = " ".join(etree.tostring(root_el, method="text", encoding="unicode").split())
-    return source_name[:512], pub_date, text[:MAX_EXTRACTED_CHARS], lower_raw
+    body_el = body_nodes[0] if body_nodes else tree
+    full_visible_raw = " ".join(tok.strip() for tok in body_el.itertext() if tok and tok.strip())
+    full_visible_text = re.sub(r"\s+([.,;:!?؟])", r"\1", " ".join(full_visible_raw.split()))
+
+    # Strip navigation, footer, form, and dropdown chrome to isolate substantive prose
+    for xp in (
+        ".//nav",
+        ".//footer",
+        ".//aside",
+        ".//form",
+        ".//select",
+        ".//dialog",
+        ".//*[@role='navigation']",
+        ".//*[@role='banner']",
+        ".//*[@role='contentinfo']",
+    ):
+        for el in body_el.xpath(xp):
+            parent = el.getparent()
+            if parent is not None:
+                parent.remove(el)
+
+    main_candidates = body_el.xpath(".//main | .//article | .//*[@role='main']")
+    selected_root = body_el
+    if main_candidates:
+        combined_main = " ".join(
+            tok.strip()
+            for node in main_candidates
+            for tok in node.itertext()
+            if tok and tok.strip()
+        )
+        combined_main = re.sub(r"\s+([.,;:!?؟])", r"\1", " ".join(combined_main.split()))
+        if len(combined_main) >= MIN_SUBSTANTIVE_CHARS:
+            selected_root = None
+            text = combined_main
+        else:
+            text = ""
+    else:
+        text = ""
+
+    if selected_root is not None:
+        raw_clean = " ".join(tok.strip() for tok in selected_root.itertext() if tok and tok.strip())
+        text = re.sub(r"\s+([.,;:!?؟])", r"\1", " ".join(raw_clean.split()))
+
+    text = re.sub(
+        r"^(?:skip to main content|skip to content|skip to navigation)\s*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    ).strip()
+    return (
+        source_name[:512],
+        pub_date,
+        text[:MAX_EXTRACTED_CHARS],
+        full_visible_text[: MAX_EXTRACTED_CHARS * 2],
+        lower_raw,
+    )
 
 
 def _extract_pdf_metadata_and_text(
@@ -677,6 +862,219 @@ def _detect_injection_signals(text: str) -> list[str]:
     return hits
 
 
+_BOILERPLATE_SEGMENT_MARKERS = (
+    "sign in to your personal account",
+    "sign in to your account",
+    "forgot password",
+    "change password",
+    "current password",
+    "don't have a personal account",
+    "with a personal account, you can",
+    "incorrect email address",
+    "sign up now",
+    "sign up via",
+    "accept all cookies",
+    "accept cookies",
+    "cookie preferences",
+    "subscription required",
+    "this item is only available to the members of institutions",
+    "save download print citation",
+    "are you sure you want to remove the page",
+    "john doe",
+)
+_BOILERPLATE_WORDS = frozenset({
+    "sign", "login", "log", "password", "forgot", "cookie", "cookies", "accept",
+    "select", "country", "afghanistan", "albania", "algeria", "andorra", "angola",
+    "home", "navigation", "menu", "privacy", "terms", "register", "subscribe",
+})
+
+
+def _extract_prose_segments(clean_body_text: str) -> list[str]:
+    """Identify sentence-like prose segments, ignoring nav/login/cookie/country boilerplate."""
+    segments = [seg.strip() for seg in re.split(r"(?<=[.!?؟])\s+|\n+", clean_body_text) if seg.strip()]
+    if len(segments) == 1 and len(clean_body_text) >= MIN_SUBSTANTIVE_CHARS:
+        # Handle single-block technical/PDF pages that lack terminal period splits nicely
+        segments = [clean_body_text.strip()]
+    prose: list[str] = []
+    for seg in segments:
+        if len(seg) < 40:
+            continue
+        seg_lower = seg.lower()
+        if any(marker in seg_lower for marker in _BOILERPLATE_SEGMENT_MARKERS):
+            continue
+        words = re.findall(r"[\w\u0600-\u06FF'-]+", seg)
+        if len(words) < 7:
+            continue
+        boiler_count = sum(1 for w in words if w.lower() in _BOILERPLATE_WORDS)
+        if boiler_count / len(words) >= 0.35:
+            continue
+        has_lower_prose = sum(1 for w in words if len(w) >= 2 and w.isalpha() and w.islower()) >= 2
+        has_arabic_prose = sum(1 for w in words if any("\u0600" <= ch <= "\u06ff" for ch in w)) >= 2
+        if has_lower_prose or has_arabic_prose:
+            prose.append(seg)
+    return prose
+
+
+def assess_page_content_quality(
+    full_visible_text: str,
+    clean_body_text: str,
+    *,
+    lower_raw_html: str = "",
+    url: str = "",
+    is_pdf: bool = False,
+) -> tuple[bool, str | None, str | None]:
+    """Reject login/paywall/cookie walls, country dropdowns, photo archives, and thin/non-prose pages."""
+    body = " ".join(clean_body_text.split())
+    full = " ".join(full_visible_text.split())
+    lower_body = body.lower()
+    lower_full = full.lower()
+    lower_raw = lower_raw_html or lower_full
+
+    word_tokens = re.findall(r"[\w\u0600-\u06FF'-]+", body)
+    is_photo_archive = (not is_pdf) and any(
+        m in lower_body or m in lower_full or m in url.lower() for m in _PHOTO_ARCHIVE_MARKERS
+    )
+    if is_photo_archive and len(body) < 1_000:
+        return (
+            False,
+            f"login wall / paywall / cookie wall / no substantive text (photo or digital archive landing page without technical prose) — unreviewed; {OWNER_MANUAL_UPLOAD_ACTION}.",
+            "photo_archive",
+        )
+
+    if len(body) < MIN_SUBSTANTIVE_CHARS or len(word_tokens) < MIN_SUBSTANTIVE_WORDS:
+        return (
+            False,
+            f"login wall / paywall / cookie wall / no substantive text (only {len(body)} chars / {len(word_tokens)} words extracted) — unreviewed; {OWNER_MANUAL_UPLOAD_ACTION}.",
+            None,
+        )
+
+    prose_segments = _extract_prose_segments(body)
+    prose_chars = sum(len(s) for s in prose_segments)
+    prose_words = sum(len(re.findall(r"[\w\u0600-\u06FF'-]+", s)) for s in prose_segments)
+    prose_ratio = prose_chars / max(len(body), 1)
+
+    country_hits = sum(1 for c in _COUNTRY_LIST_MARKERS if c in lower_full)
+    has_country_dropdown = country_hits >= 5 or (
+        country_hits >= 3 and ("select country" in lower_full or "country*" in lower_full)
+    )
+    if has_country_dropdown and (prose_chars < 900 or prose_ratio < 0.55):
+        return (
+            False,
+            f"login wall / paywall / cookie wall / no substantive text (registration country list / login form detected) — unreviewed; {OWNER_MANUAL_UPLOAD_ACTION}.",
+            None,
+        )
+
+    has_bot_marker = any(m in lower_raw or m in lower_full for m in _BOT_OR_PAYWALL_MARKERS)
+    if has_bot_marker and (prose_chars < 600 or prose_ratio < 0.45):
+        return (
+            False,
+            f"login wall / paywall / cookie wall / no substantive text (paywall or anti-bot gate detected) — unreviewed; {OWNER_MANUAL_UPLOAD_ACTION}.",
+            None,
+        )
+
+    body_login_hits = sum(1 for p in _LOGIN_PAYWALL_PATTERNS if p in lower_body)
+    full_login_hits = sum(1 for p in _LOGIN_PAYWALL_PATTERNS if p in lower_full)
+    body_cookie_hits = sum(1 for p in _COOKIE_WALL_PATTERNS if p in lower_body)
+
+    explicit_login_gate = any(
+        k in lower_body
+        for k in (
+            "sign in to your personal account",
+            "forgot password",
+            "incorrect email address",
+            "subscription required",
+            "full text access requires",
+        )
+    )
+    if (
+        (explicit_login_gate and (prose_chars < 900 or prose_ratio < 0.60))
+        or (body_login_hits >= 2 and (prose_chars < 600 or prose_ratio < 0.50))
+        or (full_login_hits >= 3 and (prose_chars < 500 or prose_ratio < 0.45))
+        or (body_cookie_hits >= 2 and (prose_chars < 450 or prose_ratio < 0.45))
+    ):
+        return (
+            False,
+            f"login wall / paywall / cookie wall / no substantive text (sign-in, paywall, or cookie gate detected) — unreviewed; {OWNER_MANUAL_UPLOAD_ACTION}.",
+            None,
+        )
+
+    if (
+        not prose_segments
+        or prose_words < MIN_PROSE_WORDS
+        or prose_chars < MIN_PROSE_CHARS
+        or prose_ratio < MIN_PROSE_RATIO
+    ):
+        return (
+            False,
+            f"login wall / paywall / cookie wall / no substantive text (low ratio of sentence-like prose: {prose_ratio:.0%}) — unreviewed; {OWNER_MANUAL_UPLOAD_ACTION}.",
+            None,
+        )
+
+    return True, None, None
+
+
+def extract_query_terms(query: str) -> list[str]:
+    """Extract normalized meaningful English/Arabic query terms (excluding common stopwords)."""
+    raw_tokens = re.findall(r"[\w\u0600-\u06FF.-]{2,}", query.lower())
+    terms: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_tokens:
+        tok = raw.strip(".-")
+        if len(tok) < 2:
+            continue
+        if tok in _EN_QUERY_STOPWORDS or tok in _AR_QUERY_STOPWORDS:
+            continue
+        if tok not in seen:
+            seen.add(tok)
+            terms.append(tok)
+    return terms
+
+
+def _term_matches_body(term: str, body_lower: str) -> bool:
+    if re.search(rf"(?<!\w){re.escape(term)}(?!\w)", body_lower):
+        return True
+    if any("\u0600" <= ch <= "\u06ff" for ch in term) and term.startswith("ال") and len(term) >= 4:
+        stripped_ar = term[2:]
+        if re.search(rf"(?<!\w)(?:ال)?{re.escape(stripped_ar)}", body_lower):
+            return True
+    if term.isascii() and term.isalpha() and len(term) >= 5:
+        stem = term.rstrip("s")
+        if stem != term and re.search(rf"(?<!\w){re.escape(stem)}s?(?!\w)", body_lower):
+            return True
+        if len(term) >= 6 and term[:5] in body_lower:
+            return True
+    return False
+
+
+def is_text_relevant_to_query(clean_body_text: str, query: str) -> bool:
+    """Verify substantive body text (never title alone) addresses meaningful query terms."""
+    terms = extract_query_terms(query)
+    if not terms:
+        return True
+    body_lower = clean_body_text.lower()
+    body_has_latin = any("a" <= ch <= "z" for ch in body_lower)
+    body_has_ar = any("\u0600" <= ch <= "\u06ff" for ch in body_lower)
+
+    active_terms = [
+        t
+        for t in terms
+        if (any("\u0600" <= ch <= "\u06ff" for ch in t) and body_has_ar)
+        or (any("a" <= ch <= "z" or "0" <= ch <= "9" for ch in t) and body_has_latin)
+    ]
+    if not active_terms:
+        active_terms = terms
+
+    matched_terms = [t for t in active_terms if _term_matches_body(t, body_lower)]
+    if len(active_terms) <= 3:
+        return len(matched_terms) >= 1
+    if len(matched_terms) >= 2:
+        return True
+    if len(matched_terms) == 1:
+        occurrences = len(re.findall(rf"(?<!\w){re.escape(matched_terms[0])}", body_lower))
+        return occurrences >= 2
+    return False
+
+
 def _inaccessible_record(
     *,
     url: str,
@@ -688,6 +1086,9 @@ def _inaccessible_record(
     source_type: str,
     http_status: int | None,
     reason: str,
+    access_status: AccessStatus = "inaccessible",
+    reliability_rating: ReliabilityRating = "unreviewed",
+    tier_claim_label: str = "Domain/URL heuristic (provider/automated claim — unverified)",
 ) -> FetchedSourceRecord:
     return FetchedSourceRecord(
         url=url,
@@ -696,32 +1097,44 @@ def _inaccessible_record(
         publication_date=publication_date,
         source_priority_tier=source_priority_tier,
         priority_rank=priority_rank,
-        reliability_rating="unreviewed",
+        reliability_rating=reliability_rating,
         source_type=source_type,
-        access_status="inaccessible",
+        access_status=access_status,
         reviewed=False,
         http_status=http_status,
         failure_reason=reason,
         extracted_text=None,
         excerpt=None,
         injection_signals=[],
+        tier_is_provider_claim=True,
+        tier_claim_label=tier_claim_label,
     )
 
 
 def fetch_page_evidence(
     url: str,
     *,
+    query: str = "",
     candidate_title: str = "",
     hint_tier: SourcePriorityTier | None = None,
     pub_date_hint: str | None = None,
+    work_type: str | None = None,
+    search_provider: str | None = None,
+    tier_claim_label: str | None = None,
     http_transport: httpx.BaseTransport | None = None,
 ) -> FetchedSourceRecord:
-    """Fetch a single URL directly with honest headers (+1 Referer-less retry) and classify reviewed/unreviewed."""
+    """Fetch a single URL directly, apply content-quality & relevance gates, and classify reviewed/unreviewed."""
     allow_private = http_transport is not None
-    default_tier, default_rank, default_rating, default_stype = classify_source_priority(
+    default_tier, default_rank, _, default_stype = classify_source_priority(
         url, title=candidate_title, hint_tier=hint_tier
     )
     fallback_name = candidate_title.strip() or (urlparse(url).hostname or url)
+    resolved_claim_label = tier_claim_label or (
+        f"Provider claim ({search_provider}: {work_type or default_tier}) — unverified"
+        if search_provider
+        else f"URL/domain heuristic ({default_tier}) — unverified claim"
+    )
+    base_stype = f"{search_provider}:{work_type}" if (search_provider == "crossref" and work_type) else default_stype
 
     try:
         safe_url = validate_public_http_url(url, allow_private_for_test=allow_private)
@@ -733,9 +1146,10 @@ def fetch_page_evidence(
             publication_date=pub_date_hint,
             source_priority_tier="unverified",
             priority_rank=99,
-            source_type=default_stype,
+            source_type=base_stype,
             http_status=None,
             reason=f"Blocked URL ({exc})",
+            tier_claim_label=resolved_claim_label,
         )
 
     try:
@@ -763,9 +1177,10 @@ def fetch_page_evidence(
             publication_date=pub_date_hint,
             source_priority_tier=default_tier,
             priority_rank=default_rank,
-            source_type=default_stype,
+            source_type=base_stype,
             http_status=None,
             reason=f"Request timed out (unreviewed); {OWNER_MANUAL_UPLOAD_ACTION}.",
+            tier_claim_label=resolved_claim_label,
         )
     except Exception as exc:
         return _inaccessible_record(
@@ -775,9 +1190,10 @@ def fetch_page_evidence(
             publication_date=pub_date_hint,
             source_priority_tier=default_tier,
             priority_rank=default_rank,
-            source_type=default_stype,
+            source_type=base_stype,
             http_status=None,
             reason=f"Network/fetch failure ({exc.__class__.__name__}) — document unreviewed; {OWNER_MANUAL_UPLOAD_ACTION}.",
+            tier_claim_label=resolved_claim_label,
         )
 
     final_url = str(resp.url)
@@ -791,9 +1207,10 @@ def fetch_page_evidence(
             publication_date=pub_date_hint,
             source_priority_tier="unverified",
             priority_rank=99,
-            source_type=default_stype,
+            source_type=base_stype,
             http_status=resp.status_code,
             reason=f"Redirect target rejected ({exc}) — unreviewed.",
+            tier_claim_label=resolved_claim_label,
         )
 
     if resp.status_code >= 400:
@@ -804,9 +1221,10 @@ def fetch_page_evidence(
             publication_date=pub_date_hint,
             source_priority_tier=default_tier,
             priority_rank=default_rank,
-            source_type=default_stype,
+            source_type=base_stype,
             http_status=resp.status_code,
             reason=f"HTTP {resp.status_code} response — document could not be accessed and was NOT reviewed; {OWNER_MANUAL_UPLOAD_ACTION}.",
+            tier_claim_label=resolved_claim_label,
         )
 
     raw_bytes = resp.content[: MAX_FETCH_BYTES + 1]
@@ -818,9 +1236,10 @@ def fetch_page_evidence(
             publication_date=pub_date_hint,
             source_priority_tier=default_tier,
             priority_rank=default_rank,
-            source_type=default_stype,
+            source_type=base_stype,
             http_status=resp.status_code,
             reason=f"Document exceeded {MAX_FETCH_BYTES // (1024 * 1024)} MB limit (unreviewed); {OWNER_MANUAL_UPLOAD_ACTION}.",
+            tier_claim_label=resolved_claim_label,
         )
 
     content_type = str(resp.headers.get("content-type") or "").lower()
@@ -832,27 +1251,18 @@ def fetch_page_evidence(
             src_name, pub_date, text = _extract_pdf_metadata_and_text(
                 raw_bytes, fallback_url=final_url, last_modified=last_mod
             )
+            full_visible_text = text
+            lower_raw = text.lower()
         elif "html" in content_type or "text/plain" in content_type or not content_type:
             if "text/plain" in content_type and not raw_bytes.lstrip().startswith(b"<"):
                 src_name = fallback_name[:512]
                 pub_date = last_mod.strip()[:64] if last_mod else pub_date_hint
                 text = " ".join(raw_bytes.decode("utf-8", errors="replace").split())[:MAX_EXTRACTED_CHARS]
+                full_visible_text = text
                 lower_raw = text.lower()
             else:
-                src_name, pub_date, text, lower_raw = _extract_html_metadata_and_text(
+                src_name, pub_date, text, full_visible_text, lower_raw = _extract_html_metadata_and_text(
                     raw_bytes, fallback_url=final_url, last_modified=last_mod
-                )
-            if any(marker in lower_raw for marker in _BOT_OR_PAYWALL_MARKERS) and len(text) < 1200:
-                return _inaccessible_record(
-                    url=url,
-                    final_url=final_url,
-                    source_name=src_name or fallback_name,
-                    publication_date=pub_date or pub_date_hint,
-                    source_priority_tier=default_tier,
-                    priority_rank=default_rank,
-                    source_type="pdf" if is_pdf else default_stype,
-                    http_status=resp.status_code,
-                    reason=f"HTTP {resp.status_code} paywall, login gate, or anti-bot challenge detected — unreviewed; {OWNER_MANUAL_UPLOAD_ACTION}.",
                 )
         else:
             return _inaccessible_record(
@@ -862,9 +1272,10 @@ def fetch_page_evidence(
                 publication_date=pub_date_hint,
                 source_priority_tier=default_tier,
                 priority_rank=default_rank,
-                source_type=default_stype,
+                source_type=base_stype,
                 http_status=resp.status_code,
                 reason=f"Unsupported content-type '{content_type}' — unreviewed; {OWNER_MANUAL_UPLOAD_ACTION}.",
+                tier_claim_label=resolved_claim_label,
             )
     except Exception as exc:
         return _inaccessible_record(
@@ -874,9 +1285,10 @@ def fetch_page_evidence(
             publication_date=pub_date_hint,
             source_priority_tier=default_tier,
             priority_rank=default_rank,
-            source_type=default_stype,
+            source_type=base_stype,
             http_status=resp.status_code,
             reason=f"Failed to parse document ({exc.__class__.__name__}) — unreviewed; {OWNER_MANUAL_UPLOAD_ACTION}.",
+            tier_claim_label=resolved_claim_label,
         )
 
     if not text.strip():
@@ -887,9 +1299,51 @@ def fetch_page_evidence(
             publication_date=pub_date or pub_date_hint,
             source_priority_tier=default_tier,
             priority_rank=default_rank,
-            source_type="pdf" if is_pdf else default_stype,
+            source_type="pdf" if is_pdf else base_stype,
             http_status=resp.status_code,
-            reason=f"Document returned empty readable text — unreviewed; {OWNER_MANUAL_UPLOAD_ACTION}.",
+            reason=f"login wall / paywall / cookie wall / no substantive text (document returned empty body) — unreviewed; {OWNER_MANUAL_UPLOAD_ACTION}.",
+            tier_claim_label=resolved_claim_label,
+        )
+
+    # 1. Content-quality gate: reject login walls, cookie walls, country lists, photo archives, and thin/non-prose pages
+    quality_ok, quality_reason, detected_kind = assess_page_content_quality(
+        full_visible_text,
+        text,
+        lower_raw_html=lower_raw,
+        url=final_url,
+        is_pdf=is_pdf,
+    )
+    if not quality_ok:
+        return _inaccessible_record(
+            url=url,
+            final_url=final_url,
+            source_name=src_name or fallback_name,
+            publication_date=pub_date or pub_date_hint,
+            source_priority_tier=default_tier,
+            priority_rank=default_rank,
+            source_type=detected_kind or ("pdf" if is_pdf else base_stype),
+            http_status=resp.status_code,
+            reason=quality_reason or f"login wall / paywall / cookie wall / no substantive text — unreviewed; {OWNER_MANUAL_UPLOAD_ACTION}.",
+            access_status="inaccessible",
+            reliability_rating="unrated" if detected_kind == "photo_archive" else "unreviewed",
+            tier_claim_label=resolved_claim_label,
+        )
+
+    # 2. Relevance gate: substantive body text (never title alone) must address query terms
+    if query.strip() and not is_text_relevant_to_query(text, query):
+        return _inaccessible_record(
+            url=url,
+            final_url=final_url,
+            source_name=src_name or fallback_name,
+            publication_date=pub_date or pub_date_hint,
+            source_priority_tier=default_tier,
+            priority_rank=99,
+            source_type="pdf" if is_pdf else base_stype,
+            http_status=resp.status_code,
+            reason=f"Not relevant to query '{query[:80]}' (substantive page text does not address query terms) — not cited.",
+            access_status="not_relevant",
+            reliability_rating="unrated",
+            tier_claim_label=resolved_claim_label,
         )
 
     tier, rank, rating, stype = classify_source_priority(
@@ -897,8 +1351,31 @@ def fetch_page_evidence(
     )
     if is_pdf:
         stype = "pdf"
+    elif base_stype.startswith("crossref:"):
+        stype = base_stype
+
+    # Never auto-rate Crossref non-articles or book/landing stubs as medium_peer_reviewed
+    lower_text = text.lower()
+    is_book_landing = any(m in lower_text for m in _BOOK_LANDING_MARKERS) or (
+        work_type is not None and work_type not in {"journal-article", "proceedings-article"}
+    )
+    if is_book_landing:
+        if tier == "peer_reviewed":
+            tier = "reputable"
+            rank = 6
+        rating = "unrated"
+        if not stype.startswith("crossref:"):
+            stype = "book_landing"
+    elif search_provider == "crossref":
+        if work_type in {"journal-article", "proceedings-article"}:
+            # Keep reliability unrated unless substantial full-article text (or PDF) was actually read
+            if not is_pdf and len(text) < 600:
+                rating = "unrated"
+        else:
+            rating = "unrated"
+
     signals = _detect_injection_signals(text)
-    excerpt = text[:1200].strip()
+    excerpt = text[:MAX_EXCERPT_CHARS].strip()
 
     return FetchedSourceRecord(
         url=url,
@@ -916,4 +1393,6 @@ def fetch_page_evidence(
         extracted_text=text,
         excerpt=excerpt,
         injection_signals=signals,
+        tier_is_provider_claim=True,
+        tier_claim_label=resolved_claim_label,
     )

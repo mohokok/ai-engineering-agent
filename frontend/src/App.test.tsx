@@ -1234,6 +1234,30 @@ describe("App Step 08 Controlled Internet Research UI (RTL/LTR)", () => {
           untrusted_neutralized: true,
           created_at: "2026-11-20T18:00:00Z",
         },
+        {
+          id: "src-3",
+          research_run_id: "res-run-1",
+          project_id: "p-1",
+          task_id: null,
+          source_name: "Book Chapter Stub",
+          url: "https://doi.org/10.5040/stub",
+          publication_date: "2021-01-01",
+          access_date: "2026-11-20T18:00:00Z",
+          query_text: sampleSummary.query,
+          extracted_info: "NOT RELEVANT — Does not match query",
+          reliability_rating: "unrated",
+          source_type: "crossref:book-chapter",
+          source_priority_tier: "reputable",
+          priority_rank: 99,
+          tier_is_provider_claim: true,
+          tier_claim_label: "Provider claim (crossref: book-chapter) — unverified metadata",
+          access_status: "not_relevant",
+          reviewed: false,
+          http_status: 200,
+          failure_reason: "Not relevant",
+          untrusted_neutralized: true,
+          created_at: "2026-11-20T18:00:00Z",
+        },
       ],
     };
 
@@ -1250,10 +1274,29 @@ describe("App Step 08 Controlled Internet Research UI (RTL/LTR)", () => {
     expect(htmlEn).toContain("Untrusted Prompt-Injection Attempts Safely Ignored");
     expect(htmlEn).toContain("high_standards_body");
     expect(htmlEn).toContain("Inaccessible — Unreviewed");
+    expect(htmlEn).toContain("Not Relevant — Omitted");
+    expect(htmlEn).toContain("unrated");
+    expect(htmlEn).toContain("Provider claim");
     expect(htmlEn).toContain("unranked");
     expect(htmlEn).not.toContain("#99");
 
-    // Verify Arabic translation of providers, statuses, tiers, and unranked label
+    // Verify pre-flight token estimate confirmation banner before calling Gemini on un-synthesized run
+    const preflightDetail: ResearchRunDetailOut = {
+      ...sampleDetail,
+      estimated_prompt_tokens: 620,
+      prompt_char_count: 2170,
+      prompt_char_cap: 10000,
+      step04_daily_tokens_remaining: 499000,
+      token_usage: { prompt_tokens: 0, output_tokens: 0, total_tokens: 0, thoughts_tokens: 0, cached_tokens: 0, latency_ms: 0 },
+    };
+    const preflightHtml = renderToStaticMarkup(
+      <ResearchView lang="en" initialRuns={[sampleSummary]} initialDetail={preflightDetail} />
+    );
+    expect(preflightHtml).toContain("~620 est. prompt tokens");
+    expect(preflightHtml).toContain("Confirm &amp; Run Gemini Synthesis");
+    expect(preflightHtml).toContain("499,000");
+
+    // Verify Arabic translation of providers, statuses, tiers, unrated, not_relevant, and unranked label
     const htmlAr = renderToStaticMarkup(
       <ResearchView
         lang="ar"
@@ -1264,6 +1307,9 @@ describe("App Step 08 Controlled Internet Research UI (RTL/LTR)", () => {
     expect(htmlAr).toContain("DuckDuckGo Lite (أفضل جهد");
     expect(htmlAr).toContain("جزئي (توجد مستندات متعذرة)");
     expect(htmlAr).toContain("هيئات المواصفات القياسية");
+    expect(htmlAr).toContain("غير ذي صلة — لم يُقتبس");
+    expect(htmlAr).toContain("غير مُقيَّم");
+    expect(htmlAr).toContain("ادعاء من المزوّد (غير مُتحقق)");
     expect(htmlAr).toContain("غير مصنّف");
     expect(htmlAr).not.toContain("#99");
 

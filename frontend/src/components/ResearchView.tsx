@@ -6,6 +6,7 @@ import {
   listProjects,
   listResearchRuns,
   runControlledResearch,
+  synthesizeResearchRun,
 } from "../api";
 import type {
   Lang,
@@ -70,7 +71,13 @@ interface ResearchCopy {
   reviewedTag: string;
   ownerProvidedTag: string;
   inaccessibleTag: string;
+  notRelevantTag: string;
   unrankedTag: string;
+  providerClaimNote: string;
+  ownerTierNote: string;
+  tokenEstimateHeading: string;
+  confirmSynthesizeBtn: string;
+  synthesizingBtn: string;
   errorPrefix: string;
 }
 
@@ -135,6 +142,7 @@ const RATING_LABELS: Record<Lang, Record<string, string>> = {
     medium_manufacturer: "متوسط — وثيقة مصنّع",
     medium_peer_reviewed: "متوسط — ورقة محكمة",
     low_reputable_reference: "منخفض — مرجع موثوق",
+    unrated: "غير مُقيَّم (ادعاء غير مُتحقق)",
     unreviewed: "غير مراجَع",
   },
   en: {
@@ -144,6 +152,7 @@ const RATING_LABELS: Record<Lang, Record<string, string>> = {
     medium_manufacturer: "medium_manufacturer",
     medium_peer_reviewed: "medium_peer_reviewed",
     low_reputable_reference: "low_reputable_reference",
+    unrated: "unrated",
     unreviewed: "unreviewed",
   },
 };
@@ -199,7 +208,13 @@ const COPY: Record<Lang, ResearchCopy> = {
     reviewedTag: "تمت المراجعة",
     ownerProvidedTag: "مُقدَّم من المالك (تمت المراجعة)",
     inaccessibleTag: "متعذر — غير مراجَع",
+    notRelevantTag: "غير ذي صلة — لم يُقتبس",
     unrankedTag: "غير مصنّف",
+    providerClaimNote: "ادعاء من المزوّد (غير مُتحقق)",
+    ownerTierNote: "اختيار المالك",
+    tokenEstimateHeading: "تقدير التوكنات قبل استدعاء Gemini (حدود الخطوة 04 وتقييد النص):",
+    confirmSynthesizeBtn: "تأكيد وتشغيل تلخيص Gemini",
+    synthesizingBtn: "جاري تلخيص المصادر المراجَعة عبر Gemini...",
     errorPrefix: "تعذر إتمام البحث: ",
   },
   en: {
@@ -252,7 +267,13 @@ const COPY: Record<Lang, ResearchCopy> = {
     reviewedTag: "Reviewed",
     ownerProvidedTag: "Owner-Provided (Reviewed)",
     inaccessibleTag: "Inaccessible — Unreviewed",
+    notRelevantTag: "Not Relevant — Omitted",
     unrankedTag: "unranked",
+    providerClaimNote: "Provider claim (not verified)",
+    ownerTierNote: "Owner-selected tier",
+    tokenEstimateHeading: "Pre-flight AI Token Estimate (Prompt Capped & Step 04 Budget Guard):",
+    confirmSynthesizeBtn: "Confirm & Run Gemini Synthesis",
+    synthesizingBtn: "Synthesizing reviewed prose with Gemini...",
     errorPrefix: "Research operation failed: ",
   },
 };
@@ -299,6 +320,7 @@ export function ResearchView({
   const [filterProjectId, setFilterProjectId] = useState<string>("");
   const [loadingHistory, setLoadingHistory] = useState<boolean>(false);
   const [submitting, setSubmitting] = useState<boolean>(false);
+  const [synthesizing, setSynthesizing] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
   const loadHistory = useCallback(async () => {
@@ -348,6 +370,9 @@ export function ResearchView({
       file_id: fileId,
       priority_tier: ownerFileTier,
     }));
+    // On large runs (3+ requested results/URLs/files), run 0-token fetch & quality/relevance filter FIRST
+    // so the owner sees how many sources survived and exact estimated tokens before calling Gemini.
+    const isLargeRun = maxResults >= 3 || urls.length >= 3 || ownerFiles.length >= 3;
     try {
       const detail = await runControlledResearch({
         query,
@@ -358,7 +383,7 @@ export function ResearchView({
         max_results: maxResults,
         complexity,
         classification,
-        synthesize_with_ai: synthesizeWithAi,
+        synthesize_with_ai: synthesizeWithAi && !isLargeRun,
       });
       setActiveRun(detail);
       setQuery("");
@@ -370,6 +395,21 @@ export function ResearchView({
       await loadHistory();
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function handleConfirmSynthesize(runId: string) {
+    setSynthesizing(true);
+    setError(null);
+    try {
+      const updated = await synthesizeResearchRun(runId, complexity);
+      setActiveRun(updated);
+      await loadHistory();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      await loadHistory();
+    } finally {
+      setSynthesizing(false);
     }
   }
 
@@ -628,7 +668,7 @@ export function ResearchView({
                       <span>{PROVIDER_LABELS[lang][r.search_provider] || r.search_provider}</span>
                     </td>
                     <td dir="ltr">
-                      {r.accessible_sources} / {r.owner_provided_sources ?? 0} / {r.inaccessible_sources}
+                      {r.accessible_sources} / {r.owner_provided_sources ?? 0} / {r.inaccessible_sources + (r.not_relevant_sources ?? 0)}
                     </td>
                     <td dir="auto">
                       <span
@@ -684,6 +724,36 @@ export function ResearchView({
               {activeRun.summary}
             </p>
           )}
+
+          {activeRun.token_usage.total_tokens === 0 &&
+            activeRun.accessible_sources + (activeRun.owner_provided_sources ?? 0) > 0 && (
+              <div className="status-box notice-box" style={{ marginBottom: "0.75rem" }}>
+                <div style={{ fontWeight: 600, marginBottom: "0.35rem" }}>
+                  {copy.tokenEstimateHeading}
+                </div>
+                <div dir="auto" style={{ marginBottom: "0.5rem" }}>
+                  <code>~{activeRun.estimated_prompt_tokens ?? 0} est. prompt tokens</code>{" "}
+                  ({activeRun.prompt_char_count ?? 0} / {activeRun.prompt_char_cap ?? 10000} chars cap)
+                  {activeRun.step04_daily_tokens_remaining != null && (
+                    <span>
+                      {" "}
+                      · Step 04 daily remaining:{" "}
+                      <strong>{activeRun.step04_daily_tokens_remaining.toLocaleString()}</strong> tokens
+                    </span>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-compact"
+                  disabled={synthesizing}
+                  onClick={() => void handleConfirmSynthesize(activeRun.id)}
+                >
+                  {synthesizing
+                    ? copy.synthesizingBtn
+                    : `${copy.confirmSynthesizeBtn} (~${activeRun.estimated_prompt_tokens ?? 0} est. tokens)`}
+                </button>
+              </div>
+            )}
 
           {activeRun.artifact_relative_path && (
             <div className="status-box status-ok" style={{ marginBottom: "0.75rem" }}>
@@ -756,9 +826,23 @@ export function ResearchView({
                   <tr key={src.id}>
                     <td dir="auto">
                       {src.reviewed ? (
-                        <span>{TIER_LABELS[lang][src.source_priority_tier] || src.source_priority_tier}</span>
+                        <div>
+                          <span>
+                            {TIER_LABELS[lang][src.source_priority_tier] || src.source_priority_tier}
+                          </span>
+                          <div className="muted-hint" style={{ fontSize: "0.78rem" }}>
+                            {src.tier_is_provider_claim === false
+                              ? copy.ownerTierNote
+                              : src.tier_claim_label || copy.providerClaimNote}
+                          </div>
+                        </div>
                       ) : (
-                        <span className="badge badge-warn">{copy.unrankedTag}</span>
+                        <div>
+                          <span className="badge badge-warn">{copy.unrankedTag}</span>
+                          <div className="muted-hint" style={{ fontSize: "0.78rem" }}>
+                            {src.tier_claim_label || copy.providerClaimNote}
+                          </div>
+                        </div>
                       )}
                     </td>
                     <td dir="auto">
@@ -771,7 +855,11 @@ export function ResearchView({
                     </td>
                     <td dir="ltr">{src.publication_date || "—"}</td>
                     <td dir="ltr">{formatDate(src.access_date)}</td>
-                    <td dir="auto">{src.extracted_info || src.failure_reason || "—"}</td>
+                    <td dir="auto">
+                      <div style={{ maxHeight: "9rem", overflowY: "auto" }}>
+                        {src.extracted_info || src.failure_reason || "—"}
+                      </div>
+                    </td>
                     <td dir="auto">
                       <code>{RATING_LABELS[lang][src.reliability_rating] || src.reliability_rating}</code>
                     </td>
@@ -781,9 +869,11 @@ export function ResearchView({
                       >
                         {src.access_status === "owner_provided"
                           ? copy.ownerProvidedTag
-                          : src.reviewed
-                            ? copy.reviewedTag
-                            : copy.inaccessibleTag}
+                          : src.access_status === "not_relevant"
+                            ? copy.notRelevantTag
+                            : src.reviewed
+                              ? copy.reviewedTag
+                              : copy.inaccessibleTag}
                       </span>
                     </td>
                   </tr>

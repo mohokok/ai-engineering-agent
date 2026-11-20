@@ -36,10 +36,11 @@ ReliabilityRating = Literal[
     "medium_manufacturer",
     "medium_peer_reviewed",
     "low_reputable_reference",
+    "unrated",
     "unreviewed",
 ]
 
-AccessStatus = Literal["accessible", "owner_provided", "inaccessible", "partial"]
+AccessStatus = Literal["accessible", "owner_provided", "inaccessible", "not_relevant", "partial"]
 
 
 class SearchProviderOptionOut(BaseModel):
@@ -165,6 +166,12 @@ class ResearchSynthesisPayload(BaseModel):
     suggested_classification: ProjectClassification = "Preliminary"
 
 
+class ResearchSynthesizeRequest(BaseModel):
+    """Explicit confirmation payload to execute capped Gemini synthesis on a fetched run."""
+
+    complexity: TaskComplexity = "fast"
+
+
 class ResearchSourceOut(BaseModel):
     """Serialized research source citation record with access & reliability provenance."""
 
@@ -182,6 +189,8 @@ class ResearchSourceOut(BaseModel):
     source_type: str
     source_priority_tier: SourcePriorityTier | str = "reputable"
     priority_rank: int = 6
+    tier_is_provider_claim: bool = True
+    tier_claim_label: str | None = None
     access_status: AccessStatus | str = "accessible"
     reviewed: bool = True
     http_status: int | None = None
@@ -206,6 +215,12 @@ class ResearchRunSummaryOut(BaseModel):
     accessible_sources: int = 0
     owner_provided_sources: int = 0
     inaccessible_sources: int = 0
+    not_relevant_sources: int = 0
+    estimated_prompt_tokens: int = 0
+    prompt_char_count: int = 0
+    prompt_char_cap: int = 10_000
+    step04_daily_tokens_remaining: int | None = None
+    step04_monthly_tokens_remaining: int | None = None
     token_usage: TaskTokenUsageOut = Field(default_factory=TaskTokenUsageOut)
     artifact_relative_path: str | None = None
     created_at: datetime
