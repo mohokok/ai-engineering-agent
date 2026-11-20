@@ -688,7 +688,32 @@ export interface ResearchRunCreateRequest {
 export type ReportLanguage = "ar" | "en";
 export type FindingSeverity = "critical" | "high" | "medium" | "low" | "info";
 export type FindingStatus = "open" | "needs_verification" | "resolved";
-export type StatementCategory = "verified_fact" | "calculated" | "assumption" | "recommendation";
+export type StatementCategory =
+  | "verified_fact"
+  | "calculated"
+  | "ocr_unverified"
+  | "assumption"
+  | "recommendation";
+
+export interface DocumentRegisterEntry {
+  file_name: string;
+  file_type: string;
+  pages_or_entities: string;
+  extraction_status: string;
+  confidence: string;
+}
+
+export interface OcrExtractedTextItem {
+  file_id?: string | null;
+  source_file: string;
+  page_or_sheet: string;
+  confidence_mean?: number | null;
+  low_confidence: boolean;
+  native_text_unreliable: boolean;
+  status_label: string;
+  text: string;
+  source_links: SourceLocationRef[];
+}
 
 export interface SourceLocationRef {
   ref_id: string;
@@ -793,9 +818,16 @@ export interface ReviewReportSummaryOut {
 }
 
 export interface ReviewReportDetailOut extends ReviewReportSummaryOut {
+  is_inventory_only?: boolean;
   revision_block: RevisionBlockOut;
+  document_register?: DocumentRegisterEntry[];
   findings: ReviewFinding[];
   verified_facts: CategorizedStatement[];
+  verified_facts_total?: number;
+  verified_facts_shown?: number;
+  appendix_verified_facts?: CategorizedStatement[];
+  ocr_text_items?: OcrExtractedTextItem[];
+  ocr_text_items_total?: number;
   calculated_items: CategorizedStatement[];
   assumptions: CategorizedStatement[];
   recommendations: CategorizedStatement[];

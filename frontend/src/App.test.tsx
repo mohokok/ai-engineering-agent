@@ -1599,7 +1599,8 @@ describe("App Step 09 Review Reports & Deliverables UI (RTL/LTR)", () => {
       revision: "Rev 01",
       version: 1,
       status: "generated",
-      summary: "تم استعراض الملفات وفصل الحقائق المحققة عن الحسابات البرمجية والافتراضات.",
+      is_inventory_only: true,
+      summary: "تقرير جرد وفحص استخراج حتمي (ليس مراجعة هندسية فنية).",
       findings_count: 1,
       estimated_prompt_tokens: 310,
       prompt_char_count: 1085,
@@ -1614,13 +1615,22 @@ describe("App Step 09 Review Reports & Deliverables UI (RTL/LTR)", () => {
         version: 1,
         revision: "Rev 01",
         classification: "For Review",
-        prepared_by: "Engineering Agent",
+        prepared_by: "Engineering Agent (Deterministic Inventory & Check — 0 AI tokens)",
         review_notice: "Requires licensed engineer sign-off",
         issued_at_iso: "2026-11-20T20:00:00Z",
         change_note: "Initial issue",
         source_files_count: 2,
         reviewed_research_count: 1,
       },
+      document_register: [
+        {
+          file_name: "plan_metric.dxf",
+          file_type: "DXF",
+          pages_or_entities: "120 entities / 5 layers",
+          extraction_status: "extracted (m)",
+          confidence: "Deterministic CAD geometry",
+        },
+      ],
       findings: [
         {
           finding_id: "REV-001",
@@ -1634,12 +1644,29 @@ describe("App Step 09 Review Reports & Deliverables UI (RTL/LTR)", () => {
           source_links: [srcRef],
         },
       ],
-      verified_facts: [{ category: "verified_fact", text: "Room area measured 24.0 m2.", source_links: [srcRef] }],
+      verified_facts: [{ category: "verified_fact", text: "Deterministic CAD layers=5, entities=120.", source_links: [srcRef] }],
+      verified_facts_total: 18,
+      verified_facts_shown: 1,
+      appendix_verified_facts: [{ category: "verified_fact", text: "Deterministic CAD layers=5, entities=120.", source_links: [srcRef] }],
+      ocr_text_items: [
+        {
+          file_id: "file-ocr-1",
+          source_file: "scanned_sheet.pdf",
+          page_or_sheet: "page:1",
+          confidence_mean: 76.5,
+          low_confidence: false,
+          native_text_unreliable: true,
+          status_label: "OCR (confidence 76.5%, not verified)",
+          text: "Scanned beam schedule text snippet",
+          source_links: [srcRef],
+        },
+      ],
+      ocr_text_items_total: 1,
       calculated_items: [
         {
           category: "calculated",
-          text: "Closed DXF area sum = 24.0 m2",
-          formula_or_method: "Python deterministic shoelace sum",
+          text: "Layer A-AREA: 24.0 m2 (geometric sum, not net building area)",
+          formula_or_method: "Python deterministic layer sum",
           source_links: [srcRef],
         },
       ],
@@ -1669,8 +1696,12 @@ describe("App Step 09 Review Reports & Deliverables UI (RTL/LTR)", () => {
     expect(htmlAr).toContain("EXT-1");
     expect(htmlAr).toContain("plan_metric.dxf");
     expect(htmlAr).toContain("~310 est. prompt tokens");
-    expect(htmlAr).toContain("حقائق مُتحقَّق منها بمصدرها");
-    expect(htmlAr).toContain("قيم محسوبة برمجياً فقط");
+    expect(htmlAr).toContain("سجل المستندات والملفات");
+    expect(htmlAr).toContain("حقائق حتمية وبيانات أصلية (Verified Facts)");
+    expect(htmlAr).toContain("قيم محسوبة برمجياً (مجاميع هندسية وليست صافي مساحة مبنى)");
+    expect(htmlAr).toContain("نصوص مستخرجة بالتعرف الضوئي (OCR — غير مُتحقَّق منها)");
+    expect(htmlAr).toContain("Showing 1 of 18");
+    expect(htmlAr).toContain("Scanned beam schedule text snippet");
     expect(htmlAr).toContain("افتراضات أولية (تحتاج تأكيد المالك)");
     expect(htmlAr).toContain("/api/deliverables/del-08-pdf/download");
     expect(htmlAr).toContain("/api/deliverables/del-10-docx/download");
@@ -1683,8 +1714,12 @@ describe("App Step 09 Review Reports & Deliverables UI (RTL/LTR)", () => {
       />
     );
     expect(htmlEn).toContain("Generate Engineering Review Report");
-    expect(htmlEn).toContain("Verified Facts (Source-Linked)");
-    expect(htmlEn).toContain("Calculated Quantities (Deterministic Code)");
+    expect(htmlEn).toContain("Document Register");
+    expect(htmlEn).toContain("NOT an engineering review");
+    expect(htmlEn).toContain("Verified Facts (Deterministic / Native Only)");
+    expect(htmlEn).toContain("Extracted Text (OCR — Not Verified)");
+    expect(htmlEn).toContain("Calculated Quantities (Geometric Sums — Not Net Building Area)");
+    expect(htmlEn).toContain("Showing 1 of 18");
     expect(htmlEn).toContain("10_Final_Deliverables");
     expect(getDeliverableDownloadUrl("del-10-docx")).toBe("/api/deliverables/del-10-docx/download");
 

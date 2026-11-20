@@ -71,9 +71,17 @@ interface DeliverablesCopy {
   sourcePrefix: string;
   factsHeading: string;
   calculatedHeading: string;
+  ocrHeading: string;
   assumptionsHeading: string;
   recommendationsHeading: string;
   gapsHeading: string;
+  registerHeading: string;
+  regColFile: string;
+  regColType: string;
+  regColScope: string;
+  regColStatus: string;
+  regColConf: string;
+  inventoryNotice: string;
   errorPrefix: string;
 }
 
@@ -125,11 +133,19 @@ const COPY: Record<Lang, DeliverablesCopy> = {
     colRec: "التوصية",
     colStat: "الحالة",
     sourcePrefix: "رابط المصدر",
-    factsHeading: "1. حقائق مُتحقَّق منها بمصدرها",
-    calculatedHeading: "2. قيم محسوبة برمجياً فقط",
-    assumptionsHeading: "3. افتراضات أولية (تحتاج تأكيد المالك)",
-    recommendationsHeading: "4. التوصيات الهندسية",
+    factsHeading: "1. حقائق حتمية وبيانات أصلية (Verified Facts)",
+    calculatedHeading: "2. قيم محسوبة برمجياً (مجاميع هندسية وليست صافي مساحة مبنى)",
+    ocrHeading: "3. نصوص مستخرجة بالتعرف الضوئي (OCR — غير مُتحقَّق منها)",
+    assumptionsHeading: "4. افتراضات أولية (تحتاج تأكيد المالك)",
+    recommendationsHeading: "5. توصيات مرتبطة بالعيوب المرصودة",
     gapsHeading: "فجوات البيانات والمستندات غير المراجَعة",
+    registerHeading: "سجل المستندات والملفات (Document Register)",
+    regColFile: "الملف",
+    regColType: "النوع",
+    regColScope: "الصفحات / العناصر",
+    regColStatus: "حالة الاستخراج والوحدات",
+    regColConf: "مستوى الثقة",
+    inventoryNotice: "ملاحظة: هذا التقرير في الوضع الحتمي جرد ملفات وفحص تقني فقط (0 توكن) وليس مراجعة هندسية فنية.",
     errorPrefix: "تعذر تنفيذ طلب التقرير: ",
   },
   en: {
@@ -179,11 +195,19 @@ const COPY: Record<Lang, DeliverablesCopy> = {
     colRec: "Recommendation",
     colStat: "Status",
     sourcePrefix: "Source Link",
-    factsHeading: "1. Verified Facts (Source-Linked)",
-    calculatedHeading: "2. Calculated Quantities (Deterministic Code)",
-    assumptionsHeading: "3. Assumptions (Pending Owner Confirmation)",
-    recommendationsHeading: "4. Recommendations",
+    factsHeading: "1. Verified Facts (Deterministic / Native Only)",
+    calculatedHeading: "2. Calculated Quantities (Geometric Sums — Not Net Building Area)",
+    ocrHeading: "3. Extracted Text (OCR — Not Verified)",
+    assumptionsHeading: "4. Assumptions (Pending Owner Confirmation)",
+    recommendationsHeading: "5. Recommendations (Concrete Issues Only)",
     gapsHeading: "Data Gaps & Unreviewed / Unextracted Sources",
+    registerHeading: "Document Register",
+    regColFile: "File",
+    regColType: "Type",
+    regColScope: "Pages / Entities",
+    regColStatus: "Extraction Status & Units",
+    regColConf: "Confidence",
+    inventoryNotice: "SCOPE NOTICE: Deterministic mode produces a file inventory & check only (0 AI tokens) — NOT an engineering review.",
     errorPrefix: "Review report error: ",
   },
 };
@@ -662,6 +686,44 @@ export function DeliverablesView({
             </div>
           </div>
 
+          {(activeReport.is_inventory_only ?? activeReport.status !== "ai_enhanced") && (
+            <div className="status-box notice-box" style={{ marginBottom: "0.9rem" }}>
+              <strong>{copy.inventoryNotice}</strong>
+            </div>
+          )}
+
+          {activeReport.document_register && activeReport.document_register.length > 0 && (
+            <>
+              <h5 className="folders-title">
+                {copy.registerHeading} ({activeReport.document_register.length})
+              </h5>
+              <div className="table-wrap" style={{ marginBottom: "0.9rem" }}>
+                <table className="files-table">
+                  <thead>
+                    <tr>
+                      <th>{copy.regColFile}</th>
+                      <th>{copy.regColType}</th>
+                      <th>{copy.regColScope}</th>
+                      <th>{copy.regColStatus}</th>
+                      <th>{copy.regColConf}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {activeReport.document_register.map((row, rIdx) => (
+                      <tr key={`${row.file_name}-${rIdx}`}>
+                        <td dir="auto">{row.file_name}</td>
+                        <td dir="ltr">{row.file_type}</td>
+                        <td dir="ltr">{row.pages_or_entities}</td>
+                        <td dir="auto">{row.extraction_status}</td>
+                        <td dir="auto">{row.confidence}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+
           <h5 className="folders-title">
             {copy.findingsHeading} ({activeReport.findings.length})
           </h5>
@@ -706,8 +768,40 @@ export function DeliverablesView({
           </div>
 
           <div style={{ display: "grid", gap: "0.75rem", marginBottom: "0.9rem" }}>
-            {renderCategoryList(copy.factsHeading, activeReport.verified_facts)}
+            <div>
+              {renderCategoryList(copy.factsHeading, activeReport.verified_facts)}
+              {(activeReport.verified_facts_total ?? activeReport.verified_facts.length) > 0 && (
+                <div className="muted-hint" style={{ fontSize: "0.82rem", marginTop: "0.25rem" }}>
+                  Showing {activeReport.verified_facts_shown ?? activeReport.verified_facts.length} of{" "}
+                  {activeReport.verified_facts_total ?? activeReport.verified_facts.length}
+                  {(activeReport.appendix_verified_facts?.length ?? 0) >
+                  (activeReport.verified_facts_shown ?? activeReport.verified_facts.length)
+                    ? " (complete list available in Appendix A & 08_Reports JSON)"
+                    : ""}
+                </div>
+              )}
+            </div>
             {renderCategoryList(copy.calculatedHeading, activeReport.calculated_items)}
+            {activeReport.ocr_text_items && activeReport.ocr_text_items.length > 0 && (
+              <div className="status-box notice-box">
+                <strong>
+                  {copy.ocrHeading} ({activeReport.ocr_text_items.length})
+                </strong>
+                <ul className="outcome-list" style={{ marginTop: "0.35rem" }}>
+                  {activeReport.ocr_text_items.map((o, idx) => (
+                    <li key={idx} dir="auto">
+                      <strong>
+                        [{o.source_file} — {o.page_or_sheet}]
+                      </strong>{" "}
+                      <span className={`badge ${o.low_confidence ? "badge-warn" : ""}`}>
+                        {o.status_label}
+                      </span>
+                      : {o.text}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
             {renderCategoryList(copy.assumptionsHeading, activeReport.assumptions)}
             {renderCategoryList(copy.recommendationsHeading, activeReport.recommendations)}
           </div>

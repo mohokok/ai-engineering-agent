@@ -741,3 +741,38 @@ def test_extract_closed_lwpolyline_with_semicircular_arc_bulge_exact_area(
         assert areas[1]["area_m2"] == pytest.approx(expected_convex_area, abs=1e-5)
         assert areas[1]["perimeter_native"] == pytest.approx(expected_perim, abs=1e-5)
         assert areas[1]["has_arc_bulge"] is True
+
+
+def test_extract_dxf_marks_area_bearing_layers_and_groups_with_non_net_label(tmp_path: Path) -> None:
+    """CAD extractor classifies area-bearing vs non-area layers and emits grouped 'geometric sum, not net building area'."""
+    doc = ezdxf.new("R2018")
+    doc.header["$INSUNITS"] = 6
+    msp = doc.modelspace()
+    doc.layers.add("A-AREA")
+    doc.layers.add("FURNITURE")
+    doc.layers.add("GRID-LINES")
+    msp.add_lwpolyline([(0, 0), (5, 0), (5, 4), (0, 4)], close=True, dxfattribs={"layer": "A-AREA"})
+    msp.add_lwpolyline([(10, 0), (14, 0), (14, 3), (10, 3)], close=True, dxfattribs={"layer": "FURNITURE"})
+
+    buf = StringIO()
+    doc.write(buf)
+    dxf_bytes = buf.getvalue().encode("utf-8")
+
+    settings = _test_settings(tmp_path)
+    app = create_app(settings)
+    with TestClient(app) as client:
+        project_id, _ = _create_project(client)
+        f_dxf = _upload_file(client, project_id, "layers_area_bearing.dxf", dxf_bytes, "application/dxf")
+        data = client.post(f"/api/files/{f_dxf['id']}/extract").json()
+
+    layers_by_name = {row["name"]: row for row in data["drawing_inventory"]["layers"]}
+    assert layers_by_name["A-AREA"]["area_bearing"] is True
+    assert layers_by_name["FURNITURE"]["area_bearing"] is False
+    assert layers_by_name["GRID-LINES"]["area_bearing"] is False
+
+    groups_by_layer = {g["layer"]: g for g in data["drawing_inventory"]["layer_area_groups"]}
+    assert groups_by_layer["A-AREA"]["area_bearing"] is True
+    assert groups_by_layer["A-AREA"]["area_m2_sum"] == pytest.approx(20.0)
+    assert groups_by_layer["A-AREA"]["label"] == "geometric sum, not net building area"
+    assert groups_by_layer["FURNITURE"]["area_bearing"] is False
+

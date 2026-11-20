@@ -12,6 +12,7 @@ import ezdxf
 from fastapi.testclient import TestClient
 import httpx
 from openpyxl import Workbook
+from PIL import Image
 import pymupdf
 import pytest
 
@@ -202,10 +203,14 @@ def test_step09_end_to_end_review_report_extractions_research_docx_pdf_rtl_and_d
         assert rep["revision_block"]["source_files_count"] == 4
         assert rep["revision_block"]["reviewed_research_count"] == 1
 
-        # EVERY finding links to at least 1 real extraction or reviewed research source location!
-        assert len(rep["findings"]) >= 4
+        # Deterministic inventory mode produces plain inventory disclaimer + concrete findings ONLY (zero boilerplate)
+        assert rep["is_inventory_only"] is True
+        assert "ليس مراجعة هندسية" in (rep["summary"] or "")
+        assert len(rep["document_register"]) == 4
+        assert len(rep["findings"]) >= 1
         for finding in rep["findings"]:
             assert len(finding["source_links"]) >= 1
+            assert "طابق القيم والوحدات المستخرجة" not in finding["recommendation"]
             for link in finding["source_links"]:
                 assert link["ref_id"].startswith(("EXT-", "RES-"))
                 assert link["source_id"]
@@ -218,11 +223,12 @@ def test_step09_end_to_end_review_report_extractions_research_docx_pdf_rtl_and_d
             for f in rep["findings"]
         )
 
-        # Strictly separated categories
+        # Strictly separated categories & non-net-area label on area-bearing layer
         assert len(rep["verified_facts"]) >= 2
+        assert rep["verified_facts_total"] >= len(rep["verified_facts"])
         assert any("https://www.hse.gov.uk/ventilation-clinic-check" in str(vf["source_links"]) for vf in rep["verified_facts"])
         assert len(rep["calculated_items"]) >= 1
-        assert any("24.0 m²" in c["text"] and c["formula_or_method"] for c in rep["calculated_items"])
+        assert any("24.0 m²" in c["text"] and "مجموع هندسي وليس صافي مساحة مبنى" in c["text"] for c in rep["calculated_items"])
         assert all(
             a["text"].startswith("افتراض أولي يحتاج تأكيد المالك:")
             for a in rep["assumptions"]
@@ -559,10 +565,307 @@ def test_step09_only_cites_reliable_text_and_excludes_failed_blank_cid_reversed_
             json={"language": "ar", "classification": "For Review", "use_ai": False},
         ).json()
 
-    serialized2 = str(rep2)
-    assert "مخطط الأعمدة الموثوق: حمل العمود 1250.00 kN" in serialized2
-    assert "RAW_REVERSED_NEVER_CITE" not in serialized2
-    assert "LOWCONF_NOISE_DO_NOT_CITE" not in serialized2
+    # Unverified OCR goes strictly to ocr_text_items; never into verified_facts or findings!
+    ocr_texts_joined = " ".join(o["text"] for o in rep2["ocr_text_items"])
+    vf_texts_joined = " ".join(v["text"] for v in rep2["verified_facts"])
+    findings_joined = " ".join(f["evidence"] + " " + f["recommendation"] for f in rep2["findings"])
+    registry_excerpts = " ".join(str(r.get("excerpt") or "") for r in rep2["source_registry"])
+
+    assert "مخطط الأعمدة الموثوق: حمل العمود 1250.00 kN" in ocr_texts_joined
+    assert "مخطط الأعمدة الموثوق" not in vf_texts_joined
+    assert "مخطط الأعمدة الموثوق" not in findings_joined
+    assert "RAW_REVERSED_NEVER_CITE" not in str(rep2)
+    assert "LOWCONF_NOISE_DO_NOT_CITE" not in vf_texts_joined
+    assert "LOWCONF_NOISE_DO_NOT_CITE" not in findings_joined
+    assert "LOWCONF_NOISE_DO_NOT_CITE" not in registry_excerpts
     assert any("page:2" in g and "38.0%" in g for g in rep2["gaps_or_unextracted"])
     assert any("page:3" in g and "ocr_empty_or_blank" in g for g in rep2["gaps_or_unextracted"])
+
+
+def test_step09b_cad_area_bearing_layers_confirmed_unit_and_no_none_unit(tmp_path: Path) -> None:
+    """Only area-bearing layers appear with 'geometric sum, not net building area', confirmed unit matches cleanly, and never 'None'."""
+    from app.db.models import FileExtraction
+
+    doc = ezdxf.new("R2018")
+    doc.header["$INSUNITS"] = 1  # inches header overriding via confirm-unit = m
+    msp = doc.modelspace()
+    doc.layers.add("A-AREA")
+    doc.layers.add("FURNITURE")
+    doc.layers.add("DIMENSIONS")
+    # 6 x 4 = 24.0 area-bearing rectangle on A-AREA
+    msp.add_lwpolyline([(0, 0), (6, 0), (6, 4), (0, 4)], close=True, dxfattribs={"layer": "A-AREA"})
+    # Large dummy rectangles on non-area layers that MUST NOT inflate area sums!
+    msp.add_lwpolyline([(10, 0), (20, 0), (20, 10), (10, 10)], close=True, dxfattribs={"layer": "FURNITURE"})
+    msp.add_lwpolyline([(30, 0), (40, 0), (40, 5), (30, 5)], close=True, dxfattribs={"layer": "DIMENSIONS"})
+    buf = io.StringIO()
+    doc.write(buf)
+    dxf_bytes = buf.getvalue().encode("utf-8")
+
+    # Also build a tiny second DXF whose extraction payload simulates a legacy row with declared_unit=None
+    legacy_dxf_bytes = _make_dxf_bytes(insunits=0, width=5.0, height=4.0, layer_name="A-AREA")
+
+    settings = _test_settings(tmp_path)
+    app = create_app(settings)
+    with TestClient(app) as client:
+        proj = client.post("/api/projects", json={"name": "Hospital Area Layers", "code": "HAL-09B"}).json()
+        pid = proj["id"]
+        up = client.post(
+            f"/api/projects/{pid}/files",
+            files=[
+                ("files", ("confirmed_plan.dxf", dxf_bytes, "application/dxf")),
+                ("files", ("legacy_no_unit.dxf", legacy_dxf_bytes, "application/dxf")),
+            ],
+        ).json()
+        f_conf_id = up["items"][0]["file"]["id"]
+        f_leg_id = up["items"][1]["file"]["id"]
+
+        ext1 = client.post(f"/api/files/{f_conf_id}/extract", json={}).json()
+        assert ext1["units_doubtful"] is True
+        # Confirm unit as 'm' via confirm-unit endpoint
+        conf_res = client.post(f"/api/extractions/{ext1['id']}/confirm-unit", json={"confirmed_unit": "m"})
+        assert conf_res.status_code == 200, conf_res.text
+
+        ext2 = client.post(f"/api/files/{f_leg_id}/extract", json={}).json()
+
+    # Mutate ext2 in DB to simulate legacy row where declared_unit/units were None
+    with app.state.session_factory() as db:
+        row2 = db.get(FileExtraction, ext2["id"])
+        assert row2 is not None
+        p2 = dict(row2.payload_json)
+        p2["cad_units"] = None
+        p2["units_doubtful"] = False  # Simulate broken legacy row trying to expose stale area_m2 without valid unit
+        inv2 = dict(p2["drawing_inventory"])
+        inv2["declared_unit"] = None
+        inv2["units"] = None
+        inv2["insunits_code"] = 0
+        inv2["units_doubtful"] = True
+        p2["drawing_inventory"] = inv2
+        row2.payload_json = p2
+        db.commit()
+
+    with TestClient(app) as client:
+        rep = client.post(
+            f"/api/projects/{pid}/review-reports",
+            json={"language": "en", "classification": "For Review", "use_ai": False},
+        ).json()
+
+    # 1. FURNITURE (100.0) & DIMENSIONS (50.0) MUST be excluded; ONLY A-AREA (24.0 m2) appears with required disclaimer!
+    calc_joined = " | ".join(c["text"] for c in rep["calculated_items"])
+    assert "A-AREA" in calc_joined
+    assert "24.0 m²" in calc_joined
+    assert "geometric sum, not net building area" in calc_joined
+    assert "100.0" not in calc_joined
+    assert "50.0" not in calc_joined
+    assert "owner-confirmed; raw header $INSUNITS=1 in" in calc_joined
+
+    # 2. Active confirmed unit matches consistently in source_registry (never contradictory m vs unclarified in)
+    conf_refs = [r for r in rep["source_registry"] if r["source_name"] == "confirmed_plan.dxf"]
+    assert conf_refs and "m (owner-confirmed; raw header $INSUNITS=1 in)" in conf_refs[0]["location"]
+
+    # 3. Legacy DXF with missing/None unit raises HIGH finding, withholds m2, and NEVER prints 'None'
+    assert any(
+        f["severity"] == "high"
+        and f["status"] == "needs_verification"
+        and "legacy_no_unit.dxf" in f["location_or_drawing_ref"]
+        for f in rep["findings"]
+    )
+    assert "unit: None" not in str(rep)
+    assert "unit_basis=None" not in str(rep)
+    assert "unspecified unit" in str(rep) or "unitless" in str(rep)
+
+
+def test_step09b_dxf_vs_dwg_mismatch_raises_high_reconciliation_and_withholds_conflicting_areas(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When paired DXF and DWG of the same drawing differ by >1%, raise HIGH finding and withhold both areas from calculated_items."""
+    # Same shared architectural layers A-AREA & A-WALL across renamed files ok.dxf (5000 m2) and Turj-fin.dwg (4000 m2)
+    def _build_dxf(*, insunits: int, w: float, h: float) -> bytes:
+        d = ezdxf.new("R2018")
+        d.header["$INSUNITS"] = insunits
+        d.layers.add("A-AREA")
+        d.layers.add("A-WALL")
+        d.modelspace().add_lwpolyline([(0, 0), (w, 0), (w, h), (0, h)], close=True, dxfattribs={"layer": "A-AREA"})
+        b = io.StringIO()
+        d.write(b)
+        return b.getvalue().encode("utf-8")
+
+    ok_dxf_bytes = _build_dxf(insunits=6, w=100.0, h=50.0)  # 5000.0 m2
+    dwg_scaled_dxf = _build_dxf(insunits=6, w=80.0, h=50.0)  # 4000.0 m2 -> 20% mismatch
+
+    fake_oda = tmp_path / "ODAFileConverter.exe"
+    fake_oda.write_bytes(b"stub")
+
+    def fake_oda_run(cmd: list[str], **_kw: Any) -> SimpleNamespace:
+        # probe check (--version) or actual conversion (src_dir, out_dir, ...)
+        if len(cmd) >= 3 and Path(cmd[1]).is_dir():
+            out_dir = Path(cmd[2])
+            out_dir.mkdir(parents=True, exist_ok=True)
+            (out_dir / "Turj-fin.dxf").write_bytes(dwg_scaled_dxf)
+        return SimpleNamespace(returncode=0, stdout="27.10.0\n", stderr="")
+
+    monkeypatch.setattr("app.services.extractors.oda._resolve_oda_executable", lambda _p="": str(fake_oda))
+    monkeypatch.setattr("app.services.extractors.oda.subprocess.run", fake_oda_run)
+
+    settings = Settings(
+        workspaces_dir=tmp_path / "workspaces",
+        database_url="",
+        oda_file_converter_path=str(fake_oda),
+    )
+    app = create_app(settings)
+    with TestClient(app) as client:
+        proj = client.post("/api/projects", json={"name": "Reconcile Hospital", "code": "REC-09B"}).json()
+        pid = proj["id"]
+        up = client.post(
+            f"/api/projects/{pid}/files",
+            files=[
+                ("files", ("ok.dxf", ok_dxf_bytes, "application/dxf")),
+                ("files", ("Turj-fin.dwg", b"AC1032_SYNTHETIC_DWG_HEADER_STUB", "application/acad")),
+            ],
+        ).json()
+        f_dxf_id = up["items"][0]["file"]["id"]
+        f_dwg_id = up["items"][1]["file"]["id"]
+
+        assert client.post(f"/api/files/{f_dxf_id}/extract", json={}).status_code == 201
+        res_dwg = client.post(f"/api/files/{f_dwg_id}/extract", json={})
+        assert res_dwg.status_code == 201, res_dwg.text
+
+        rep = client.post(
+            f"/api/projects/{pid}/review-reports",
+            json={"language": "en", "classification": "For Review", "use_ai": False},
+        ).json()
+
+    # Conflicting 5000.0 m2 and 4000.0 m2 MUST NOT appear in calculated_items; HIGH reconciliation finding raised instead!
+    assert rep["calculated_items"] == []
+    assert any(
+        f["severity"] == "high"
+        and f["discipline"] == "CAD Reconciliation"
+        and f["status"] == "needs_verification"
+        and "ok.dxf" in f["location_or_drawing_ref"]
+        and "Turj-fin.dwg" in f["location_or_drawing_ref"]
+        and len(f["source_links"]) == 2
+        for f in rep["findings"]
+    )
+
+
+def test_step09b_ocr_separated_document_register_no_boilerplate_and_showing_n_of_m_appendix(
+    tmp_path: Path,
+) -> None:
+    """Verify OCR is separated with confidence N%, boilerplate eliminated, Document Register included, and showing N of M + full Appendix/JSON."""
+    import json
+    from docx import Document as DocxDoc
+
+    # 1. Clean 18-page native PDF -> creates >15 verified facts cleanly (testing Showing 15 of M & Appendix A!)
+    doc_18p = pymupdf.open()
+    for p_num in range(1, 19):
+        page = doc_18p.new_page()
+        page.insert_text(
+            (50, 80),
+            f"Design Spec Section {p_num}: Corridor minimum width = 2.40 m and slab thickness = 250 mm.",
+            fontsize=11,
+        )
+    pdf_18p = doc_18p.tobytes()
+    doc_18p.close()
+
+    # 2. Scanned 2-page PDF -> OCR at 78.0% & 58.0% confidences
+    img = Image.new("RGB", (400, 120), color=(255, 255, 255))
+    img_buf = io.BytesIO()
+    img.save(img_buf, format="PNG")
+    scan_doc = pymupdf.open()
+    for _ in range(2):
+        pg = scan_doc.new_page(width=400, height=120)
+        pg.insert_image(pymupdf.Rect(0, 0, 400, 120), stream=img_buf.getvalue())
+    scan_pdf = scan_doc.tobytes()
+    scan_doc.close()
+
+    settings = _test_settings(tmp_path)
+    app = create_app(settings)
+    with TestClient(app) as client:
+        proj = client.post("/api/projects", json={"name": "Honest Inventory Spec", "code": "INV-09B"}).json()
+        pid = proj["id"]
+        slug = proj["workspace_slug"]
+        up = client.post(
+            f"/api/projects/{pid}/files",
+            files=[
+                ("files", ("native_18p.pdf", pdf_18p, "application/pdf")),
+                ("files", ("scanned_ocr_2p.pdf", scan_pdf, "application/pdf")),
+            ],
+        ).json()
+        f_nat_id = up["items"][0]["file"]["id"]
+        f_scan_id = up["items"][1]["file"]["id"]
+        client.post(f"/api/files/{f_nat_id}/extract", json={})
+
+    scan_idx = {"n": 0}
+
+    def scan_ocr_runner(_bytes: bytes, _lang: str) -> dict[str, Any]:
+        scan_idx["n"] += 1
+        if scan_idx["n"] == 1:
+            return {"text": "OCR_NOISE_P1_TOKEN @@@ Beam 5.5 m", "confidence_mean": 78.0}
+        return {"text": "OCR_NOISE_P2_TOKEN ### blurry", "confidence_mean": 58.0}
+
+    from app.services.extraction import extract_project_file
+    with app.state.session_factory() as db:
+        extract_project_file(db, settings, f_scan_id, ocr_runner=scan_ocr_runner)
+
+    with TestClient(app) as client:
+        rep = client.post(
+            f"/api/projects/{pid}/review-reports",
+            json={"language": "en", "classification": "Preliminary", "use_ai": False},
+        ).json()
+
+    # Deterministic inventory disclaimer present in summary
+    assert rep["is_inventory_only"] is True
+    assert "NOT an engineering design review" in (rep["summary"] or "")
+
+    # Document Register has both files with (file, type, pages/entities, extraction status, confidence)
+    reg_by_name = {r["file_name"]: r for r in rep["document_register"]}
+    assert set(reg_by_name.keys()) == {"native_18p.pdf", "scanned_ocr_2p.pdf"}
+    assert reg_by_name["native_18p.pdf"]["pages_or_entities"] == "18 pages"
+    assert reg_by_name["native_18p.pdf"]["confidence"] == "Native deterministic"
+    assert "68.0%" in reg_by_name["scanned_ocr_2p.pdf"]["confidence"]
+
+    # OCR text is NEVER in verified_facts and NEVER dumped into findings; lives strictly in ocr_text_items!
+    assert len(rep["ocr_text_items"]) == 2
+    assert any("OCR_NOISE_P1_TOKEN" in o["text"] and "confidence 78.0%, not verified" in o["status_label"] for o in rep["ocr_text_items"])
+    assert any("OCR_NOISE_P2_TOKEN" in o["text"] and "confidence 58.0%, low confidence — not verified" in o["status_label"] for o in rep["ocr_text_items"])
+    vf_all_txt = " ".join(s["text"] for s in rep["appendix_verified_facts"])
+    findings_all_txt = " ".join(f["evidence"] + " " + f["recommendation"] for f in rep["findings"])
+    assert "OCR_NOISE_P1_TOKEN" not in vf_all_txt
+    assert "OCR_NOISE_P2_TOKEN" not in vf_all_txt
+    assert "OCR_NOISE_P1_TOKEN" not in findings_all_txt
+    assert "OCR_NOISE_P2_TOKEN" not in findings_all_txt
+
+    # Concrete low-confidence finding exists for page 2 (WITHOUT generic boilerplate!)
+    assert len(rep["findings"]) == 1
+    assert "scanned_ocr_2p.pdf" in rep["findings"][0]["location_or_drawing_ref"]
+    assert "Cross-check extracted figures" not in findings_all_txt
+
+    # Showing N of M verified facts + complete Appendix in DOCX/PDF/JSON!
+    assert rep["verified_facts_shown"] == 15
+    assert rep["verified_facts_total"] == 20  # 1 meta + 18 native pages + 1 scanned meta = 20
+    assert len(rep["verified_facts"]) == 15
+    assert len(rep["appendix_verified_facts"]) == rep["verified_facts_total"]
+
+    # Check DOCX & PDF both contain Document Register, Inventory notice, Showing 15 of M, and Appendix A
+    docx_rel = [d["relative_path"] for d in rep["deliverables"] if d["folder_name"] == "10_Final_Deliverables" and d["format"] == "docx"][0]
+    pdf_rel = [d["relative_path"] for d in rep["deliverables"] if d["folder_name"] == "10_Final_Deliverables" and d["format"] == "pdf"][0]
+    docx_txt = "\n".join(p.text for p in DocxDoc(str(resolve_project_file_path(settings.workspaces_dir, slug, docx_rel))).paragraphs)
+    assert f"Showing 15 of {rep['verified_facts_total']}" in docx_txt
+    assert "Appendix A:" in docx_txt
+    assert "NOT an engineering review" in docx_txt or "NOT an engineering design review" in docx_txt
+
+    pdf_doc = pymupdf.open(str(resolve_project_file_path(settings.workspaces_dir, slug, pdf_rel)))
+    pdf_txt = "\n".join(pg.get_text("text") for pg in pdf_doc).replace("\xa0", " ").replace("\xad", "-")
+    pdf_doc.close()
+    assert f"Showing 15 of {rep['verified_facts_total']}" in pdf_txt
+    assert "0. Document Register" in pdf_txt
+    assert "2.3 Extracted Text (OCR" in pdf_txt
+    assert "Appendix A:" in pdf_txt
+
+    short_id = rep["id"].replace("-", "")[:8]
+    json_path = resolve_project_file_path(settings.workspaces_dir, slug, f"08_Reports/review_{short_id}_v1.json")
+    json_data = json.loads(json_path.read_text(encoding="utf-8"))
+    assert len(json_data["appendix_verified_facts"]) == rep["verified_facts_total"]
+    assert json_data["verified_facts_shown"] == 15
+
 

@@ -12,7 +12,13 @@ from app.schemas.tasks import TaskTokenUsageOut
 ReportLanguage = Literal["ar", "en"]
 FindingSeverity = Literal["critical", "high", "medium", "low", "info"]
 FindingStatus = Literal["open", "needs_verification", "resolved"]
-StatementCategory = Literal["verified_fact", "calculated", "assumption", "recommendation"]
+StatementCategory = Literal[
+    "verified_fact",
+    "calculated",
+    "ocr_unverified",
+    "assumption",
+    "recommendation",
+]
 
 
 class SourceLocationRef(BaseModel):
@@ -51,6 +57,30 @@ class CategorizedStatement(BaseModel):
     category: StatementCategory
     text: str
     formula_or_method: str | None = None
+    source_links: list[SourceLocationRef] = Field(default_factory=list)
+
+
+class DocumentRegisterEntry(BaseModel):
+    """Plain per-file inventory row tracking extraction scope, status, and confidence."""
+
+    file_name: str
+    file_type: str
+    pages_or_entities: str
+    extraction_status: str
+    confidence: str
+
+
+class OcrExtractedTextItem(BaseModel):
+    """Unverified OCR text excerpt separated strictly from deterministic Verified Facts."""
+
+    file_id: str | None = None
+    source_file: str
+    page_or_sheet: str
+    confidence_mean: float | None = None
+    low_confidence: bool = False
+    native_text_unreliable: bool = False
+    status_label: str
+    text: str
     source_links: list[SourceLocationRef] = Field(default_factory=list)
 
 
@@ -172,11 +202,18 @@ class ReviewReportSummaryOut(BaseModel):
 
 
 class ReviewReportDetailOut(ReviewReportSummaryOut):
-    """Complete review report payload including source-linked findings, separated categories, and deliverables."""
+    """Complete review report payload including document register, separated unverified OCR, findings, and deliverables."""
 
+    is_inventory_only: bool = True
     revision_block: RevisionBlockOut
+    document_register: list[DocumentRegisterEntry] = Field(default_factory=list)
     findings: list[ReviewFinding] = Field(default_factory=list)
     verified_facts: list[CategorizedStatement] = Field(default_factory=list)
+    verified_facts_total: int = 0
+    verified_facts_shown: int = 0
+    appendix_verified_facts: list[CategorizedStatement] = Field(default_factory=list)
+    ocr_text_items: list[OcrExtractedTextItem] = Field(default_factory=list)
+    ocr_text_items_total: int = 0
     calculated_items: list[CategorizedStatement] = Field(default_factory=list)
     assumptions: list[CategorizedStatement] = Field(default_factory=list)
     recommendations: list[CategorizedStatement] = Field(default_factory=list)

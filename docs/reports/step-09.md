@@ -1,9 +1,9 @@
 # Step 09 — Document & Drawing Review -> Findings Report (DOCX + PDF, RTL/LTR, Deliverables)
 
 - **Date:** 2026-11-20
-- **Status:** **PARTIAL** *(complete Step 09 implementation + Step 06 Arabic PDF sanity/OCR/reconciliation fix commit `799b5d4` and Step 09 verified-text gating; DB migration `0007`, `review` skill with mandatory `EXT-*` / `RES-*` source provenance and strict category separation, bilingual Arabic RTL / English LTR DOCX + PDF generation, versioned non-overwriting persistence into `08_Reports` and `10_Final_Deliverables`, minimal-token Step 08/04 budget enforcement, bilingual `DeliverablesView` UI + download verification, full backend `pytest -v`, opt-in real external checks, and frontend Vitest/build all pass cleanly; desktop Microsoft Word opening/printing visual review & interactive `scripts/start.bat` UI walkthrough on real owner project drawings remain `PENDING`)*
-- **Branch:** `step-09-review-report`
-- **Depends on:** Step 08 (`3afe6e9`, PR `#15` merged)
+- **Status:** **PARTIAL** *(Step 09 implementation + Step 06 Arabic PDF fix + Step 09B report-honesty fixes on `step-09b-report-honesty`; area-bearing CAD groups labelled `"geometric sum, not net building area"`, confirmed/raw unit consistency without `"None"`, doubtful CAD `area_m2=null` + `HIGH` finding, `>1%` DXF/DWG reconciliation withholding conflicting areas, unverified OCR text separated from `verified_facts`, zero deterministic boilerplate + `Document Register` + `"inventory & check, NOT an engineering review"` notice, `"Showing N of M verified facts"` + `Appendix A` + full JSON, `70 passed, 3 skipped` backend pytest, `3/3` opt-in real ODA/OCR/research checks, and `18 passed` frontend Vitest/Vite build; live owner inspection on real hospital project files and desktop Microsoft Word rendering remain `PENDING`)*
+- **Branch:** `step-09b-report-honesty` *(following merged Step 09 PR `#16` at `9ab7e65`)*
+- **Depends on:** Step 08 (`3afe6e9`, PR `#15` merged), Step 09 (`9ab7e65`, PR `#16` merged)
 
 ## 1. Scope Done
 
@@ -46,6 +46,24 @@ Real Arabic PDFs revealed two Step 06 extractor gaps fixed cleanly before contin
 6. **Deliverables & Reports Frontend UI (`frontend/src/components/DeliverablesView.tsx`, `App.tsx`, `api.ts`, `types.ts`):**
    - Added bilingual RTL/LTR **المخرجات والتقارير / Deliverables & Reports** tab (`App.tsx`) supporting project report generation (classification lock, language `ar`/`en`, discipline, review notes, `use_ai` toggle), pre-flight prompt cap & Step 04 remaining token readout, explicit **Enhance Copy via AI** action, separated category inspection, source-linked findings table, and one-click DOCX/PDF downloads scoped by `08_Reports` and `10_Final_Deliverables`.
 
+### Step 09B Fixes (`step-09b-report-honesty` — Report Honesty Hardening)
+Targeted fix pass addressing every defect exposed when running the Step 09 report against real hospital project files (synthetic tests only in repo; zero client files committed):
+1. **CAD Area-Bearing Layer Grouping & Non-Net Label (`backend/app/services/extractors/cad.py`, `backend/app/skills/review.py`):**
+   - Added `classify_cad_area_bearing_layer()` and `compute_layer_area_groups()` in `cad.py` to exclude non-area layers (`defpoints`, `furn`, `dim`, `grid`, `axis`, `text`, `hatch`, Arabic equivalents) and never sum all contours across the whole drawing into a single building/total area.
+   - Reported CAD `calculated_items` per `(layer, entity_type)` group ONLY for `area_bearing` layers with explicit label **`"geometric sum, not net building area"`**.
+2. **Active vs Raw CAD Unit Consistency, Doubtful Units & `"None"` Elimination (`backend/app/skills/review.py`):**
+   - `_clean_unit_label()` strips empty/`"None"`/`"none"`/`"null"` values (never rendering `"None"` as a unit).
+   - `_resolve_cad_unit_context()` resolves the active unit from owner-confirmed `confirm-unit` when set, aligns calculated area descriptions and citation locations consistently with the unit actually used in calculation, and preserves raw header units cleanly when overridden. Doubtful `$INSUNITS`/unitless drawings keep `area_m2 = null` and emit a `HIGH` `needs_verification` finding.
+3. **DXF vs DWG Cross-Format Reconciliation (`backend/app/skills/review.py`):**
+   - Paired DXF and DWG extractions matching normalized stem (`_normalize_cad_stem`) or overlapping layers (`Jaccard >= 0.35`) with a total closed-area divergence `> 1%` emit a `HIGH` **CAD Reconciliation** finding citing both `EXT-*` sources and withhold both conflicting area figures from `calculated_items`.
+4. **OCR Separation & Unverified Category (`backend/app/schemas/reports.py`, `backend/app/skills/review.py`, `report_generator.py`, `DeliverablesView.tsx`):**
+   - `ocr_text` extractions are strictly excluded from `verified_facts` and `findings`, routed instead into a dedicated **`ocr_text_items`** section labelled **"Extracted text (OCR — per-page confidence, not verified)"**, while low-confidence (`< 65%`) pages are also stripped from `source_registry` excerpts. Verified facts hold strictly deterministic native metadata (`SHA-256`, page/layer/entity counts), native extracted data, and reviewed `RES-*` records.
+5. **No Deterministic Boilerplate, Document Register & Inventory-Only Notice (`backend/app/skills/review.py`, `report_generator.py`, `DeliverablesView.tsx`):**
+   - Removed all templated/boilerplate deterministic findings and generic recommendations (`"match values and units..."`, `"Cross-check extracted figures..."`, `"Confirm applicability..."`, generic fallback recommendation); `findings` contain only concrete observed issues (gaps, doubtful CAD units, DXF/DWG conflicts, unreliable/blank/failed/low-confidence PDF pages).
+   - Added structured **`0. Document Register`** (`file`, `type`, `pages/entities`, `extraction status`, `confidence`) and explicit **`is_inventory_only`** header banner stating clearly in deterministic mode that the output is an **inventory & check, NOT an engineering review**.
+6. **Explicit Fact Count & Appendix A + Companion JSON Completeness (`backend/app/skills/review.py`, `review_reports.py`, `report_generator.py`, `DeliverablesView.tsx`):**
+   - Eliminated silent fact truncation: main section displays **`"Showing N of M verified facts"`** (`MAIN_VERIFIED_FACTS_DISPLAY_LIMIT = 15`), while `Appendix A` in both DOCX & PDF plus companion `08_Reports/review_<short>_v<N>.json` (`appendix_verified_facts`) preserve all `M` verified facts.
+
 ## 2. Files Created / Changed
 
 ### Created
@@ -65,12 +83,14 @@ Real Arabic PDFs revealed two Step 06 extractor gaps fixed cleanly before contin
 - `<repo>/backend/app/schemas/extraction.py`
 - `<repo>/backend/app/services/extraction.py`
 - `<repo>/backend/app/services/extractors/__init__.py`
+- `<repo>/backend/app/services/extractors/cad.py` *(Step 09B area-bearing layer classification & `layer_area_groups`)*
 - `<repo>/backend/app/services/extractors/ocr.py`
 - `<repo>/backend/app/services/extractors/office.py`
 - `<repo>/backend/app/services/extractors/pdf_and_image.py`
+- `<repo>/backend/tests/test_cad_bim.py` *(Step 09B area-bearing CAD group unit test)*
 - `<repo>/backend/tests/test_extraction.py`
 - `<repo>/backend/tests/test_migrations.py`
-- `<repo>/docs/DECISIONS.md` (`ADR-016`, `ADR-017`)
+- `<repo>/docs/DECISIONS.md` (`ADR-016`, `ADR-017`, `ADR-018`)
 - `<repo>/frontend/src/App.test.tsx`
 - `<repo>/frontend/src/App.tsx`
 - `<repo>/frontend/src/api.ts`
@@ -79,9 +99,9 @@ Real Arabic PDFs revealed two Step 06 extractor gaps fixed cleanly before contin
 
 *(Zero edits to `.github/` or `CLAUDE.md`; zero secrets, BOM bytes, local user paths, or client files committed.)*
 
-## 3. Sanitized Sample Report Output (Arabic RTL `v1` + English LTR `v2`)
+## 3. Initial Step 09 Sanitized Sample Report Output (Baseline Snapshot Prior to Step 09B)
 
-Captured in an isolated scratch workspace (`use_ai=False`, `0` Gemini tokens) across 4 extracted fixtures (`spec_clinic.pdf`, `plan_metric.dxf`, `plan_doubtful.dxf` with doubtful `$INSUNITS=1`, `room_schedule.xlsx` with `=B2*C2` formula) + 2 research URLs (`1` substantive accessible, `1` blocked `403`):
+Captured in an isolated scratch workspace during initial Step 09 (`use_ai=False`, `0` Gemini tokens) across 4 extracted fixtures (`spec_clinic.pdf`, `plan_metric.dxf`, `plan_doubtful.dxf` with doubtful `$INSUNITS=1`, `room_schedule.xlsx` with `=B2*C2` formula) + 2 research URLs (`1` substantive accessible, `1` blocked `403`). Step 09B subsequently removed deterministic boilerplate findings/recommendations, separated OCR items into `ocr_text_items`, added `Document Register`, added `(layer, entity_type)` area-bearing groups, and added `Appendix A` (`Showing N of M verified facts`).
 
 ```text
 === AR_V1 ===
@@ -109,7 +129,7 @@ counts: findings=5 facts=10 calc=2 assump=2 recs=4 gaps=1 sources=13
   DELIV 10_Final_Deliverables PDF path=10_Final_Deliverables/Clinic_Drawings___Specifications_Review_Report_ab3f9a61_v2_For_Coordination.pdf bytes=1976729 sha256=9b6b576e0e7d15a6...
 ```
 
-## 4. Tests Run (Full Unedited Outputs)
+## 4. Tests Run (Full Unedited Outputs — Step 09B)
 
 ### Backend Full Suite (`pytest -v`)
 
@@ -121,21 +141,22 @@ cachedir: .pytest_cache
 rootdir: C:\Engineering Agent\backend
 configfile: pytest.ini
 plugins: anyio-4.16.0
-collecting ... collected 69 items
+collecting ... collected 73 items
 
 backend\tests\test_cad_bim.py::test_capabilities_oda_resolution_priority_absent_dwg_and_matrix PASSED [  1%]
 backend\tests\test_cad_bim.py::test_extract_dxf_inventory_arabic_units_deterministic_areas_and_edge_limits PASSED [  2%]
 backend\tests\test_cad_bim.py::test_dwg_conversion_pipeline_mocked_preserves_original_and_versions PASSED [  4%]
 backend\tests\test_cad_bim.py::test_optin_real_oda_converter_dwg_to_dxf SKIPPED [  5%]
-backend\tests\test_cad_bim.py::test_extract_ifc_spaces_areas_elements_properties_and_known_limits PASSED [  7%]
+backend\tests\test_cad_bim.py::test_extract_ifc_spaces_areas_elements_properties_and_known_limits PASSED [  6%]
 backend\tests\test_cad_bim.py::test_drawing_gemini_vision_summary_non_measurement_disclaimer_and_cap PASSED [  8%]
-backend\tests\test_cad_bim.py::test_extract_dxf_hatch_with_island_subtracts_hole_area PASSED [ 10%]
-backend\tests\test_cad_bim.py::test_dwg_refuses_existing_converted_run_dir_with_409 PASSED [ 11%]
-backend\tests\test_cad_bim.py::test_extract_dxf_doubtful_inches_sets_null_area_m2_and_owner_confirm_unit PASSED [ 13%]
-backend\tests\test_cad_bim.py::test_extract_dxf_cp1256_mojibake_arabic_and_preserves_raw_and_latin PASSED [ 14%]
+backend\tests\test_cad_bim.py::test_extract_dxf_hatch_with_island_subtracts_hole_area PASSED [  9%]
+backend\tests\test_cad_bim.py::test_dwg_refuses_existing_converted_run_dir_with_409 PASSED [ 10%]
+backend\tests\test_cad_bim.py::test_extract_dxf_doubtful_inches_sets_null_area_m2_and_owner_confirm_unit PASSED [ 12%]
+backend\tests\test_cad_bim.py::test_extract_dxf_cp1256_mojibake_arabic_and_preserves_raw_and_latin PASSED [ 13%]
 backend\tests\test_cad_bim.py::test_extract_closed_lwpolyline_with_semicircular_arc_bulge_exact_area PASSED [ 15%]
+backend\tests\test_cad_bim.py::test_extract_dxf_marks_area_bearing_layers_and_groups_with_non_net_label PASSED [ 16%]
 backend\tests\test_config.py::test_blank_workspaces_dir_defaults_to_repo_root PASSED [ 17%]
-backend\tests\test_config.py::test_relative_workspaces_dir_resolves_against_repo_root PASSED [ 18%]
+backend\tests\test_config.py::test_relative_workspaces_dir_resolves_against_repo_root PASSED [ 19%]
 backend\tests\test_config.py::test_blank_database_url_defaults_inside_workspaces_dir PASSED [ 20%]
 backend\tests\test_config.py::test_relative_sqlite_database_url_resolves_against_repo_root PASSED [ 21%]
 backend\tests\test_config.py::test_postgresql_and_memory_database_urls_pass_through PASSED [ 23%]
@@ -145,55 +166,58 @@ backend\tests\test_extraction.py::test_extract_docx_xlsx_csv_pptx_preserving_exa
 backend\tests\test_extraction.py::test_extraction_rejects_cad_deferred_formats_and_logs_corrupt_file_failures PASSED [ 28%]
 backend\tests\test_extraction.py::test_tesseract_resolution_priority_single_probe_and_300dpi_render PASSED [ 30%]
 backend\tests\test_extraction.py::test_optin_real_tesseract_ara_eng_on_committed_fixture SKIPPED [ 31%]
-backend\tests\test_extraction.py::test_extract_csv_multiline_quoted_arabic_and_offset_traceability PASSED [ 33%]
+backend\tests\test_extraction.py::test_extract_csv_multiline_quoted_arabic_and_offset_traceability PASSED [ 32%]
 backend\tests\test_extraction.py::test_extract_xlsx_reset_dimensions_offset_cells_chartsheet_and_hidden PASSED [ 34%]
-backend\tests\test_extraction.py::test_extraction_hash_mismatch_and_refuse_existing_run_dir PASSED [ 36%]
-backend\tests\test_extraction.py::test_pptx_grouped_shapes_and_multiframe_tiff_warning PASSED [ 37%]
-backend\tests\test_extraction.py::test_arabic_native_pdf_cid_or_reversed_text_triggers_300dpi_ocr_and_never_not_needed PASSED [ 39%]
-backend\tests\test_extraction.py::test_twelve_page_scanned_pdf_reconciles_all_pages_including_blank_and_failed PASSED [ 40%]
-backend\tests\test_extraction.py::test_ocr_per_page_tesseract_mean_confidence_and_low_confidence_flag PASSED [ 42%]
-backend\tests\test_files.py::test_classification_labels_match_schema PASSED [ 43%]
-backend\tests\test_files.py::test_multi_file_upload_classification_readonly_and_download PASSED [ 44%]
-backend\tests\test_files.py::test_duplicate_detection_and_reupload_versioning_preserves_original PASSED [ 46%]
-backend\tests\test_files.py::test_malicious_filenames_unsupported_types_and_size_protections PASSED [ 47%]
-backend\tests\test_files.py::test_pr9_hardening_early_content_length_mime_hint_double_dot_and_error_maps PASSED [ 49%]
-backend\tests\test_health.py::test_api_health_returns_ok PASSED          [ 50%]
-backend\tests\test_migrations.py::test_alembic_upgrade_and_downgrade_round_trip PASSED [ 52%]
-backend\tests\test_migrations.py::test_ondelete_restrict_refuses_deleting_project_with_files_and_file_with_versions PASSED [ 53%]
-backend\tests\test_migrations.py::test_classification_check_constraint_enforces_five_claude_labels PASSED [ 55%]
-backend\tests\test_projects.py::test_arabic_project_creation_folders_and_restart_persistence PASSED [ 56%]
-backend\tests\test_projects.py::test_duplicate_code_returns_409_without_orphaned_folder PASSED [ 57%]
-backend\tests\test_projects.py::test_validation_not_found_and_path_safety PASSED [ 59%]
-backend\tests\test_providers.py::test_keyring_secret_store_round_trip PASSED [ 60%]
-backend\tests\test_providers.py::test_gemini_provider_text_structured_pdf_image_and_tools PASSED [ 62%]
-backend\tests\test_providers.py::test_provider_errors_and_secret_scrubbing PASSED [ 63%]
-backend\tests\test_providers.py::test_settings_api_keyring_swappability_usage_limits_and_zero_secret_leak PASSED [ 65%]
-backend\tests\test_providers.py::test_monthly_usage_limits_and_failed_attempt_counting PASSED [ 66%]
-backend\tests\test_providers.py::test_debug_logging_never_leaks_api_key PASSED [ 68%]
-backend\tests\test_providers.py::test_verify_gemini_live_script_with_mocked_provider PASSED [ 69%]
-backend\tests\test_providers.py::test_provider_404_model_not_found_handling PASSED [ 71%]
-backend\tests\test_providers.py::test_refresh_models_filters_generate_content_and_startup_check PASSED [ 72%]
-backend\tests\test_providers.py::test_gemini_provider_503_exponential_backoff_retry_and_exhaustion PASSED [ 73%]
-backend\tests\test_reports.py::test_step09_end_to_end_review_report_extractions_research_docx_pdf_rtl_and_download PASSED [ 75%]
-backend\tests\test_reports.py::test_step09_ai_enhance_caps_prompt_enforces_ref_links_versions_cleanly_and_checks_step04 PASSED [ 76%]
-backend\tests\test_reports.py::test_step09_only_cites_reliable_text_and_excludes_failed_blank_cid_reversed_or_low_confidence PASSED [ 78%]
-backend\tests\test_research.py::test_research_priority_order_fetch_pdf_and_snippets_never_evidence PASSED [ 79%]
-backend\tests\test_research.py::test_research_deliberate_prompt_injection_webpage_not_obeyed PASSED [ 81%]
-backend\tests\test_research.py::test_research_inaccessible_documents_reported_as_unreviewed PASSED [ 82%]
+backend\tests\test_extraction.py::test_extraction_hash_mismatch_and_refuse_existing_run_dir PASSED [ 35%]
+backend\tests\test_extraction.py::test_pptx_grouped_shapes_and_multiframe_tiff_warning PASSED [ 36%]
+backend\tests\test_extraction.py::test_arabic_native_pdf_cid_or_reversed_text_triggers_300dpi_ocr_and_never_not_needed PASSED [ 38%]
+backend\tests\test_extraction.py::test_twelve_page_scanned_pdf_reconciles_all_pages_including_blank_and_failed PASSED [ 39%]
+backend\tests\test_extraction.py::test_ocr_per_page_tesseract_mean_confidence_and_low_confidence_flag PASSED [ 41%]
+backend\tests\test_files.py::test_classification_labels_match_schema PASSED [ 42%]
+backend\tests\test_files.py::test_multi_file_upload_classification_readonly_and_download PASSED [ 43%]
+backend\tests\test_files.py::test_duplicate_detection_and_reupload_versioning_preserves_original PASSED [ 45%]
+backend\tests\test_files.py::test_malicious_filenames_unsupported_types_and_size_protections PASSED [ 46%]
+backend\tests\test_files.py::test_pr9_hardening_early_content_length_mime_hint_double_dot_and_error_maps PASSED [ 47%]
+backend\tests\test_health.py::test_api_health_returns_ok PASSED          [ 49%]
+backend\tests\test_migrations.py::test_alembic_upgrade_and_downgrade_round_trip PASSED [ 50%]
+backend\tests\test_migrations.py::test_ondelete_restrict_refuses_deleting_project_with_files_and_file_with_versions PASSED [ 52%]
+backend\tests\test_migrations.py::test_classification_check_constraint_enforces_five_claude_labels PASSED [ 53%]
+backend\tests\test_projects.py::test_arabic_project_creation_folders_and_restart_persistence PASSED [ 54%]
+backend\tests\test_projects.py::test_duplicate_code_returns_409_without_orphaned_folder PASSED [ 56%]
+backend\tests\test_projects.py::test_validation_not_found_and_path_safety PASSED [ 57%]
+backend\tests\test_providers.py::test_keyring_secret_store_round_trip PASSED [ 58%]
+backend\tests\test_providers.py::test_gemini_provider_text_structured_pdf_image_and_tools PASSED [ 60%]
+backend\tests\test_providers.py::test_provider_errors_and_secret_scrubbing PASSED [ 61%]
+backend\tests\test_providers.py::test_settings_api_keyring_swappability_usage_limits_and_zero_secret_leak PASSED [ 63%]
+backend\tests\test_providers.py::test_monthly_usage_limits_and_failed_attempt_counting PASSED [ 64%]
+backend\tests\test_providers.py::test_debug_logging_never_leaks_api_key PASSED [ 65%]
+backend\tests\test_providers.py::test_verify_gemini_live_script_with_mocked_provider PASSED [ 67%]
+backend\tests\test_providers.py::test_provider_404_model_not_found_handling PASSED [ 68%]
+backend\tests\test_providers.py::test_refresh_models_filters_generate_content_and_startup_check PASSED [ 69%]
+backend\tests\test_providers.py::test_gemini_provider_503_exponential_backoff_retry_and_exhaustion PASSED [ 71%]
+backend\tests\test_reports.py::test_step09_end_to_end_review_report_extractions_research_docx_pdf_rtl_and_download PASSED [ 72%]
+backend\tests\test_reports.py::test_step09_ai_enhance_caps_prompt_enforces_ref_links_versions_cleanly_and_checks_step04 PASSED [ 73%]
+backend\tests\test_reports.py::test_step09_only_cites_reliable_text_and_excludes_failed_blank_cid_reversed_or_low_confidence PASSED [ 75%]
+backend\tests\test_reports.py::test_step09b_cad_area_bearing_layers_confirmed_unit_and_no_none_unit PASSED [ 76%]
+backend\tests\test_reports.py::test_step09b_dxf_vs_dwg_mismatch_raises_high_reconciliation_and_withholds_conflicting_areas PASSED [ 78%]
+backend\tests\test_reports.py::test_step09b_ocr_separated_document_register_no_boilerplate_and_showing_n_of_m_appendix PASSED [ 79%]
+backend\tests\test_research.py::test_research_priority_order_fetch_pdf_and_snippets_never_evidence PASSED [ 80%]
+backend\tests\test_research.py::test_research_deliberate_prompt_injection_webpage_not_obeyed PASSED [ 82%]
+backend\tests\test_research.py::test_research_inaccessible_documents_reported_as_unreviewed PASSED [ 83%]
 backend\tests\test_research.py::test_research_usage_limits_ssrf_and_optional_search_keyring PASSED [ 84%]
-backend\tests\test_research.py::test_research_403_refererless_retry_zero_accessible_skips_gemini_and_owner_provided_upload PASSED [ 85%]
-backend\tests\test_research.py::test_research_quality_gate_bloomsbury_login_wall_cookie_wall_and_photo_archive PASSED [ 86%]
-backend\tests\test_research.py::test_research_relevance_gate_and_titles_only_never_evidence_no_gemini_call PASSED [ 88%]
-backend\tests\test_research.py::test_research_crossref_no_auto_peer_reviewed_provider_claim_and_token_cap_synthesize PASSED [ 89%]
+backend\tests\test_research.py::test_research_403_refererless_retry_zero_accessible_skips_gemini_and_owner_provided_upload PASSED [ 86%]
+backend\tests\test_research.py::test_research_quality_gate_bloomsbury_login_wall_cookie_wall_and_photo_archive PASSED [ 87%]
+backend\tests\test_research.py::test_research_relevance_gate_and_titles_only_never_evidence_no_gemini_call PASSED [ 89%]
+backend\tests\test_research.py::test_research_crossref_no_auto_peer_reviewed_provider_claim_and_token_cap_synthesize PASSED [ 90%]
 backend\tests\test_research.py::test_optin_real_live_controlled_research_no_client_data SKIPPED [ 91%]
-backend\tests\test_tasks.py::test_step05_arabic_english_mixed_assignments_orchestrator_v0_and_history PASSED [ 92%]
+backend\tests\test_tasks.py::test_step05_arabic_english_mixed_assignments_orchestrator_v0_and_history PASSED [ 93%]
 backend\tests\test_tasks.py::test_step05_missing_referenced_file_triggers_clarification PASSED [ 94%]
 backend\tests\test_tasks.py::test_step05_untrusted_delimiter_neutralization PASSED [ 95%]
 backend\tests\test_tasks.py::test_step05_startup_marks_stale_running_tasks_interrupted PASSED [ 97%]
 backend\tests\test_tasks.py::test_step05_failures_are_logged_not_hidden_without_secret_leaks PASSED [ 98%]
 backend\tests\test_tasks.py::test_step05_assumptions_always_labelled_for_owner_confirmation PASSED [100%]
 
-================== 66 passed, 3 skipped in 68.16s (0:01:08) ===================
+================== 70 passed, 3 skipped in 80.30s (0:01:20) ===================
 ```
 
 ### Opt-In Real External Checks (`RUN_REAL_ODA=1`, `RUN_REAL_OCR=1`, `RUN_REAL_RESEARCH=1`)
@@ -206,10 +230,10 @@ cachedir: .pytest_cache
 rootdir: C:\Engineering Agent\backend
 configfile: pytest.ini
 plugins: anyio-4.16.0
-collecting ... collected 69 items / 66 deselected / 3 selected
+collecting ... collected 73 items / 70 deselected / 3 selected
 
 backend\tests\test_cad_bim.py::test_optin_real_oda_converter_dwg_to_dxf 
-REAL ODA CONVERTER: version=27.10.0 | units=m ($INSUNITS=6) | layers=5 | blocks=2 | closed_areas=[14.0, 24.0] | converted=03_Analysis/extractions/2f593821-bd60-41e0-be65-58b49851a662/v1/r1/converted/sample_clinic_plan.dxf
+REAL ODA CONVERTER: version=27.10.0 | units=m ($INSUNITS=6) | layers=5 | blocks=2 | closed_areas=[14.0, 24.0] | converted=03_Analysis/extractions/55f1528c-54c2-4e59-8871-e14c31b1418e/v1/r1/converted/sample_clinic_plan.dxf
 PASSED
 backend\tests\test_extraction.py::test_optin_real_tesseract_ara_eng_on_committed_fixture 
 REAL OCR VERSION: tesseract v5.5.3.20260724 | LANGS: ['ara', 'eng', 'osd']
@@ -218,20 +242,20 @@ PDF OCR TEXT (DPI=300, mean_conf=91.86): 'Beam Span = 6.00 m | Load = 18.50 kN/m
 ARABIC UNRELIABLE NATIVE RECOVERED (status=ocr_applied (native text unreliable), mean_conf=93.88): 'في من على إلى مشروع مستشفى طرابلس التعليمي'
 PASSED
 backend\tests\test_research.py::test_optin_real_live_controlled_research_no_client_data 
-LIVE RESEARCH SAMPLE: provider=duckduckgo_lite | total=3 | accessible=1 | inaccessible=2 | est_prompt_tokens=1172 | artifact=11_References/research/7e64e057-3422-4dc5-998c-bf53881ec428/research_log.json
+LIVE RESEARCH SAMPLE: provider=duckduckgo_lite | total=3 | accessible=1 | inaccessible=2 | est_prompt_tokens=1172 | artifact=11_References/research/a72eea2a-81cb-47a2-8fb7-442a2beb56d7/research_log.json
 SOURCE tier=government rating=high_government reviewed=True url=https://www.hse.gov.uk/fireandexplosion/workplace.htm http=200 info="Work process fire safety This page provides information about HSE's role. Process fire precautions HSE is mainly concerned with process fire"
 SOURCE tier=official_regulations rating=unreviewed reviewed=False url=https://www.osha.gov/laws-regs/regulations/standardnumber/1910/1910.37 http=403 info='UNREVIEWED — Document inaccessible: HTTP 403 response — document could not be accessed and was NOT reviewed; download the document yourself '
 SOURCE tier=peer_reviewed rating=unreviewed reviewed=False url=https://doi.org/10.5040/9798400616747.ch-001 http=200 info='UNREVIEWED — Document inaccessible: login wall / paywall / cookie wall / no substantive text (registration country list / login form detecte'
 PASSED
 
-====================== 3 passed, 66 deselected in 14.23s ======================
+====================== 3 passed, 70 deselected in 14.59s ======================
 ```
 
 ### Frontend Tests & TypeScript/Vite Build
 
 ```text
 > npm.cmd --prefix frontend test -- --run
- ✓ src/App.test.tsx (18 tests) 49ms
+ ✓ src/App.test.tsx (18 tests) 51ms
  Test Files  1 passed (1)
       Tests  18 passed (18)
 
@@ -239,8 +263,8 @@ PASSED
  ✓ 34 modules transformed.
 dist/index.html                   0.48 kB │ gzip:  0.34 kB
 dist/assets/index-VNk5qLDz.css    5.80 kB │ gzip:  1.68 kB
-dist/assets/index-BBenRVFB.js   275.05 kB │ gzip: 78.59 kB
-✓ built in 497ms
+dist/assets/index-Dno9wuLz.js   278.20 kB │ gzip: 79.30 kB
+✓ built in 495ms
 ```
 
 ## 5. Acceptance Criteria Table
@@ -257,18 +281,23 @@ dist/assets/index-BBenRVFB.js   275.05 kB │ gzip: 78.59 kB
 | DOCX + PDF report with Arabic RTL, owner-locked classification label, and full revision block | **PASS** | `report_generator.py` (`w:bidi`, `w:bidiVisual`, `Tahoma` cs fonts for DOCX; `pymupdf.Story` + `Tahoma` TTF / `Noto Naskh Arabic` fallback + `\u2066...\u2069` BiDi isolates for PDF); visual inspection of rendered Page 1 & Page 2 PNGs. |
 | Versioned non-overwriting saves to `08_Reports` and `10_Final_Deliverables` + Deliverables download UI | **PASS** | Saves `review_<id>_v<N>.{docx,pdf,json}` in `08_Reports` and `<slug>_<id>_v<N>_<cls>.{docx,pdf}` in `10_Final_Deliverables`; SHA-256 verification on download; `DeliverablesView.tsx` & `App.test.tsx` (`18 passed`). |
 | Minimal Gemini usage via Step 08 prompt cap, pre-flight estimate, zero-source guard, and Step 04 budget | **PASS** | `use_ai=False` spends `0` tokens while reporting `estimated_prompt_tokens` (`< 10,000` char cap); `0` sources spends `0` tokens even with `use_ai=True`; Step 04 exceedance returns `HTTP 429` before calling Gemini. |
-| Owner desktop opening/printing visual review in Microsoft Word & live UI walkthrough | **PENDING** | Deferred for owner review on local PC. |
+| Step 09B (1): CAD area-bearing `(layer, entity_type)` grouping labelled `"geometric sum, not net building area"`, active confirmed-unit consistency, doubtful `area_m2=null` + `HIGH` finding, and no `"None"` unit | **PASS** | `classify_cad_area_bearing_layer` & `compute_layer_area_groups` in `cad.py`; `_resolve_cad_unit_context` & `_clean_unit_label` in `review.py`; `test_extract_dxf_marks_area_bearing_layers_and_groups_with_non_net_label` & `test_step09b_cad_area_bearing_layers_confirmed_unit_and_no_none_unit`. |
+| Step 09B (1b): Paired DXF vs DWG `> 1%` area mismatch raises `HIGH` CAD Reconciliation finding and withholds both conflicting totals | **PASS** | Stem normalization + `Jaccard >= 0.35` layer-overlap pairing in `review.py`; `test_step09b_dxf_vs_dwg_mismatch_raises_high_reconciliation_and_withholds_conflicting_areas`. |
+| Step 09B (2–4): OCR separated into `ocr_text_items` (`not verified`), zero deterministic boilerplate, Document Register + inventory notice, `Showing N of M` + `Appendix A` + full JSON | **PASS** | Separated `ocr_text_items` & stripped `< 65%` low-conf excerpts, `DocumentRegisterEntry` table, `is_inventory_only` banner, `MAIN_VERIFIED_FACTS_DISPLAY_LIMIT=15` with `Appendix A` & companion JSON in `review.py` / `report_generator.py` / `DeliverablesView.tsx`; `test_step09b_ocr_separated_document_register_no_boilerplate_and_showing_n_of_m_appendix` & `App.test.tsx`. |
+| Owner live inspection on real hospital drawings / scanned PDFs and Microsoft Word desktop opening/printing | **PENDING** | Deferred for owner review on local PC. |
 
 ## 6. Known Limitations & Deviations
 - **PDF Finding Cards vs DOCX 7-Column Table:** In `pymupdf.Story`, spanning multi-page 7-column RTL HTML tables caused narrow-column overflow and repeated header artifacting across page boundaries. The DOCX export keeps the native 7-column `<w:bidiVisual/>` RTL table for editing in Microsoft Word, while the PDF renders structured full-width bordered Finding Cards (`div.fcard`) with full metadata headers, wrapped LTR source IDs/URLs (`\u2066...\u2069`), and zero column overlap.
 - **PDF Arabic Font Embedding:** Uses `tahoma.ttf` / `tahomabd.ttf` from `C:/Windows/Fonts` on Windows (resulting in ~1.98 MB font-embedded PDFs) with MuPDF built-in `Noto Naskh Arabic` fallback elsewhere.
 - **Tesseract Confidence & Partial Mocks:** `ocr.py` computes per-word mean confidence from `pytesseract.image_to_data` when a real binary (or mocked `image_to_data`) is available, leaving `ocr_confidence_mean = None` for bare `ocr_runner` strings or `image_to_string`-only mocks without invoking extra `--version` subprocess probes.
-- **AI Enhancement Test Scope:** `enhance_review_with_ai` was verified end-to-end with a mocked Gemini SDK client to preserve API quota; live Gemini synthesis testing and opening DOCX/PDF files in Microsoft Word over real project drawings remain `PENDING`.
+- **Area-Bearing Layer Heuristic:** `classify_cad_area_bearing_layer()` uses deterministic naming keywords (`defpoints`, `furn`, `dim`, `grid`, `axis`, `text`, `hatch`, Arabic equivalents) so custom non-standard CAD layer naming conventions still require verifying against `"geometric sum, not net building area"`.
+- **AI Enhancement Test Scope:** `enhance_review_with_ai` was verified end-to-end with a mocked Gemini SDK client to preserve API quota; live Gemini synthesis testing and opening DOCX/PDF files in Microsoft Word over real hospital project drawings remain `PENDING`.
 
 ## 7. How the Owner Can Try It
 1. Launch `<repo>/scripts/start.bat`.
-2. In **Projects & Files -> Extract Content**, upload your real Arabic PDF or 12-page scanned PDF:
-   - Unreliable visual-order/`(cid:N)` Arabic PDFs automatically run 300 DPI `ara+eng` OCR, display `OCR: ocr_applied (native text unreliable)`, and list `native_text_unreliable` + raw text safely.
-   - Multi-page scans reconcile `X / Y pages`, explicitly flagging blank (`ocr_empty_or_blank`), failed (`failed`), and low-confidence (`< 65%`) pages.
-3. Switch to **المخرجات والتقارير / Deliverables & Reports**, generate a review report (`0` Gemini tokens default), confirm unverified/blank/failed/low-confidence PDF pages are excluded from verified citations and listed in Gaps, download DOCX & PDF from `08_Reports` / `10_Final_Deliverables`, and inspect in Microsoft Word.
-4. Reply **`PASS step 09`** after PR review & merge when ready for **Step 10**.
+2. In **Projects & Files -> Extract Content**, extract your DXF/DWG drawings (confirm units via **Confirm CAD Unit** if `$INSUNITS` is doubtful) and scanned/native Arabic PDFs.
+3. Switch to **المخرجات والتقارير / Deliverables & Reports**, generate a review report (`use_ai=false`, `0` Gemini tokens default):
+   - Verify the **Document Register** (`0.`) and **inventory & check, NOT an engineering review** disclaimer appear clearly without boilerplate recommendations or guessed findings.
+   - Verify **Calculated Values** list only `area_bearing` CAD layers grouped per `(layer, entity_type)` labelled `geometric sum, not net building area`, matching your confirmed active unit (or withheld with a `HIGH` finding if `$INSUNITS` is doubtful or DXF vs DWG differs by `> 1%`).
+   - Verify **OCR** text appears exclusively under **Extracted Text (OCR — per-page confidence, not verified)** and **Verified Facts** displays `Showing N of M verified facts` with all `M` facts preserved in **Appendix A** and companion `08_Reports/review_<id>_v<N>.json`.
+4. Download DOCX & PDF from `08_Reports` / `10_Final_Deliverables`, inspect in Microsoft Word, and reply when ready to approve the PR and move to Step 10.
