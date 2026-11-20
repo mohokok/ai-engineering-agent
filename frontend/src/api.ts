@@ -13,6 +13,12 @@ import type {
   ProjectListResponse,
   ProviderSettingsOut,
   ProviderSettingsUpdate,
+  ResearchCapabilitiesOut,
+  ResearchHistoryListResponse,
+  ResearchRunCreateRequest,
+  ResearchRunDetailOut,
+  ResearchSourceListResponse,
+  SearchProviderName,
   SupportedExtensionsResponse,
   TaskComplexity,
   TaskCreateRequest,
@@ -236,5 +242,96 @@ export function summarizeDrawingVision(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload ?? {}),
     }
+  );
+}
+
+export function getResearchCapabilities(): Promise<ResearchCapabilitiesOut> {
+  return requestJson<ResearchCapabilitiesOut>("/api/research/capabilities");
+}
+
+export function saveSearchProviderKey(
+  providerId: Exclude<SearchProviderName, "duckduckgo_lite" | "crossref">,
+  apiKey: string
+): Promise<ResearchCapabilitiesOut> {
+  return requestJson<ResearchCapabilitiesOut>(
+    `/api/research/providers/${encodeURIComponent(providerId)}/api-key`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ api_key: apiKey }),
+    }
+  );
+}
+
+export function deleteSearchProviderKey(
+  providerId: Exclude<SearchProviderName, "duckduckgo_lite" | "crossref">
+): Promise<ResearchCapabilitiesOut> {
+  return requestJson<ResearchCapabilitiesOut>(
+    `/api/research/providers/${encodeURIComponent(providerId)}/api-key`,
+    { method: "DELETE" }
+  );
+}
+
+export function runControlledResearch(
+  payload: ResearchRunCreateRequest
+): Promise<ResearchRunDetailOut> {
+  return requestJson<ResearchRunDetailOut>("/api/research/runs", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function listResearchRuns(options?: {
+  project_id?: string;
+  status?: string;
+}): Promise<ResearchHistoryListResponse> {
+  const params = new URLSearchParams();
+  if (options?.project_id) {
+    params.set("project_id", options.project_id);
+  }
+  if (options?.status) {
+    params.set("status", options.status);
+  }
+  const q = params.toString();
+  return requestJson<ResearchHistoryListResponse>(
+    q ? `/api/research/runs?${q}` : "/api/research/runs"
+  );
+}
+
+export function getResearchRunDetail(runId: string): Promise<ResearchRunDetailOut> {
+  return requestJson<ResearchRunDetailOut>(
+    `/api/research/runs/${encodeURIComponent(runId)}`
+  );
+}
+
+export function synthesizeResearchRun(
+  runId: string,
+  complexity: "fast" | "deep" = "fast"
+): Promise<ResearchRunDetailOut> {
+  return requestJson<ResearchRunDetailOut>(
+    `/api/research/runs/${encodeURIComponent(runId)}/synthesize`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ complexity }),
+    }
+  );
+}
+
+export function listResearchSources(options?: {
+  project_id?: string;
+  reviewed_only?: boolean;
+}): Promise<ResearchSourceListResponse> {
+  const params = new URLSearchParams();
+  if (options?.project_id) {
+    params.set("project_id", options.project_id);
+  }
+  if (options?.reviewed_only !== undefined) {
+    params.set("reviewed_only", String(options.reviewed_only));
+  }
+  const q = params.toString();
+  return requestJson<ResearchSourceListResponse>(
+    q ? `/api/research/sources?${q}` : "/api/research/sources"
   );
 }

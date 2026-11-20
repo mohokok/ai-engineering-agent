@@ -146,6 +146,13 @@ FORMAT_SUPPORT_MATRIX: tuple[FormatSupportEntry, ...] = (
         notes="Export to IFC or DXF/PDF in Revit before ingestion; native .rvt parsing is not supported.",
     ),
     FormatSupportEntry(
+        extension=".doc .xls .ppt .rtf .ods .html .json .xml .svg .landxml",
+        category="Other Accepted Formats",
+        support_level="stored_read_only",
+        provider_or_tool="Stored Read-Only (Not Extracted)",
+        notes="other accepted formats (.doc .xls .ppt .rtf .ods .html .json .xml .svg .landxml): stored as read-only original, not extracted.",
+    ),
+    FormatSupportEntry(
         extension=".dgn / .dwf / .step / .stp / .iges / .igs / .obj / .stl / .gltf / .glb",
         category="Deferred CAD / 3D Exchange",
         support_level="not_supported",

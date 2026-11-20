@@ -364,7 +364,7 @@ export interface OdaCapabilityOut {
 export interface FormatSupportEntry {
   extension: string;
   category: string;
-  support_level: "native" | "converted_via_oda" | "not_supported";
+  support_level: "native" | "converted_via_oda" | "stored_read_only" | "not_supported";
   provider_or_tool: string;
   notes: string;
 }
@@ -522,4 +522,143 @@ export interface FileExtractionListResponse {
   extractions: FileExtractionSummaryOut[];
   total: number;
   classification: ProjectClassification | string;
+}
+
+export type SourcePriorityTier =
+  | "official_regulations"
+  | "standards_bodies"
+  | "government"
+  | "manufacturer"
+  | "peer_reviewed"
+  | "reputable"
+  | "unverified";
+
+export type SearchProviderName =
+  | "duckduckgo_lite"
+  | "crossref"
+  | "tavily"
+  | "serper"
+  | "brave";
+
+export interface SearchProviderOptionOut {
+  id: SearchProviderName;
+  label: string;
+  requires_api_key: boolean;
+  key_configured: boolean;
+  is_default: boolean;
+  pricing_summary: string;
+  notes: string;
+}
+
+export interface ResearchCapabilitiesOut {
+  default_provider: SearchProviderName;
+  search_providers: SearchProviderOptionOut[];
+  source_priority_order: SourcePriorityTier[];
+  snippets_never_evidence: boolean;
+  untrusted_page_isolation: boolean;
+  classification: ProjectClassification | string;
+}
+
+export interface ResearchVerifiedFinding {
+  claim: string;
+  source_name: string;
+  source_url: string;
+  publication_date: string | null;
+  priority_tier: SourcePriorityTier;
+}
+
+export interface ResearchSynthesisPayload {
+  summary: string;
+  verified_findings: ResearchVerifiedFinding[];
+  unreviewed_or_inaccessible: string[];
+  standards_and_gaps: string[];
+  injection_attempts_ignored: string[];
+  assumptions: string[];
+  suggested_classification: ProjectClassification | string;
+}
+
+export interface ResearchSourceOut {
+  id: string;
+  research_run_id: string | null;
+  project_id: string | null;
+  task_id: string | null;
+  source_name: string;
+  url: string;
+  publication_date: string | null;
+  access_date: string;
+  query_text: string | null;
+  extracted_info: string | null;
+  reliability_rating: string;
+  source_type: string;
+  source_priority_tier: SourcePriorityTier | string;
+  priority_rank: number;
+  tier_is_provider_claim?: boolean;
+  tier_claim_label?: string | null;
+  access_status: "accessible" | "owner_provided" | "inaccessible" | "not_relevant" | "partial" | string;
+  reviewed: boolean;
+  http_status: number | null;
+  failure_reason: string | null;
+  untrusted_neutralized: boolean;
+  created_at: string;
+}
+
+export interface ResearchRunSummaryOut {
+  id: string;
+  project_id: string | null;
+  task_id: string | null;
+  query: string;
+  search_provider: string;
+  classification: ProjectClassification | string;
+  status: string;
+  summary: string | null;
+  error_message: string | null;
+  total_sources: number;
+  accessible_sources: number;
+  owner_provided_sources?: number;
+  inaccessible_sources: number;
+  not_relevant_sources?: number;
+  estimated_prompt_tokens?: number;
+  prompt_char_count?: number;
+  prompt_char_cap?: number;
+  step04_daily_tokens_remaining?: number | null;
+  step04_monthly_tokens_remaining?: number | null;
+  token_usage: TaskTokenUsageOut;
+  artifact_relative_path: string | null;
+  created_at: string;
+}
+
+export interface ResearchRunDetailOut extends ResearchRunSummaryOut {
+  structured_output: ResearchSynthesisPayload | null;
+  sources: ResearchSourceOut[];
+}
+
+export interface ResearchHistoryListResponse {
+  runs: ResearchRunSummaryOut[];
+  total: number;
+  classification: ProjectClassification | string;
+}
+
+export interface ResearchSourceListResponse {
+  sources: ResearchSourceOut[];
+  total: number;
+  classification: ProjectClassification | string;
+}
+
+export interface OwnerProvidedSourceInput {
+  file_id: string;
+  priority_tier: SourcePriorityTier;
+  publication_date?: string | null;
+}
+
+export interface ResearchRunCreateRequest {
+  query: string;
+  project_id?: string | null;
+  task_id?: string | null;
+  urls?: string[];
+  owner_files?: OwnerProvidedSourceInput[];
+  search_provider?: SearchProviderName;
+  max_results?: number;
+  complexity?: TaskComplexity;
+  classification?: ProjectClassification;
+  synthesize_with_ai?: boolean;
 }

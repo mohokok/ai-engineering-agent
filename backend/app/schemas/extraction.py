@@ -26,7 +26,7 @@ ExtractedItemType = Literal[
     "vision_summary",
 ]
 ExtractionMethod = Literal["native", "ocr", "converted_oda", "hybrid", "ai_vision"]
-SupportLevel = Literal["native", "converted_via_oda", "not_supported"]
+SupportLevel = Literal["native", "converted_via_oda", "stored_read_only", "not_supported"]
 CadUnitChoice = Literal["unitless", "mm", "cm", "dm", "m", "km", "in", "ft", "yd", "mi"]
 
 

@@ -28,6 +28,7 @@ EXPECTED_TABLES = {
     "tasks",
     "task_steps",
     "deliverables",
+    "research_runs",
     "research_sources",
     "issues",
     "calculations",
