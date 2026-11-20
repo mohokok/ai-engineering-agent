@@ -31,6 +31,7 @@ from app.schemas.extraction import (
     FormatSupportEntry,
     OcrCapabilityOut,
     OdaCapabilityOut,
+    PageReconciliationOut,
 )
 from app.services.extractors import (
     ODA_NOT_INSTALLED_STATUS,
@@ -257,6 +258,10 @@ def _to_summary_out(
     )
     units_status = payload.get("units_status") or inv_dict.get("units_status")
     owner_confirmed_unit = payload.get("owner_confirmed_unit") or inv_dict.get("owner_confirmed_unit")
+    raw_rec = payload.get("page_reconciliation")
+    page_reconciliation = (
+        PageReconciliationOut.model_validate(raw_rec) if isinstance(raw_rec, dict) else None
+    )
     return FileExtractionSummaryOut(
         id=row.id,
         project_id=row.project_id,
@@ -283,6 +288,7 @@ def _to_summary_out(
         vision_summaries=summaries,
         classification=row.classification,
         counts=ExtractionCounts.model_validate(row.counts_json or {}),
+        page_reconciliation=page_reconciliation,
         warnings=list(row.warnings_json or []),
         rendered_page_images=list(row.rendered_images_json or []),
         artifact_relative_path=row.artifact_relative_path,
@@ -709,6 +715,11 @@ def extract_project_file(
             "cad_bim": "exact DXF $INSUNITS / IfcSIUnit preserved; no inferred scales or invented geometric areas",
         },
         "counts": counts_dict,
+        "page_reconciliation": (
+            extracted.page_reconciliation.model_dump()
+            if extracted.page_reconciliation is not None
+            else None
+        ),
         "warnings": extracted.warnings,
         "rendered_page_images": extracted.rendered_page_images,
         "items": items_list,

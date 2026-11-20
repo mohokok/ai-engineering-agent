@@ -71,6 +71,12 @@ interface FilesPanelCopy {
   confirmUnitBtn: string;
   confirmingUnitBtn: string;
   unitsDoubtfulTitle: string;
+  pageReconcileTitle: string;
+  blankPagesLabel: string;
+  failedPagesLabel: string;
+  unreliableNativeLabel: string;
+  lowConfPagesLabel: string;
+  lowConfTag: string;
 }
 
 const FILES_COPY: Record<Lang, FilesPanelCopy> = {
@@ -125,6 +131,12 @@ const FILES_COPY: Record<Lang, FilesPanelCopy> = {
     confirmUnitBtn: "تأكيد الوحدة",
     confirmingUnitBtn: "جاري الحفظ...",
     unitsDoubtfulTitle: "تنبيه: وحدات الرسم مشكوك فيها — يجب تأكيد الوحدة من المالك قبل اعتماد m²",
+    pageReconcileTitle: "مطابقة الصفحات وجودة التعرف الضوئي",
+    blankPagesLabel: "صفحات فارغة (ocr_empty_or_blank)",
+    failedPagesLabel: "صفحات فاشلة (failed)",
+    unreliableNativeLabel: "صفحات بنص أصلي غير موثوق (نُفذ OCR 300 DPI)",
+    lowConfPagesLabel: "صفحات منخفضة الثقة في OCR",
+    lowConfTag: "ثقة منخفضة",
   },
   en: {
     heading: "Project Files & Version History",
@@ -177,6 +189,12 @@ const FILES_COPY: Record<Lang, FilesPanelCopy> = {
     confirmUnitBtn: "Confirm Unit",
     confirmingUnitBtn: "Confirming...",
     unitsDoubtfulTitle: "units doubtful - owner must confirm drawing unit",
+    pageReconcileTitle: "Page Count Reconciliation & OCR Quality",
+    blankPagesLabel: "Blank pages (ocr_empty_or_blank)",
+    failedPagesLabel: "Failed pages (failed)",
+    unreliableNativeLabel: "Unreliable native Arabic/CID pages (routed to OCR)",
+    lowConfPagesLabel: "Low-confidence OCR pages",
+    lowConfTag: "Low confidence",
   },
 };
 
@@ -891,6 +909,73 @@ export function ProjectFilesPanel({
             </div>
           )}
 
+          {activeExtraction.page_reconciliation && (
+            <div
+              className={`status-box ${
+                activeExtraction.page_reconciliation.blank_pages.length > 0 ||
+                activeExtraction.page_reconciliation.failed_pages.length > 0 ||
+                activeExtraction.page_reconciliation.low_confidence_pages.length > 0 ||
+                activeExtraction.page_reconciliation.unreliable_native_pages.length > 0 ||
+                !activeExtraction.page_reconciliation.reconciled
+                  ? "notice-box"
+                  : "status-ok"
+              }`}
+              style={{ marginTop: 0, marginBottom: "0.75rem" }}
+            >
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", alignItems: "center" }}>
+                <strong>{copy.pageReconcileTitle}:</strong>
+                <span dir="ltr">
+                  {activeExtraction.page_reconciliation.page_items_count} /{" "}
+                  {activeExtraction.page_reconciliation.total_pages} pages{" "}
+                  {activeExtraction.page_reconciliation.reconciled ? "(reconciled)" : "(MISMATCH)"}
+                </span>
+              </div>
+              {activeExtraction.page_reconciliation.unreliable_native_pages.length > 0 && (
+                <div style={{ marginTop: "0.3rem" }} dir="auto">
+                  <strong>{copy.unreliableNativeLabel}:</strong>{" "}
+                  <span dir="ltr">
+                    {activeExtraction.page_reconciliation.unreliable_native_pages
+                      .map((p) => `page:${p}`)
+                      .join(", ")}
+                  </span>
+                </div>
+              )}
+              {activeExtraction.page_reconciliation.blank_pages.length > 0 && (
+                <div style={{ marginTop: "0.3rem" }} dir="auto">
+                  <strong>{copy.blankPagesLabel}:</strong>{" "}
+                  <span dir="ltr">
+                    {activeExtraction.page_reconciliation.blank_pages
+                      .map((p) => `page:${p}`)
+                      .join(", ")}
+                  </span>
+                </div>
+              )}
+              {activeExtraction.page_reconciliation.failed_pages.length > 0 && (
+                <div style={{ marginTop: "0.3rem" }} dir="auto">
+                  <strong>{copy.failedPagesLabel}:</strong>{" "}
+                  <span dir="ltr">
+                    {activeExtraction.page_reconciliation.failed_pages
+                      .map((p) => `page:${p}`)
+                      .join(", ")}
+                  </span>
+                </div>
+              )}
+              {activeExtraction.page_reconciliation.low_confidence_pages.length > 0 && (
+                <div style={{ marginTop: "0.3rem" }} dir="auto">
+                  <strong>
+                    {copy.lowConfPagesLabel} (&lt;{" "}
+                    {activeExtraction.page_reconciliation.low_confidence_threshold}%):
+                  </strong>{" "}
+                  <span dir="ltr">
+                    {activeExtraction.page_reconciliation.low_confidence_pages
+                      .map((p) => `page:${p}`)
+                      .join(", ")}
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
+
           <dl className="meta-grid">
             <div>
               <dt>Pages</dt>
@@ -1279,7 +1364,30 @@ export function ProjectFilesPanel({
                       <code>{item.location}</code>
                     </td>
                     <td dir="ltr">{item.item_type}</td>
-                    <td dir="ltr">{item.extraction_method}</td>
+                    <td dir="ltr">
+                      <div>{item.extraction_method}</div>
+                      {item.page_status && (
+                        <span
+                          className={`badge ${
+                            item.page_status === "failed" ||
+                            item.page_status === "ocr_empty_or_blank"
+                              ? "badge-warn"
+                              : ""
+                          }`}
+                        >
+                          {item.page_status}
+                        </span>
+                      )}
+                      {item.native_text_unreliable && (
+                        <span className="badge badge-warn">native_text_unreliable</span>
+                      )}
+                      {item.ocr_confidence_mean != null && (
+                        <div className={item.ocr_low_confidence ? "inline-error" : "meta-muted"}>
+                          OCR conf: {item.ocr_confidence_mean}%
+                          {item.ocr_low_confidence ? ` (${copy.lowConfTag})` : ""}
+                        </div>
+                      )}
+                    </td>
                     <td dir="auto">
                       {item.formula ? (
                         <div dir="ltr">
@@ -1295,8 +1403,18 @@ export function ProjectFilesPanel({
                             .map((r) => r.join(" | "))
                             .join(" / ")}
                         </div>
+                      ) : item.text ? (
+                        item.text
+                      ) : item.page_error ? (
+                        <span dir="ltr" className="inline-error">
+                          {item.page_error}
+                        </span>
+                      ) : item.page_status === "ocr_empty_or_blank" ? (
+                        <span dir="ltr" className="meta-muted">
+                          (ocr_empty_or_blank — no text detected)
+                        </span>
                       ) : (
-                        item.text || "—"
+                        "—"
                       )}
                     </td>
                   </tr>

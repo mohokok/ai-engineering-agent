@@ -378,6 +378,20 @@ export interface ExtractionCapabilitiesOut {
   classification: ProjectClassification | string;
 }
 
+export type PageStatus = "text" | "ocr_text" | "ocr_empty_or_blank" | "failed";
+
+export interface PageReconciliationOut {
+  total_pages: number;
+  page_items_count: number;
+  reconciled: boolean;
+  status_counts: Record<string, number>;
+  blank_pages: number[];
+  failed_pages: number[];
+  unreliable_native_pages: number[];
+  low_confidence_pages: number[];
+  low_confidence_threshold: number;
+}
+
 export interface ExtractedItem {
   item_index: number;
   item_type:
@@ -424,6 +438,13 @@ export interface ExtractedItem {
   properties?: Record<string, unknown> | null;
   quantities?: Record<string, unknown> | null;
   extraction_method: "native" | "ocr" | "converted_oda" | "hybrid" | "ai_vision";
+  page_status?: PageStatus | null;
+  native_text_unreliable?: boolean;
+  native_unreliable_reason?: string | null;
+  raw_native_text?: string | null;
+  ocr_confidence_mean?: number | null;
+  ocr_low_confidence?: boolean;
+  page_error?: string | null;
 }
 
 export interface ExtractionCounts {
@@ -504,6 +525,7 @@ export interface FileExtractionSummaryOut {
   vision_summaries?: DrawingVisionSummaryOut[];
   classification: ProjectClassification | string;
   counts: ExtractionCounts;
+  page_reconciliation?: PageReconciliationOut | null;
   warnings: string[];
   rendered_page_images: string[];
   artifact_relative_path: string | null;

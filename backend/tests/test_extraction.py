@@ -22,10 +22,12 @@ from app.db.models import AuditLog, FileExtraction
 from app.main import create_app
 from app.services.extraction import extract_project_file
 from app.services.extractors.ocr import (
+    OCR_LOW_CONFIDENCE_THRESHOLD,
     TESSERACT_NOT_INSTALLED_STATUS,
     _resolve_tesseract_executable,
     detect_tesseract,
 )
+from app.services.extractors.pdf_and_image import assess_native_pdf_text_reliability
 
 
 def _test_settings(tmp_path: Path, *, tesseract_cmd: str = "") -> Settings:
@@ -617,13 +619,43 @@ def test_optin_real_tesseract_ara_eng_on_committed_fixture(tmp_path: Path) -> No
         assert d_pdf["ocr_status"] == "ocr_applied"
         assert d_pdf["ocr_dpi"] == 300
         assert d_pdf["original_unchanged"] is True
-        pdf_ocr = next(i["text"] for i in d_pdf["items"] if i["item_type"] == "ocr_text")
+        pdf_ocr_item = next(i for i in d_pdf["items"] if i["item_type"] == "ocr_text")
+        pdf_ocr = pdf_ocr_item["text"]
         assert "Beam Span = 6.00 m" in pdf_ocr
         assert "18.50 kN/m" in pdf_ocr
         assert "مستشفى" in pdf_ocr and "طرابلس" in pdf_ocr
+        assert pdf_ocr_item["page_status"] == "ocr_text"
+        assert pdf_ocr_item["ocr_confidence_mean"] is not None
+        assert pdf_ocr_item["ocr_confidence_mean"] >= OCR_LOW_CONFIDENCE_THRESHOLD
+        assert pdf_ocr_item["ocr_low_confidence"] is False
+
+        # Live Arabic PDF with visual Presentation Forms / CIDs in pdfplumber -> auto 300 DPI OCR recovery
+        ar_doc = pymupdf.open()
+        ar_page = ar_doc.new_page(width=595, height=300)
+        ar_page.insert_htmlbox(
+            pymupdf.Rect(40, 40, 555, 220),
+            "<p dir='rtl' style='font-size:18pt'>في من على إلى مشروع مستشفى طرابلس التعليمي</p>",
+        )
+        ar_pdf_bytes = ar_doc.tobytes()
+        ar_doc.close()
+
+        f_ar_pdf = _upload_file(client, project_id, "arabic_cid_visual.pdf", ar_pdf_bytes, "application/pdf")
+        d_ar = client.post(f"/api/files/{f_ar_pdf['id']}/extract").json()
+        assert d_ar["status"] == "extracted"
+        assert d_ar["ocr_status"] == "ocr_applied (native text unreliable)"
+        assert d_ar["ocr_dpi"] == 300
+        assert d_ar["page_reconciliation"]["reconciled"] is True
+        assert d_ar["page_reconciliation"]["unreliable_native_pages"] == [1]
+        ar_item = d_ar["items"][0]
+        assert ar_item["native_text_unreliable"] is True
+        assert ar_item["page_status"] == "ocr_text"
+        assert "في" in (ar_item["text"] or "")
+        assert "مستشفى" in (ar_item["text"] or "")
+
         print(f"\nREAL OCR VERSION: {caps['ocr']['version']} | LANGS: {caps['ocr']['languages']}")
         print(f"PNG OCR TEXT: {png_ocr!r}")
-        print(f"PDF OCR TEXT (DPI={d_pdf['ocr_dpi']}): {pdf_ocr!r}")
+        print(f"PDF OCR TEXT (DPI={d_pdf['ocr_dpi']}, mean_conf={pdf_ocr_item['ocr_confidence_mean']}): {pdf_ocr!r}")
+        print(f"ARABIC UNRELIABLE NATIVE RECOVERED (status={d_ar['ocr_status']}, mean_conf={ar_item['ocr_confidence_mean']}): {ar_item['text']!r}")
 
 
 def test_extract_csv_multiline_quoted_arabic_and_offset_traceability(tmp_path: Path) -> None:
@@ -853,3 +885,216 @@ def test_pptx_grouped_shapes_and_multiframe_tiff_warning(tmp_path: Path) -> None
 
         r_tiff = client.post(f"/api/files/{f_tiff['id']}/extract").json()
         assert any("Multi-frame TIFF/image detected (2 frames)" in w for w in r_tiff["warnings"])
+
+
+def test_arabic_native_pdf_cid_or_reversed_text_triggers_300dpi_ocr_and_never_not_needed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Native PDFs containing (cid:N) tokens or reversed Arabic words trigger 300 DPI OCR and never report not_needed."""
+    # Direct unit verification of sanity checker (clean vs CID vs reversed visual Arabic)
+    bad_cid, reason_cid = assess_native_pdf_text_reliability("Beam (cid:45) Load = 18.50 kN")
+    assert bad_cid is True and "cid_placeholders=1" in (reason_cid or "")
+
+    bad_rev, reason_rev = assess_native_pdf_text_reliability("يف نم ىلع ىلإ عورشملا")
+    assert bad_rev is True and "reversed_arabic_words=4" in (reason_rev or "")
+
+    good_ar, reason_good = assess_native_pdf_text_reliability(
+        "في المشروع من الطابق الأول على المنسوب إلى السقف الخرساني"
+    )
+    assert good_ar is False and reason_good is None
+
+    # Synthetic 2-page PDF: Page 1 has reversed Presentation Forms + (cid:N) from htmlbox; Page 2 has literal (cid:101)
+    doc = pymupdf.open()
+    p1 = doc.new_page(width=595, height=300)
+    p1.insert_htmlbox(
+        pymupdf.Rect(40, 40, 555, 220),
+        "<p dir='rtl' style='font-size:16pt'>في من على إلى مشروع مستشفى</p>",
+    )
+    p2 = doc.new_page(width=595, height=300)
+    p2.insert_text((50, 80), "Structural Spec (cid:101)(cid:102) Clear Span = 6.00 m", fontsize=12)
+    unreliable_pdf = doc.tobytes()
+    doc.close()
+
+    # Clean normal English/numbers native PDF should remain OCR: not_needed
+    clean_doc = pymupdf.open()
+    cp = clean_doc.new_page()
+    cp.insert_text((50, 80), "Valid native specification note: Beam B1 span = 6.00 m.", fontsize=12)
+    clean_pdf = clean_doc.tobytes()
+    clean_doc.close()
+
+    # 1. With Tesseract unavailable -> must report partial_ocr_unavailable (NEVER not_needed) and keep raw native flagged
+    with monkeypatch.context() as m:
+        m.setattr("app.services.extractors.ocr._DEFAULT_WINDOWS_TESSERACT_PATHS", ())
+        m.setattr("app.services.extractors.ocr.shutil.which", lambda *_a, **_kw: None)
+
+        settings = _test_settings(tmp_path)
+        app = create_app(settings)
+        with TestClient(app) as client:
+            project_id, _ = _create_project(client)
+            f_bad = _upload_file(client, project_id, "arabic_reversed_cid.pdf", unreliable_pdf, "application/pdf")
+            f_good = _upload_file(client, project_id, "clean_native.pdf", clean_pdf, "application/pdf")
+
+            res_no_ocr = client.post(f"/api/files/{f_bad['id']}/extract")
+            assert res_no_ocr.status_code == 201, res_no_ocr.text
+            d_no = res_no_ocr.json()
+            assert d_no["status"] == "partial_ocr_unavailable"
+            assert d_no["ocr_status"] == "partial_ocr_unavailable"
+            assert d_no["ocr_status"] != "not_needed"
+            assert d_no["page_reconciliation"]["total_pages"] == 2
+            assert d_no["page_reconciliation"]["page_items_count"] == 2
+            assert d_no["page_reconciliation"]["reconciled"] is True
+            assert d_no["page_reconciliation"]["failed_pages"] == [1, 2]
+            assert d_no["page_reconciliation"]["unreliable_native_pages"] == [1, 2]
+            for it in d_no["items"]:
+                assert it["page_status"] == "failed"
+                assert it["native_text_unreliable"] is True
+                assert it["text"] is None
+                assert it["raw_native_text"]
+
+            # Clean PDF still gets native status & not_needed
+            d_good = client.post(f"/api/files/{f_good['id']}/extract").json()
+            assert d_good["ocr_status"] == "not_needed"
+            assert d_good["items"][0]["page_status"] == "text"
+            assert d_good["items"][0]["native_text_unreliable"] is False
+
+    # 2. With OCR available -> 300 DPI OCR replaces text, flags native_text_unreliable, reports "ocr_applied (native text unreliable)"
+    ocr_calls: list[tuple[str, tuple[int, int]]] = []
+
+    def fake_ocr(img_bytes: bytes, lang: str) -> dict[str, object]:
+        with Image.open(BytesIO(img_bytes)) as im:
+            ocr_calls.append((lang, im.size))
+        return {
+            "text": "تفاصيل المخطط في المشروع من المالك على المنسوب 3.20 م",
+            "confidence_mean": 91.5,
+        }
+
+    with app.state.session_factory() as db:
+        d_ocr = extract_project_file(db, settings, f_bad["id"], ocr_runner=fake_ocr)
+        assert d_ocr.status == "extracted"
+        assert d_ocr.ocr_status == "ocr_applied (native text unreliable)"
+        assert d_ocr.ocr_dpi == 300
+        assert len(ocr_calls) == 2
+        assert all(lang == "ara+eng" for lang, _sz in ocr_calls)
+        assert d_ocr.page_reconciliation is not None
+        assert d_ocr.page_reconciliation.reconciled is True
+        assert d_ocr.page_reconciliation.unreliable_native_pages == [1, 2]
+        assert d_ocr.page_reconciliation.status_counts == {
+            "text": 0,
+            "ocr_text": 2,
+            "ocr_empty_or_blank": 0,
+            "failed": 0,
+        }
+        for it in d_ocr.items:
+            assert it.page_status == "ocr_text"
+            assert it.native_text_unreliable is True
+            assert it.raw_native_text
+            assert "تفاصيل المخطط في المشروع" in (it.text or "")
+            assert it.ocr_confidence_mean == 91.5
+            assert it.ocr_low_confidence is False
+
+
+def test_twelve_page_scanned_pdf_reconciles_all_pages_including_blank_and_failed(tmp_path: Path) -> None:
+    """12-page scanned PDF must emit 12 page items with text/ocr_text/ocr_empty_or_blank/failed statuses cleanly."""
+    scanned_12p = _build_scanned_only_pdf_bytes(pages=12)
+    settings = _test_settings(tmp_path)
+    app = create_app(settings)
+    with TestClient(app) as client:
+        project_id, _ = _create_project(client)
+        f_scan12 = _upload_file(client, project_id, "twelve_page_scan.pdf", scanned_12p, "application/pdf")
+
+    call_idx = {"n": 0}
+
+    def mixed_12p_ocr(_img_bytes: bytes, _lang: str) -> object:
+        call_idx["n"] += 1
+        p = call_idx["n"]
+        if p == 11:
+            return {"text": "   ", "confidence_mean": None}
+        if p == 12:
+            raise RuntimeError("Simulated page 12 OCR timeout")
+        return {"text": f"Scanned sheet {p} verified width = 4.50 m", "confidence_mean": 88.0}
+
+    with app.state.session_factory() as db:
+        out = extract_project_file(db, settings, f_scan12["id"], ocr_runner=mixed_12p_ocr)
+
+    assert out.counts.pages == 12
+    assert out.counts.ocr_items == 10
+    assert out.counts.total_items == 12
+    assert out.page_reconciliation is not None
+    assert out.page_reconciliation.total_pages == 12
+    assert out.page_reconciliation.page_items_count == 12
+    assert out.page_reconciliation.reconciled is True
+    assert out.page_reconciliation.status_counts == {
+        "text": 0,
+        "ocr_text": 10,
+        "ocr_empty_or_blank": 1,
+        "failed": 1,
+    }
+    assert out.page_reconciliation.blank_pages == [11]
+    assert out.page_reconciliation.failed_pages == [12]
+
+    by_page = {it.page_or_sheet: it for it in out.items}
+    assert len(by_page) == 12
+    assert by_page["page:11"].page_status == "ocr_empty_or_blank"
+    assert by_page["page:11"].text is None
+    assert by_page["page:12"].page_status == "failed"
+    assert "timeout" in (by_page["page:12"].page_error or "").lower()
+
+
+def test_ocr_per_page_tesseract_mean_confidence_and_low_confidence_flag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Per-page Tesseract image_to_data word confidences compute mean confidence and flag < 65% pages."""
+    monkeypatch.setattr(
+        "app.services.extractors.ocr._resolve_tesseract_executable",
+        lambda _cmd="": "mock-tesseract",
+    )
+
+    def ok_probe(args: list[str], **_kw: object) -> SimpleNamespace:
+        return SimpleNamespace(
+            stdout="tesseract 5.5.3\n" if "--version" in args else "ara\neng\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr("app.services.extractors.ocr.subprocess.run", ok_probe)
+
+    page_counter = {"n": 0}
+
+    def fake_to_string(_img: Image.Image, lang: str = "ara+eng") -> str:
+        page_counter["n"] += 1
+        return f"Page {page_counter['n']} extracted spec text"
+
+    def fake_to_data(_img: Image.Image, lang: str = "ara+eng", output_type: object = None) -> dict[str, object]:
+        # Call happens immediately after image_to_string for current page_counter['n']
+        if page_counter["n"] == 1:
+            return {
+                "text": ["", "Page", "1", "ok"],
+                "conf": ["-1", 92, 90, 94],
+            }
+        return {
+            "text": ["", "Blurry", "text", ""],
+            "conf": ["-1", 32, 48, -1],
+        }
+
+    monkeypatch.setattr("app.services.extractors.ocr.pytesseract.image_to_string", fake_to_string)
+    monkeypatch.setattr("app.services.extractors.ocr.pytesseract.image_to_data", fake_to_data)
+
+    settings = _test_settings(tmp_path)
+    app = create_app(settings)
+    scanned_2p = _build_scanned_only_pdf_bytes(pages=2)
+    with TestClient(app) as client:
+        project_id, _ = _create_project(client)
+        f_conf = _upload_file(client, project_id, "confidence_test.pdf", scanned_2p, "application/pdf")
+        res = client.post(f"/api/files/{f_conf['id']}/extract")
+        assert res.status_code == 201, res.text
+        data = res.json()
+
+    assert data["page_reconciliation"]["low_confidence_pages"] == [2]
+    it1, it2 = data["items"]
+    assert it1["ocr_confidence_mean"] == 92.0
+    assert it1["ocr_low_confidence"] is False
+    assert it2["ocr_confidence_mean"] == 40.0
+    assert it2["ocr_low_confidence"] is True
+    assert any("Low OCR confidence on page:2" in w for w in data["warnings"])
+

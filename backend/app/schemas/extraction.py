@@ -9,6 +9,7 @@ from app.providers.base import TaskComplexity
 from app.schemas.projects import ProjectClassification
 
 ExtractionStatus = Literal["extracted", "partial_ocr_unavailable", "failed"]
+PageStatus = Literal["text", "ocr_text", "ocr_empty_or_blank", "failed"]
 ExtractedItemType = Literal[
     "text",
     "table",
@@ -108,6 +109,27 @@ class ExtractedItem(BaseModel):
     properties: dict[str, Any] | None = None
     quantities: dict[str, Any] | None = None
     extraction_method: ExtractionMethod = "native"
+    page_status: PageStatus | None = None
+    native_text_unreliable: bool = False
+    native_unreliable_reason: str | None = None
+    raw_native_text: str | None = None
+    ocr_confidence_mean: float | None = None
+    ocr_low_confidence: bool = False
+    page_error: str | None = None
+
+
+class PageReconciliationOut(BaseModel):
+    """Per-page status summary reconciling PDF page count against extracted page-level items."""
+
+    total_pages: int = 0
+    page_items_count: int = 0
+    reconciled: bool = True
+    status_counts: dict[str, int] = Field(default_factory=dict)
+    blank_pages: list[int] = Field(default_factory=list)
+    failed_pages: list[int] = Field(default_factory=list)
+    unreliable_native_pages: list[int] = Field(default_factory=list)
+    low_confidence_pages: list[int] = Field(default_factory=list)
+    low_confidence_threshold: float = 65.0
 
 
 class ExtractionCounts(BaseModel):
@@ -178,6 +200,7 @@ class FileExtractionSummaryOut(BaseModel):
     vision_summaries: list[dict[str, Any]] = Field(default_factory=list)
     classification: ProjectClassification | str
     counts: ExtractionCounts
+    page_reconciliation: PageReconciliationOut | None = None
     warnings: list[str] = Field(default_factory=list)
     rendered_page_images: list[str] = Field(default_factory=list)
     artifact_relative_path: str | None = None

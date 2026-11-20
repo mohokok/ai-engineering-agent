@@ -807,6 +807,139 @@ describe("Step 06 ProjectFilesPanel Extraction UI & API client", () => {
     expect(fetchMock).toHaveBeenNthCalledWith(4, "/api/extractions/ext-1", undefined);
     expect(getExtractionPageImageUrl("ext-1", 2)).toBe("/api/extractions/ext-1/pages/2");
   });
+
+  it("renders blank/failed page reconciliation, unreliable native OCR status, and low-confidence badges", () => {
+    const extraction: FileExtractionDetailOut = {
+      id: "ext-recon-1",
+      project_id: "proj-6",
+      file_id: "f-pdf-12",
+      source_file: "arabic_scan_12p.pdf",
+      folder_name: "01_Input_Documents",
+      extension: ".pdf",
+      version_number: 1,
+      extraction_version: 1,
+      source_sha256: "b".repeat(64),
+      sha256_before: "b".repeat(64),
+      sha256_after: "b".repeat(64),
+      original_unchanged: true,
+      status: "extracted",
+      ocr_status: "ocr_applied (native text unreliable)",
+      ocr_dpi: 300,
+      classification: "Preliminary",
+      counts: {
+        pages: 12,
+        sheets: 0,
+        slides: 0,
+        tables: 0,
+        formulas: 0,
+        text_items: 0,
+        ocr_items: 10,
+        rendered_page_images: 12,
+        total_items: 12,
+      },
+      page_reconciliation: {
+        total_pages: 12,
+        page_items_count: 12,
+        reconciled: true,
+        status_counts: { text: 0, ocr_text: 10, ocr_empty_or_blank: 1, failed: 1 },
+        blank_pages: [11],
+        failed_pages: [12],
+        unreliable_native_pages: [1],
+        low_confidence_pages: [3],
+        low_confidence_threshold: 65,
+      },
+      warnings: ["Low OCR confidence on page:3: mean=41.5% (< 65%)."],
+      rendered_page_images: [],
+      artifact_relative_path: "03_Analysis/extractions/f-pdf-12/v1/r1/extraction.json",
+      error_message: null,
+      created_at: "2026-11-20T21:00:00Z",
+      ocr: {
+        installed: true,
+        status: "installed",
+        version: "tesseract 5.5.3",
+        languages: ["ara", "eng"],
+        ara_installed: true,
+        eng_installed: true,
+        install_url: "https://github.com/UB-Mannheim/tesseract/wiki",
+        message: "ready",
+      },
+      items: [
+        {
+          item_index: 1,
+          item_type: "ocr_text",
+          source_file: "arabic_scan_12p.pdf",
+          file_id: "f-pdf-12",
+          version_number: 1,
+          page_or_sheet: "page:3",
+          location: "ocr_full_page",
+          text: "نص ممسوح منخفض الدقة",
+          raw_values: null,
+          formula: null,
+          cached_value: null,
+          unit_or_format: null,
+          ocr_dpi: 300,
+          ocr_confidence_mean: 41.5,
+          ocr_low_confidence: true,
+          native_text_unreliable: true,
+          page_status: "ocr_text",
+          extraction_method: "ocr",
+        },
+        {
+          item_index: 2,
+          item_type: "ocr_text",
+          source_file: "arabic_scan_12p.pdf",
+          file_id: "f-pdf-12",
+          version_number: 1,
+          page_or_sheet: "page:11",
+          location: "ocr_full_page",
+          text: null,
+          raw_values: null,
+          formula: null,
+          cached_value: null,
+          unit_or_format: null,
+          page_status: "ocr_empty_or_blank",
+          extraction_method: "ocr",
+        },
+        {
+          item_index: 3,
+          item_type: "ocr_text",
+          source_file: "arabic_scan_12p.pdf",
+          file_id: "f-pdf-12",
+          version_number: 1,
+          page_or_sheet: "page:12",
+          location: "ocr_full_page",
+          text: null,
+          raw_values: null,
+          formula: null,
+          cached_value: null,
+          unit_or_format: null,
+          page_status: "failed",
+          page_error: "Simulated timeout on page 12",
+          extraction_method: "ocr",
+        },
+      ],
+    };
+
+    const html = renderToStaticMarkup(
+      <ProjectFilesPanel
+        lang="en"
+        projectId="proj-6"
+        initialFiles={[]}
+        initialExtraction={extraction}
+      />
+    );
+
+    expect(html).toContain("ocr_applied (native text unreliable)");
+    expect(html).toContain("12 / 12 pages");
+    expect(html).toContain("page:11");
+    expect(html).toContain("page:12");
+    expect(html).toContain("page:3");
+    expect(html).toContain("41.5%");
+    expect(html).toContain("Low confidence");
+    expect(html).toContain("native_text_unreliable");
+    expect(html).toContain("ocr_empty_or_blank");
+    expect(html).toContain("Simulated timeout on page 12");
+  });
 });
 
 describe("Step 07 CAD/BIM inventory, ODA status, and Vision Summary disclaimer UI", () => {
