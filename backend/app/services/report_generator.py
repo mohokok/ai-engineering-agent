@@ -157,6 +157,61 @@ def _facts_scope_banner(data: ReviewReportRenderData) -> str | None:
     return f"Showing {shown} of {total} verified facts (complete)."
 
 
+def _collect_cited_sources(data: ReviewReportRenderData) -> list[SourceLocationRef]:
+    """Return only sources actually cited across findings, facts, calculations, OCR, assumptions, or recommendations."""
+    cited_ids: set[str] = set()
+    cited_map: dict[str, SourceLocationRef] = {}
+
+    def _scan_links(links: Iterable[SourceLocationRef] | None) -> None:
+        if not links:
+            return
+        for ref in links:
+            if ref.ref_id not in cited_ids:
+                cited_ids.add(ref.ref_id)
+                cited_map[ref.ref_id] = ref
+
+    for finding in data.findings:
+        _scan_links(finding.source_links)
+    for stmt in data.verified_facts:
+        _scan_links(stmt.source_links)
+    for stmt in data.appendix_verified_facts:
+        _scan_links(stmt.source_links)
+    for stmt in data.calculated_items:
+        _scan_links(stmt.source_links)
+    for ocr_item in data.ocr_text_items:
+        _scan_links(ocr_item.source_links)
+    for stmt in data.assumptions:
+        _scan_links(stmt.source_links)
+    for stmt in data.recommendations:
+        _scan_links(stmt.source_links)
+
+    ordered = [ref for ref in data.source_registry if ref.ref_id in cited_ids]
+    seen_ids = {ref.ref_id for ref in ordered}
+    for ref_id, ref in cited_map.items():
+        if ref_id not in seen_ids:
+            ordered.append(ref)
+    return ordered
+
+
+def _sources_scope_banner(
+    data: ReviewReportRenderData,
+    *,
+    cited_count: int,
+    total_count: int,
+) -> str | None:
+    if cited_count == 0 and total_count == 0:
+        return None
+    if data.language == "ar":
+        return (
+            f"عرض المصادر المستشهد بها فقط: {cited_count} من أصل {total_count} مستخرج "
+            f"({cited_count} cited of {total_count} extracted) — السجل الكامل ({total_count}) محفوظ في ملف JSON المرفق في 08_Reports."
+        )
+    return (
+        f"{cited_count} cited of {total_count} extracted — complete {total_count}-source provenance registry "
+        "is preserved in the companion 08_Reports JSON file."
+    )
+
+
 def _format_source_links_text(links: Iterable[SourceLocationRef]) -> str:
     parts: list[str] = []
     for ref in links:
@@ -452,14 +507,23 @@ def generate_review_report_docx(out_path: Path, data: ReviewReportRenderData) ->
             p_app = doc.add_paragraph(f"{idx_a}. {item.text}{suffix}")
             _style_paragraph(p_app, is_ar=is_ar, font_size=8.5)
 
-    # 6. Source Register & Gaps
+    # 6. Source Register & Gaps (list ONLY cited sources in DOCX/PDF; full M-entry registry remains in JSON)
+    cited_sources = _collect_cited_sources(data)
+    src_banner = _sources_scope_banner(
+        data,
+        cited_count=len(cited_sources),
+        total_count=len(data.source_registry),
+    )
     p_src_h = doc.add_heading(lbl["sources_heading"], level=2)
     _style_paragraph(p_src_h, is_ar=is_ar, bold=True, font_size=11, color=RGBColor(0x1E, 0x3A, 0x5F))
-    if not data.source_registry:
+    if src_banner:
+        p_src_note = doc.add_paragraph(src_banner)
+        _style_paragraph(p_src_note, is_ar=is_ar, bold=True, font_size=8.5, color=RGBColor(0x33, 0x41, 0x55))
+    if not cited_sources:
         p_empty = doc.add_paragraph(lbl["empty_section"])
         _style_paragraph(p_empty, is_ar=is_ar, font_size=9)
     else:
-        for ref in data.source_registry:
+        for ref in cited_sources:
             url_part = f" | URL: {ref.url}" if ref.url else ""
             p_ref = doc.add_paragraph(
                 f"[{ref.ref_id}] {ref.source_name} ({ref.page_or_sheet} / {ref.location}){url_part}"
@@ -654,15 +718,22 @@ def generate_review_report_pdf(out_path: Path, data: ReviewReportRenderData) -> 
     else:
         appendix_html = ""
 
-    if data.source_registry:
+    cited_sources = _collect_cited_sources(data)
+    src_banner = _sources_scope_banner(
+        data,
+        cited_count=len(cited_sources),
+        total_count=len(data.source_registry),
+    )
+    src_banner_html = f"<p class='scope-note'>{_esc(src_banner)}</p>" if src_banner else ""
+    if cited_sources:
         src_items = "".join(
             f"<li><strong>{_esc_ltr('[' + ref.ref_id + ']')}</strong> {_esc(ref.source_name)} — {_esc(ref.page_or_sheet)} / {_esc(ref.location)}"
             f"{' | ' + _esc_ltr(ref.url) if ref.url else ''}</li>"
-            for ref in data.source_registry
+            for ref in cited_sources
         )
-        sources_html = f"<ul>{src_items}</ul>"
+        sources_html = f"{src_banner_html}<ul>{src_items}</ul>"
     else:
-        sources_html = f"<p class='muted'>{_esc(lbl['empty_section'])}</p>"
+        sources_html = f"{src_banner_html}<p class='muted'>{_esc(lbl['empty_section'])}</p>"
 
     if data.gaps_or_unextracted:
         gaps_html = f"<ul>{''.join(f'<li>{_esc(g)}</li>' for g in data.gaps_or_unextracted)}</ul>"

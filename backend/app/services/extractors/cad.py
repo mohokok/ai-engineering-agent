@@ -52,6 +52,83 @@ _DISPLAY_UNIT_LABELS: dict[str, tuple[str, str]] = {
     "unitless": ("unitless sq", "unitless"),
 }
 
+
+def clean_cad_unit_label(val: Any, *, is_ar: bool = False) -> str:
+    """Normalize a CAD/BIM unit label, never returning literal 'None' or 'null'."""
+    if val is None:
+        return "غير محدد" if is_ar else "unspecified unit"
+    text = str(val).strip()
+    if text.lower() in {"", "none", "null", "unknown", "n/a"}:
+        return "غير محدد" if is_ar else "unspecified unit"
+    return text
+
+
+def resolve_cad_unit_context(
+    payload: dict[str, Any],
+    cad_summary: dict[str, Any],
+    *,
+    is_ar: bool = False,
+) -> dict[str, Any]:
+    """Resolve active unit basis respecting owner confirmation and header $INSUNITS plausibility."""
+    insunits_raw = cad_summary.get("insunits_code")
+    insunits_code = int(insunits_raw) if isinstance(insunits_raw, (int, float)) else None
+    raw_declared = clean_cad_unit_label(
+        cad_summary.get("declared_unit") or cad_summary.get("units"),
+        is_ar=is_ar,
+    )
+    confirmed_raw = payload.get("owner_confirmed_unit") or cad_summary.get("owner_confirmed_unit")
+    confirmed_clean = (
+        None
+        if confirmed_raw is None or str(confirmed_raw).strip().lower() in {"", "none", "null", "unknown"}
+        else str(confirmed_raw).strip()
+    )
+
+    if confirmed_clean == "unitless":
+        is_doubtful = True
+        active_unit = "unitless"
+    elif confirmed_clean is not None:
+        is_doubtful = False
+        active_unit = clean_cad_unit_label(confirmed_clean, is_ar=is_ar)
+    else:
+        raw_doubtful = (
+            payload.get("units_doubtful")
+            if "units_doubtful" in payload
+            else cad_summary.get("units_doubtful")
+        )
+        inferred_unitless = (
+            insunits_code == 0
+            or raw_declared in {"unitless", "unspecified unit", "غير محدد"}
+            or (raw_declared.startswith("insunits_") and raw_declared not in CAD_UNIT_SCALE_MAP)
+        )
+        is_doubtful = bool(raw_doubtful) if raw_doubtful is not None else True
+        if inferred_unitless:
+            is_doubtful = True
+        active_unit = (
+            raw_declared
+            if raw_declared not in {"unspecified unit", "غير محدد"}
+            else clean_cad_unit_label(payload.get("cad_units"), is_ar=is_ar)
+        )
+
+    scale_to_m = CAD_UNIT_SCALE_MAP.get(active_unit, (None, ""))[0] if not is_doubtful else None
+    if confirmed_clean and confirmed_clean != "unitless":
+        basis_display = (
+            f"{active_unit} (owner-confirmed; raw header $INSUNITS={insunits_code if insunits_code is not None else 'N/A'} {raw_declared})"
+        )
+    elif insunits_code is not None:
+        basis_display = f"{active_unit} ($INSUNITS={insunits_code})"
+    else:
+        basis_display = active_unit
+
+    return {
+        "active_unit": active_unit,
+        "raw_declared": raw_declared,
+        "insunits_code": insunits_code,
+        "confirmed": confirmed_clean,
+        "is_doubtful": is_doubtful,
+        "scale_to_m": scale_to_m,
+        "basis_display": basis_display,
+    }
+
 UNITS_DOUBTFUL_WARNING = "units doubtful - owner must confirm drawing unit"
 
 _THREE_D_ENTITY_TYPES = frozenset({"3DSOLID", "MESH", "SURFACE", "BODY", "3DFACE"})
@@ -238,6 +315,53 @@ def compute_layer_area_groups(
                 "area_native_sum": native_sum,
                 "area_m2_sum": m2_sum,
                 "label": "geometric sum, not net building area",
+            }
+        )
+    return groups
+
+
+def compute_layer_length_groups(
+    linear_entries: list[dict[str, Any]],
+    *,
+    scale_to_m: float | None,
+    units_doubtful: bool,
+) -> list[dict[str, Any]]:
+    """Aggregate ModelSpace linear lengths (LINE, ARC, open LWPOLYLINE/POLYLINE) per (layer, entity_type)."""
+    buckets: dict[tuple[str, str], dict[str, Any]] = {}
+    for entry in linear_entries:
+        if not isinstance(entry, dict):
+            continue
+        lname = str(entry.get("layer") or "0")
+        etype = str(entry.get("entity_type") or entry.get("type") or "LINE")
+        length_val = float(entry.get("length_native") or entry.get("length_native_sum") or 0.0)
+        count_val = int(entry.get("count") or 1)
+        if length_val <= 0:
+            continue
+        bucket = buckets.setdefault(
+            (lname, etype),
+            {"layer": lname, "entity_type": etype, "count": 0, "length_native_sum": 0.0},
+        )
+        bucket["count"] += count_val
+        bucket["length_native_sum"] += length_val
+
+    groups: list[dict[str, Any]] = []
+    for (lname, etype), bucket in sorted(buckets.items()):
+        native_sum = round(float(bucket["length_native_sum"]), 4)
+        norm = lname.strip().lower()
+        is_anno = any(tok in norm for tok in _NON_AREA_LAYER_KEYWORDS)
+        length_m_sum = (
+            round(native_sum * float(scale_to_m), 4)
+            if (not units_doubtful and scale_to_m is not None)
+            else None
+        )
+        groups.append(
+            {
+                "layer": lname,
+                "entity_type": etype,
+                "count": int(bucket["count"]),
+                "length_native_sum": native_sum,
+                "length_m_sum": length_m_sum,
+                "is_non_structural_layer": is_anno,
             }
         )
     return groups
@@ -653,6 +777,12 @@ def apply_confirmed_cad_unit(
         layers_copy,
         units_doubtful=is_unitless,
     )
+    if inv.get("layer_length_groups"):
+        inv["layer_length_groups"] = compute_layer_length_groups(
+            list(inv.get("layer_length_groups") or []),
+            scale_to_m=scale_to_m,
+            units_doubtful=is_unitless,
+        )
     if new_dimensions:
         inv["dimensions"] = new_dimensions
     inv["units_doubtful"] = is_unitless
@@ -1078,9 +1208,11 @@ def extract_dxf(
             f"External XREF block(s) detected ({', '.join(xref_names)}); external referenced DWGs are NOT loaded or resolved."
         )
 
-    # 3. Entities across ModelSpace and PaperSpace (TEXT, MTEXT, ATTRIB, DIMENSION, LWPOLYLINE, POLYLINE, CIRCLE, HATCH)
+    # 3. Entities across ModelSpace and PaperSpace (TEXT, MTEXT, ATTRIB, DIMENSION, LINE, ARC, LWPOLYLINE, POLYLINE, CIRCLE, HATCH)
     area_inventory: list[dict[str, Any]] = []
     pending_areas: list[dict[str, Any]] = []
+    pending_lengths: list[dict[str, Any]] = []
+    layer_block_counts_map: dict[tuple[str, str], int] = {}
     text_samples: list[dict[str, Any]] = []
     dimension_inventory: list[dict[str, Any]] = []
     dim_measurements: list[float] = []
@@ -1192,6 +1324,10 @@ def extract_dxf(
                 b_name, b_raw_orig, _ = _decode_cad_text(
                     raw_ins_blk, header_codepage=header_codepage
                 )
+                if cad_space == "modelspace" and b_name and not b_name.startswith("*"):
+                    layer_block_counts_map[(ent_layer, b_name)] = (
+                        layer_block_counts_map.get((ent_layer, b_name), 0) + 1
+                    )
                 for attrib in getattr(ent, "attribs", ()):
                     att_tag_raw = str(getattr(attrib.dxf, "tag", "") or "")
                     att_tag, _, _ = _decode_cad_text(att_tag_raw, header_codepage=header_codepage)
@@ -1346,6 +1482,14 @@ def extract_dxf(
                         }
                     )
                 else:
+                    if cad_space == "modelspace" and perim > 0:
+                        pending_lengths.append(
+                            {
+                                "layer": ent_layer,
+                                "entity_type": "LWPOLYLINE_OPEN",
+                                "length_native": perim,
+                            }
+                        )
                     idx += 1
                     payload.items.append(
                         ExtractedItem(
@@ -1366,6 +1510,46 @@ def extract_dxf(
                             extraction_method=extraction_method,
                         )
                     )
+
+            elif dxftype == "LINE":
+                try:
+                    start = ent.dxf.start
+                    end = ent.dxf.end
+                    line_len = math.sqrt(
+                        (float(end.x) - float(start.x)) ** 2
+                        + (float(end.y) - float(start.y)) ** 2
+                        + (float(end.z) - float(start.z)) ** 2
+                    )
+                    if cad_space == "modelspace" and math.isfinite(line_len) and line_len > 0:
+                        pending_lengths.append(
+                            {
+                                "layer": ent_layer,
+                                "entity_type": "LINE",
+                                "length_native": round(line_len, 6),
+                            }
+                        )
+                except Exception:
+                    pass
+
+            elif dxftype == "ARC":
+                try:
+                    arc_r = abs(float(getattr(ent.dxf, "radius", 0.0) or 0.0))
+                    a1 = float(getattr(ent.dxf, "start_angle", 0.0) or 0.0)
+                    a2 = float(getattr(ent.dxf, "end_angle", 0.0) or 0.0)
+                    sweep_deg = (a2 - a1) % 360.0
+                    if sweep_deg <= 0 and abs(a2 - a1) > 1e-9:
+                        sweep_deg = 360.0
+                    arc_len = arc_r * math.radians(sweep_deg)
+                    if cad_space == "modelspace" and math.isfinite(arc_len) and arc_len > 0:
+                        pending_lengths.append(
+                            {
+                                "layer": ent_layer,
+                                "entity_type": "ARC",
+                                "length_native": round(arc_len, 6),
+                            }
+                        )
+                except Exception:
+                    pass
 
             elif dxftype == "POLYLINE":
                 payload.counts.polylines += 1
@@ -1406,6 +1590,14 @@ def extract_dxf(
                                     "vertex_count": len(pts_xyb),
                                     "has_arc_bulge": has_arc,
                                 },
+                            }
+                        )
+                    elif cad_space == "modelspace" and perim > 0:
+                        pending_lengths.append(
+                            {
+                                "layer": ent_layer,
+                                "entity_type": "POLYLINE_OPEN",
+                                "length_native": perim,
                             }
                         )
                 elif getattr(ent, "is_3d_polyline", False):
@@ -1574,6 +1766,15 @@ def extract_dxf(
         layer_inventory,
         units_doubtful=units_doubtful,
     )
+    layer_length_groups = compute_layer_length_groups(
+        pending_lengths,
+        scale_to_m=effective_scale_to_m,
+        units_doubtful=units_doubtful,
+    )
+    block_insert_groups = [
+        {"layer": lname, "block_name": bname, "count": cnt}
+        for (lname, bname), cnt in sorted(layer_block_counts_map.items())
+    ]
     payload.counts.layers = len(layer_inventory)
     payload.counts.blocks = len(block_inventory)
     payload.counts.block_inserts = sum(block_insert_counts.values())
@@ -1610,6 +1811,8 @@ def extract_dxf(
         "blocks": block_inventory,
         "closed_areas": area_inventory,
         "layer_area_groups": layer_area_groups,
+        "layer_length_groups": layer_length_groups,
+        "block_insert_groups": block_insert_groups,
         "dimensions": dimension_inventory,
         "text_items": text_samples,
         "xrefs_detected": xref_names,

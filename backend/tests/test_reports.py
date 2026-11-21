@@ -869,3 +869,167 @@ def test_step09b_ocr_separated_document_register_no_boilerplate_and_showing_n_of
     assert json_data["verified_facts_shown"] == 15
 
 
+def test_step09_leftovers_cited_sources_only_no_none_unconfirmed_other_file_and_v2_revision_note(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify report leftovers: (a) N cited of M extracted in DOCX/PDF while JSON keeps all M, (b) no 'None' & keep confirmed file areas when other file unit unconfirmed, (c) v2 revision note."""
+    import json
+    from docx import Document as DocxDoc
+
+    # 1. ok.dxf: 25 uncited MTEXT annotations + A-AREA 5000 m2 (doubtful $INSUNITS=1 at first, then confirmed 'm')
+    d_ok = ezdxf.new("R2018")
+    d_ok.header["$INSUNITS"] = 1
+    d_ok.layers.add("A-AREA")
+    d_ok.layers.add("A-WALL")
+    msp_ok = d_ok.modelspace()
+    msp_ok.add_lwpolyline([(0, 0), (100, 0), (100, 50), (0, 50)], close=True, dxfattribs={"layer": "A-AREA"})
+    for idx_m in range(1, 26):
+        msp_ok.add_mtext(f"MTEXT_UNCITED_TAG_{idx_m:02d}", dxfattribs={"layer": "0", "insert": (idx_m, 1)})
+    buf_ok = io.StringIO()
+    d_ok.write(buf_ok)
+    ok_dxf_bytes = buf_ok.getvalue().encode("utf-8")
+
+    # 2. Turj-fin.dwg -> ODA converted DXF with doubtful $INSUNITS=1 (unconfirmed -> area unavailable)
+    d_dwg = ezdxf.new("R2018")
+    d_dwg.header["$INSUNITS"] = 1
+    d_dwg.layers.add("A-AREA")
+    d_dwg.layers.add("A-WALL")
+    d_dwg.modelspace().add_lwpolyline([(0, 0), (80, 0), (80, 50), (0, 50)], close=True, dxfattribs={"layer": "A-AREA"})
+    buf_dwg = io.StringIO()
+    d_dwg.write(buf_dwg)
+    dwg_converted_bytes = buf_dwg.getvalue().encode("utf-8")
+
+    fake_oda = tmp_path / "ODAFileConverter.exe"
+    fake_oda.write_bytes(b"stub")
+
+    def fake_oda_run(cmd: list[str], **_kw: Any) -> SimpleNamespace:
+        if len(cmd) >= 3 and Path(cmd[1]).is_dir():
+            out_dir = Path(cmd[2])
+            out_dir.mkdir(parents=True, exist_ok=True)
+            (out_dir / "Turj-fin.dxf").write_bytes(dwg_converted_bytes)
+        return SimpleNamespace(returncode=0, stdout="27.10.0\n", stderr="")
+
+    monkeypatch.setattr("app.services.extractors.oda._resolve_oda_executable", lambda _p="": str(fake_oda))
+    monkeypatch.setattr("app.services.extractors.oda.subprocess.run", fake_oda_run)
+
+    settings = Settings(
+        workspaces_dir=tmp_path / "workspaces",
+        database_url="",
+        oda_file_converter_path=str(fake_oda),
+    )
+    app = create_app(settings)
+    with TestClient(app) as client:
+        proj = client.post("/api/projects", json={"name": "Leftovers Check", "code": "LFT-09"}).json()
+        pid = proj["id"]
+        slug = proj["workspace_slug"]
+        up = client.post(
+            f"/api/projects/{pid}/files",
+            files=[
+                ("files", ("ok.dxf", ok_dxf_bytes, "application/dxf")),
+                ("files", ("Turj-fin.dwg", b"AC1032_SYNTHETIC_DWG_STUB", "application/acad")),
+            ],
+        ).json()
+        f_ok_id = up["items"][0]["file"]["id"]
+        f_dwg_id = up["items"][1]["file"]["id"]
+
+        res_ok = client.post(f"/api/files/{f_ok_id}/extract", json={})
+        assert res_ok.status_code == 201
+        ext_ok = res_ok.json()
+        res_dwg = client.post(f"/api/files/{f_dwg_id}/extract", json={})
+        assert res_dwg.status_code == 201
+        dwg_ext_id = res_dwg.json()["id"]
+        # Owner confirms ok.dxf = m ONLY; Turj-fin.dwg remains unconfirmed (area unavailable)
+        assert client.post(
+            f"/api/extractions/{ext_ok['id']}/confirm-unit",
+            json={"confirmed_unit": "m"},
+        ).status_code == 200
+
+        # v1 (default change_note omitted -> v1 initial note)
+        rep1 = client.post(
+            f"/api/projects/{pid}/review-reports",
+            json={"language": "en", "classification": "For Review", "use_ai": False},
+        ).json()
+        # v2 (default change_note omitted -> "Regenerated from current extractions")
+        rep2 = client.post(
+            f"/api/projects/{pid}/review-reports",
+            json={"language": "en", "classification": "For Review", "use_ai": False},
+        ).json()
+        # v3 (explicit custom change_note preserved cleanly)
+        rep3 = client.post(
+            f"/api/projects/{pid}/review-reports",
+            json={
+                "language": "en",
+                "classification": "For Review",
+                "use_ai": False,
+                "change_note": "Reissued after unit check on ok.dxf",
+            },
+        ).json()
+
+    # Check (c): revision notes
+    assert rep1["revision_block"]["change_note"] == "Initial extraction and research review issue"
+    assert rep2["version"] == 2
+    assert rep2["revision_block"]["change_note"] == "Regenerated from current extractions"
+    assert rep3["version"] == 3
+    assert rep3["revision_block"]["change_note"] == "Reissued after unit check on ok.dxf"
+
+    # Check (b): NO 'None' printed anywhere; confirmed ok.dxf per-layer areas ARE SHOWN; medium "confirm the unit of the other file" raised instead of HIGH >1% mismatch
+    calc_txt = " | ".join(c["text"] for c in rep2["calculated_items"])
+    assert "ok.dxf" in calc_txt
+    assert "A-AREA" in calc_txt
+    assert "5000.0 m²" in calc_txt
+    assert "geometric sum, not net building area" in calc_txt
+    assert not any(f["discipline"] == "CAD Reconciliation" and f["severity"] == "high" for f in rep2["findings"])
+    assert any("confirm the unit of the other file" in f["evidence"].lower() for f in rep2["findings"])
+    all_report_txt = str(rep2)
+    assert "=None" not in all_report_txt
+    assert "None m" not in all_report_txt
+
+    # Check (a): Companion JSON keeps all M=27 source_registry entries (25 MTEXT + 2 CAD summaries),
+    # while DOCX and PDF list ONLY the N=2 cited CAD summary sources and state "2 cited of 27 extracted"!
+    assert len(rep2["source_registry"]) == 27
+    short2 = rep2["id"].replace("-", "")[:8]
+    json_p2 = resolve_project_file_path(settings.workspaces_dir, slug, f"08_Reports/review_{short2}_v2.json")
+    json_d2 = json.loads(json_p2.read_text(encoding="utf-8"))
+    assert len(json_d2["source_registry"]) == 27
+
+    docx_rel2 = [d["relative_path"] for d in rep2["deliverables"] if d["folder_name"] == "10_Final_Deliverables" and d["format"] == "docx"][0]
+    pdf_rel2 = [d["relative_path"] for d in rep2["deliverables"] if d["folder_name"] == "10_Final_Deliverables" and d["format"] == "pdf"][0]
+    docx_obj2 = DocxDoc(str(resolve_project_file_path(settings.workspaces_dir, slug, docx_rel2)))
+    docx_parts2 = [p.text for p in docx_obj2.paragraphs] + [
+        c.text for tbl in docx_obj2.tables for row in tbl.rows for c in row.cells
+    ]
+    docx_txt2 = "\n".join(docx_parts2)
+    assert "2 cited of 27 extracted" in docx_txt2
+    assert "MTEXT_UNCITED_TAG_01" not in docx_txt2
+    assert "MTEXT_UNCITED_TAG_25" not in docx_txt2
+    assert "Regenerated from current extractions" in docx_txt2
+    assert "=None" not in docx_txt2
+
+    pdf_doc2 = pymupdf.open(str(resolve_project_file_path(settings.workspaces_dir, slug, pdf_rel2)))
+    pdf_txt2 = "\n".join(pg.get_text("text") for pg in pdf_doc2).replace("\xa0", " ").replace("\xad", "-")
+    pdf_doc2.close()
+    assert "2 cited of 27 extracted" in pdf_txt2
+    assert "MTEXT_UNCITED_TAG_01" not in pdf_txt2
+    assert "MTEXT_UNCITED_TAG_25" not in pdf_txt2
+    assert "Regenerated from current extractions" in pdf_txt2
+    assert "=None" not in pdf_txt2
+
+    # Confirm second file's unit too -> NOW both areas (5000 vs 4000) are available and HIGH mismatch >1% triggers cleanly!
+    with TestClient(app) as client:
+        assert client.post(
+            f"/api/extractions/{dwg_ext_id}/confirm-unit",
+            json={"confirmed_unit": "m"},
+        ).status_code == 200
+        rep4 = client.post(
+            f"/api/projects/{pid}/review-reports",
+            json={"language": "en", "classification": "For Review", "use_ai": False},
+        ).json()
+    assert rep4["calculated_items"] == []
+    assert any(
+        f["discipline"] == "CAD Reconciliation" and f["severity"] == "high"
+        for f in rep4["findings"]
+    )
+
+
+

@@ -101,6 +101,7 @@ def _to_deliverable_out(row: Deliverable) -> DeliverableOut:
         id=row.id,
         project_id=row.project_id,
         report_id=row.report_id,
+        boq_id=row.boq_id,
         task_id=row.task_id,
         file_id=row.file_id,
         title=row.title,
@@ -341,7 +342,7 @@ def _persist_report_version(
     discipline: str,
     language: ReportLanguage,
     classification: str,
-    change_note: str,
+    change_note: str | None,
     file_ids: list[str],
     research_run_ids: list[str],
     review_notes: str | None,
@@ -361,6 +362,19 @@ def _persist_report_version(
     revision = f"Rev {version:02d}"
     report_id = new_uuid()
     issued_at_iso = datetime.now(timezone.utc).isoformat()
+
+    default_v1_note = "Initial extraction and research review issue"
+    raw_change_note = (change_note or "").strip() if change_note is not None else ""
+    if version <= 1:
+        resolved_change_note = raw_change_note or default_v1_note
+    elif not raw_change_note or raw_change_note == default_v1_note:
+        resolved_change_note = (
+            "Regenerated from current extractions (AI-enhanced)"
+            if status_label == "ai_enhanced"
+            else "Regenerated from current extractions"
+        )
+    else:
+        resolved_change_note = raw_change_note
 
     is_inventory_only = status_label != "ai_enhanced"
     notice = (
@@ -387,7 +401,7 @@ def _persist_report_version(
         ),
         review_notice=notice,
         issued_at_iso=issued_at_iso,
-        change_note=change_note,
+        change_note=resolved_change_note,
         source_files_count=bundle.source_files_count,
         reviewed_research_count=bundle.reviewed_research_count,
     )

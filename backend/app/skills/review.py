@@ -38,7 +38,9 @@ from app.services.extraction import STEP07_EXTRACTABLE_EXTENSIONS, extract_proje
 from app.services.extractors.cad import (
     CAD_UNIT_SCALE_MAP,
     classify_cad_area_bearing_layer,
+    clean_cad_unit_label as _clean_unit_label,
     compute_layer_area_groups,
+    resolve_cad_unit_context as _resolve_cad_unit_context,
 )
 from app.services.extractors.pdf_and_image import assess_native_pdf_text_reliability
 from app.services.files import FileRecordNotFoundError
@@ -137,84 +139,10 @@ class _CadFileComparisonEntry:
     candidate_calculated_items: list[CategorizedStatement]
 
 
-def _clean_unit_label(val: Any, *, is_ar: bool = False) -> str:
-    if val is None:
-        return "غير محدد" if is_ar else "unspecified unit"
-    text = str(val).strip()
-    if text.lower() in {"", "none", "null", "unknown", "n/a"}:
-        return "غير محدد" if is_ar else "unspecified unit"
-    return text
-
-
 def _normalize_cad_stem(filename: str) -> str:
     stem = Path(filename).stem.lower()
     stem = re.sub(r"(?:[_\-\s]+(?:dxf|dwg|converted|oda|export|v\d+))+$", "", stem)
     return re.sub(r"[^a-z0-9\u0600-\u06FF]+", "", stem)
-
-
-def _resolve_cad_unit_context(
-    payload: dict[str, Any],
-    cad_summary: dict[str, Any],
-    *,
-    is_ar: bool,
-) -> dict[str, Any]:
-    insunits_raw = cad_summary.get("insunits_code")
-    insunits_code = int(insunits_raw) if isinstance(insunits_raw, (int, float)) else None
-    raw_declared = _clean_unit_label(
-        cad_summary.get("declared_unit") or cad_summary.get("units"),
-        is_ar=is_ar,
-    )
-    confirmed_raw = payload.get("owner_confirmed_unit") or cad_summary.get("owner_confirmed_unit")
-    confirmed_clean = (
-        None
-        if confirmed_raw is None or str(confirmed_raw).strip().lower() in {"", "none", "null", "unknown"}
-        else str(confirmed_raw).strip()
-    )
-
-    if confirmed_clean == "unitless":
-        is_doubtful = True
-        active_unit = "unitless"
-    elif confirmed_clean is not None:
-        is_doubtful = False
-        active_unit = _clean_unit_label(confirmed_clean, is_ar=is_ar)
-    else:
-        raw_doubtful = (
-            payload.get("units_doubtful")
-            if "units_doubtful" in payload
-            else cad_summary.get("units_doubtful")
-        )
-        # Never trust area_m2 from legacy extractions without unit flags or missing/unitless headers.
-        inferred_unitless = (
-            insunits_code == 0
-            or raw_declared in {"unitless", "unspecified unit", "غير محدد"}
-            or (raw_declared.startswith("insunits_") and raw_declared not in CAD_UNIT_SCALE_MAP)
-        )
-        is_doubtful = bool(raw_doubtful) if raw_doubtful is not None else True
-        if inferred_unitless:
-            is_doubtful = True
-        active_unit = (
-            raw_declared
-            if raw_declared not in {"unspecified unit", "غير محدد"}
-            else _clean_unit_label(payload.get("cad_units"), is_ar=is_ar)
-        )
-
-    if confirmed_clean and confirmed_clean != "unitless":
-        basis_display = (
-            f"{active_unit} (owner-confirmed; raw header $INSUNITS={insunits_code if insunits_code is not None else 'N/A'} {raw_declared})"
-        )
-    elif insunits_code is not None:
-        basis_display = f"{active_unit} ($INSUNITS={insunits_code})"
-    else:
-        basis_display = active_unit
-
-    return {
-        "active_unit": active_unit,
-        "raw_declared": raw_declared,
-        "insunits_code": insunits_code,
-        "confirmed": confirmed_clean,
-        "is_doubtful": is_doubtful,
-        "basis_display": basis_display,
-    }
 
 
 def _extract_pdf_register_metrics(
@@ -1040,54 +968,108 @@ def collect_project_evidence_index(
                 if dwg_rec.area_bearing_m2_sum is not None
                 else dwg_rec.all_closed_m2_sum
             )
-            mismatch_reasons: list[str] = []
             if (area_a is None) != (area_b is None):
-                mismatch_reasons.append(
-                    f"unit/area availability mismatch ({dxf_rec.filename}={area_a} m² [{dxf_rec.active_unit}] vs {dwg_rec.filename}={area_b} m² [{dwg_rec.active_unit}])"
-                )
-            elif area_a is not None and area_b is not None and max(abs(area_a), abs(area_b)) > 0:
+                confirmed_rec = dxf_rec if area_a is not None else dwg_rec
+                unconfirmed_rec = dwg_rec if area_a is not None else dxf_rec
+                confirmed_area = area_a if area_a is not None else area_b
+                if unconfirmed_rec.is_doubtful:
+                    # Do NOT withhold the confirmed file's per-layer areas; ask owner to confirm the other file's unit.
+                    note_en = (
+                        f"Area comparison pending unit confirmation: '{confirmed_rec.filename}' shows {confirmed_area} m² "
+                        f"[{confirmed_rec.active_unit}], while '{unconfirmed_rec.filename}' has area unavailable because its unit "
+                        f"[{unconfirmed_rec.active_unit}] is unconfirmed — confirm the unit of the other file; "
+                        f"per-layer areas for '{confirmed_rec.filename}' remain shown."
+                    )
+                    note_ar = (
+                        f"المقارنة بانتظار تأكيد الوحدة: '{confirmed_rec.filename}' يظهر {confirmed_area} m² "
+                        f"[{confirmed_rec.active_unit}] بينما مساحة '{unconfirmed_rec.filename}' غير متاحة لأن وحدته "
+                        f"[{unconfirmed_rec.active_unit}] غير مؤكدة — تأكد من وحدة الملف الآخر (confirm the unit of the other file)؛ "
+                        f"تبقى مساحات الطبقات للملف المؤكد '{confirmed_rec.filename}' معروضة."
+                    )
+                    bundle.gaps_or_unextracted.append(note_ar if is_ar else note_en)
+                    bundle.findings.append(
+                        ReviewFinding(
+                            finding_id=next_finding_id(),
+                            discipline="CAD Coordination",
+                            severity="medium",
+                            location_or_drawing_ref=f"{confirmed_rec.filename} vs {unconfirmed_rec.filename}",
+                            evidence=note_ar if is_ar else note_en,
+                            recommendation=(
+                                f"أكّد وحدة الرسم للملف '{unconfirmed_rec.filename}' عبر confirm-unit لإتمام المقارنة مع '{confirmed_rec.filename}'."
+                                if is_ar
+                                else f"Confirm the unit of the other file ('{unconfirmed_rec.filename}') via confirm-unit so DXF/DWG comparison can run."
+                            ),
+                            status="needs_verification",
+                            statement_category="assumption",
+                            source_links=[confirmed_rec.ref, unconfirmed_rec.ref],
+                        )
+                    )
+                else:
+                    avail_txt = (
+                        f"{confirmed_rec.filename}={confirmed_area} m² [{confirmed_rec.active_unit}] vs "
+                        f"{unconfirmed_rec.filename}=area unavailable (no closed contours) [{unconfirmed_rec.active_unit}]"
+                    )
+                    bundle.gaps_or_unextracted.append(f"DXF vs DWG partial geometry coverage: {avail_txt}")
+                    bundle.findings.append(
+                        ReviewFinding(
+                            finding_id=next_finding_id(),
+                            discipline="CAD Coordination",
+                            severity="medium",
+                            location_or_drawing_ref=f"{confirmed_rec.filename} vs {unconfirmed_rec.filename}",
+                            evidence=(
+                                f"تغطية مساحات غير مكتملة بين الملفين ({avail_txt})؛ تبقى مساحات '{confirmed_rec.filename}' معروضة."
+                                if is_ar
+                                else f"Partial area availability between paired files ({avail_txt}); '{confirmed_rec.filename}' per-layer areas remain shown."
+                            ),
+                            recommendation=(
+                                f"تحقق من البوليجونات المغلقة في '{unconfirmed_rec.filename}' لإتمام المطابقة."
+                                if is_ar
+                                else f"Verify closed contours or confirm unit settings in '{unconfirmed_rec.filename}'."
+                            ),
+                            status="needs_verification",
+                            statement_category="assumption",
+                            source_links=[confirmed_rec.ref, unconfirmed_rec.ref],
+                        )
+                    )
+                continue
+
+            if area_a is None or area_b is None:
+                continue
+
+            if max(abs(area_a), abs(area_b)) > 0:
                 rel_diff = abs(area_a - area_b) / max(abs(area_a), abs(area_b))
                 if rel_diff > 0.01:
-                    mismatch_reasons.append(
-                        f"area differs by {round(rel_diff * 100.0, 2)}% ({dxf_rec.filename}: {area_a} m² [{dxf_rec.closed_contour_count} contours] vs {dwg_rec.filename}: {area_b} m² [{dwg_rec.closed_contour_count} contours])"
+                    conflicted_cad_file_ids.add(dxf_rec.file_id)
+                    conflicted_cad_file_ids.add(dwg_rec.file_id)
+                    reason_str = (
+                        f"area differs by {round(rel_diff * 100.0, 2)}% ({dxf_rec.filename}: {area_a} m² "
+                        f"[{dxf_rec.closed_contour_count} contours] vs {dwg_rec.filename}: {area_b} m² "
+                        f"[{dwg_rec.closed_contour_count} contours])"
                     )
-            if not mismatch_reasons and max(dxf_rec.closed_contour_count, dwg_rec.closed_contour_count) > 0:
-                c_diff = abs(dxf_rec.closed_contour_count - dwg_rec.closed_contour_count) / max(
-                    dxf_rec.closed_contour_count, dwg_rec.closed_contour_count
-                )
-                if c_diff > 0.01:
-                    mismatch_reasons.append(
-                        f"closed contour count differs by {round(c_diff * 100.0, 2)}% ({dxf_rec.closed_contour_count} vs {dwg_rec.closed_contour_count})"
+                    bundle.gaps_or_unextracted.append(
+                        f"DXF vs DWG mismatch (>1%) withheld from calculated areas: {dxf_rec.filename} vs {dwg_rec.filename} — {reason_str}"
                     )
-
-            if mismatch_reasons:
-                conflicted_cad_file_ids.add(dxf_rec.file_id)
-                conflicted_cad_file_ids.add(dwg_rec.file_id)
-                reason_str = "; ".join(mismatch_reasons)
-                bundle.gaps_or_unextracted.append(
-                    f"DXF vs DWG mismatch (>1%) withheld from calculated areas: {dxf_rec.filename} vs {dwg_rec.filename} — {reason_str}"
-                )
-                bundle.findings.append(
-                    ReviewFinding(
-                        finding_id=next_finding_id(),
-                        discipline="CAD Reconciliation",
-                        severity="high",
-                        location_or_drawing_ref=f"{dxf_rec.filename} vs {dwg_rec.filename}",
-                        evidence=(
-                            f"تعارض يتجاوز 1% بين ملفي DXF و DWG لنفس المخطط ({reason_str})؛ تم حجب أرقام المساحات المتعارضة بدلاً من عرضها كحقائق."
-                            if is_ar
-                            else f"DXF vs DWG reconciliation mismatch (>1%) for the same drawing ({reason_str}); conflicting m2 figures withheld instead of being presented as facts."
-                        ),
-                        recommendation=(
-                            f"وحّد وحدة الرسم ونسخة الإصدار المعتمدة بين '{dxf_rec.filename}' و'{dwg_rec.filename}' وأعد تأكيد الوحدة قبل استخدام أي مساحات."
-                            if is_ar
-                            else f"Reconcile unit basis and authoritative revision between '{dxf_rec.filename}' and '{dwg_rec.filename}' via confirm-unit before using any quantities."
-                        ),
-                        status="needs_verification",
-                        statement_category="assumption",
-                        source_links=[dxf_rec.ref, dwg_rec.ref],
+                    bundle.findings.append(
+                        ReviewFinding(
+                            finding_id=next_finding_id(),
+                            discipline="CAD Reconciliation",
+                            severity="high",
+                            location_or_drawing_ref=f"{dxf_rec.filename} vs {dwg_rec.filename}",
+                            evidence=(
+                                f"تعارض يتجاوز 1% بين ملفي DXF و DWG لنفس المخطط ({reason_str})؛ تم حجب أرقام المساحات المتعارضة بدلاً من عرضها كحقائق."
+                                if is_ar
+                                else f"DXF vs DWG reconciliation mismatch (>1%) for the same drawing ({reason_str}); conflicting m2 figures withheld instead of being presented as facts."
+                            ),
+                            recommendation=(
+                                f"وحّد وحدة الرسم ونسخة الإصدار المعتمدة بين '{dxf_rec.filename}' و'{dwg_rec.filename}' وأعد تأكيد الوحدة قبل استخدام أي مساحات."
+                                if is_ar
+                                else f"Reconcile unit basis and authoritative revision between '{dxf_rec.filename}' and '{dwg_rec.filename}' via confirm-unit before using any quantities."
+                            ),
+                            status="needs_verification",
+                            statement_category="assumption",
+                            source_links=[dxf_rec.ref, dwg_rec.ref],
+                        )
                     )
-                )
 
     for rec in cad_records:
         if rec.file_id not in conflicted_cad_file_ids:

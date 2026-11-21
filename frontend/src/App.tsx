@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
 import { fetchHealth } from "./api";
 import { AssignmentsView } from "./components/AssignmentsView";
+import { BoqView } from "./components/BoqView";
 import { DeliverablesView } from "./components/DeliverablesView";
 import { ProjectWorkspaceView } from "./components/ProjectWorkspaceView";
 import { ProviderSettingsView } from "./components/ProviderSettingsView";
 import { ResearchView } from "./components/ResearchView";
 import type { HealthPayload, Lang } from "./types";
 
-type ActiveTab = "projects" | "assignments" | "research" | "deliverables" | "settings";
+type ActiveTab = "projects" | "assignments" | "research" | "deliverables" | "boq" | "settings";
 
 const COPY: Record<
   Lang,
@@ -25,12 +26,13 @@ const COPY: Record<
     assignmentsTab: string;
     researchTab: string;
     deliverablesTab: string;
+    boqTab: string;
     settingsTab: string;
   }
 > = {
   ar: {
     title: "الوكيل الهندسي الاستشاري المحلي",
-    subtitle: "الخطوة 09 — مراجعة المستندات والمخططات وتوليد تقارير النتائج والمخرجات (DOCX + PDF)",
+    subtitle: "الخطوة 10 — وحدة جداول الكميات وحصر الكميات الحتمي (DXF / IFC / XLSX / PDF)",
     classificationLabel: "التصنيف: أولي (Preliminary)",
     toggleLang: "Switch to English (LTR)",
     refreshHealth: "تحديث فحص الخادم",
@@ -42,11 +44,12 @@ const COPY: Record<
     assignmentsTab: "المهام والتكليفات",
     researchTab: "البحث وسجل المصادر",
     deliverablesTab: "التقارير والمخرجات",
+    boqTab: "جداول الكميات (BOQ)",
     settingsTab: "إعدادات Gemini والمزودين",
   },
   en: {
     title: "Local AI Engineering Consultancy Agent",
-    subtitle: "Step 09 — Document & Drawing Review Findings Report (DOCX + PDF Deliverables)",
+    subtitle: "Step 10 — Bill of Quantities & Deterministic Quantity Module (DXF / IFC / XLSX / PDF)",
     classificationLabel: "Classification: Preliminary",
     toggleLang: "التبديل إلى العربية (RTL)",
     refreshHealth: "Refresh Health Check",
@@ -58,6 +61,7 @@ const COPY: Record<
     assignmentsTab: "New Assignment & History",
     researchTab: "Research & Source Log",
     deliverablesTab: "Deliverables & Reports",
+    boqTab: "BOQ & Quantities",
     settingsTab: "AI Provider Settings",
   },
 };
@@ -183,6 +187,13 @@ export function App({
           </button>
           <button
             type="button"
+            className={`btn ${activeTab === "boq" ? "" : "btn-secondary"}`}
+            onClick={() => setActiveTab("boq")}
+          >
+            {text.boqTab}
+          </button>
+          <button
+            type="button"
             className={`btn ${activeTab === "settings" ? "" : "btn-secondary"}`}
             onClick={() => setActiveTab("settings")}
           >
@@ -198,6 +209,8 @@ export function App({
           <ResearchView lang={lang} />
         ) : activeTab === "deliverables" ? (
           <DeliverablesView lang={lang} />
+        ) : activeTab === "boq" ? (
+          <BoqView lang={lang} />
         ) : (
           <ProviderSettingsView lang={lang} />
         )}

@@ -109,11 +109,11 @@ class ReviewReportGenerateRequest(BaseModel):
     language: ReportLanguage = "ar"
     classification: ProjectClassification = "Preliminary"
     review_notes: str | None = Field(default=None, max_length=2000)
-    change_note: str = Field(default="Initial extraction and research review issue", max_length=500)
+    change_note: str | None = Field(default=None, max_length=500)
     use_ai: bool = False
     complexity: TaskComplexity = "fast"
 
-    @field_validator("task_id", "title", "review_notes", mode="before")
+    @field_validator("task_id", "title", "review_notes", "change_note", mode="before")
     @classmethod
     def clean_optional_strings(cls, value: str | None) -> str | None:
         """Trim blank optional text cleanly."""
@@ -144,6 +144,7 @@ class DeliverableOut(BaseModel):
     id: str
     project_id: str
     report_id: str | None = None
+    boq_id: str | None = None
     task_id: str | None = None
     file_id: str | None = None
     title: str
