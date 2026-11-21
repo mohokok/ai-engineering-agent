@@ -6,7 +6,12 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-from app.schemas.calculations import CalculationDiscipline, CalculationType
+from app.schemas.calculations import (
+    BUILTIN_DATA_PROVENANCE,
+    CalculationDiscipline,
+    CalculationType,
+    OWNER_DATA_PROVENANCE,
+)
 
 # Standard metric conductor sizes (mm^2)
 STANDARD_CABLE_SIZES_MM2: tuple[float, ...] = (
@@ -172,21 +177,75 @@ _HUNTER_CURVE_GPM: dict[str, tuple[tuple[float, float], ...]] = {
 
 _GPM_TO_LPS = 0.0630902
 
-# Standard nominal internal pipe bores (mm) & absolute surface roughness (mm)
-STANDARD_PIPE_BORES_MM: tuple[float, ...] = (
-    15.0,
-    20.0,
-    25.0,
-    32.0,
-    40.0,
-    50.0,
-    65.0,
-    80.0,
-    100.0,
-    125.0,
-    150.0,
-    200.0,
-)
+# Preliminary pipe nominal / outer diameter (OD) / wall thickness / internal diameter (ID) tables (mm).
+# PPR_PN20 (SDR 6, wall ~= OD/6) and uPVC (SDR 11) use OD as nominal size; copper and galvanized_steel use nominal DN.
+# Preliminary planning baselines only — verify against manufacturer pipe schedule and locally adopted plumbing code.
+@dataclass(frozen=True)
+class _PipeDim:
+    nominal_mm: float
+    outer_mm: float | None
+    wall_mm: float | None
+    internal_mm: float
+
+
+_PRELIMINARY_PIPE_DIMENSIONS: dict[str, tuple[_PipeDim, ...]] = {
+    "PPR_PN20": (
+        _PipeDim(20.0, 20.0, 3.4, 13.2),
+        _PipeDim(25.0, 25.0, 4.2, 16.6),
+        _PipeDim(32.0, 32.0, 5.4, 21.2),
+        _PipeDim(40.0, 40.0, 6.7, 26.6),
+        _PipeDim(50.0, 50.0, 8.3, 33.4),
+        _PipeDim(63.0, 63.0, 10.5, 42.0),
+        _PipeDim(75.0, 75.0, 12.5, 50.0),
+        _PipeDim(90.0, 90.0, 15.0, 60.0),
+        _PipeDim(110.0, 110.0, 18.3, 73.4),
+        _PipeDim(125.0, 125.0, 20.8, 83.4),
+        _PipeDim(160.0, 160.0, 26.6, 106.8),
+        _PipeDim(200.0, 200.0, 33.2, 133.6),
+    ),
+    "uPVC": (
+        _PipeDim(20.0, 20.0, 1.9, 16.2),
+        _PipeDim(25.0, 25.0, 2.3, 20.4),
+        _PipeDim(32.0, 32.0, 2.9, 26.2),
+        _PipeDim(40.0, 40.0, 3.7, 32.6),
+        _PipeDim(50.0, 50.0, 4.6, 40.8),
+        _PipeDim(63.0, 63.0, 5.8, 51.4),
+        _PipeDim(75.0, 75.0, 6.8, 61.4),
+        _PipeDim(90.0, 90.0, 8.2, 73.6),
+        _PipeDim(110.0, 110.0, 10.0, 90.0),
+        _PipeDim(125.0, 125.0, 11.4, 102.2),
+        _PipeDim(160.0, 160.0, 14.6, 130.8),
+        _PipeDim(200.0, 200.0, 18.2, 163.6),
+    ),
+    "copper": (
+        _PipeDim(15.0, 15.9, 1.0, 13.9),
+        _PipeDim(20.0, 22.2, 1.1, 20.0),
+        _PipeDim(25.0, 28.6, 1.3, 26.0),
+        _PipeDim(32.0, 34.9, 1.4, 32.1),
+        _PipeDim(40.0, 41.3, 1.5, 38.3),
+        _PipeDim(50.0, 54.0, 1.8, 50.4),
+        _PipeDim(65.0, 66.7, 2.0, 62.7),
+        _PipeDim(80.0, 79.4, 2.3, 74.8),
+        _PipeDim(100.0, 104.8, 2.8, 99.2),
+        _PipeDim(125.0, 130.2, 3.2, 123.8),
+        _PipeDim(150.0, 155.6, 3.6, 148.4),
+        _PipeDim(200.0, 206.4, 5.1, 196.2),
+    ),
+    "galvanized_steel": (
+        _PipeDim(15.0, 21.3, 2.8, 15.7),
+        _PipeDim(20.0, 26.7, 2.9, 20.9),
+        _PipeDim(25.0, 33.4, 3.4, 26.6),
+        _PipeDim(32.0, 42.2, 3.6, 35.0),
+        _PipeDim(40.0, 48.3, 3.7, 40.9),
+        _PipeDim(50.0, 60.3, 3.9, 52.5),
+        _PipeDim(65.0, 73.0, 5.2, 62.6),
+        _PipeDim(80.0, 88.9, 5.5, 77.9),
+        _PipeDim(100.0, 114.3, 6.0, 102.3),
+        _PipeDim(125.0, 141.3, 6.6, 128.1),
+        _PipeDim(150.0, 168.3, 7.1, 154.1),
+        _PipeDim(200.0, 219.1, 8.2, 202.7),
+    ),
+}
 
 _PIPE_ROUGHNESS_MM: dict[str, float] = {
     "PPR_PN20": 0.0015,
@@ -306,6 +365,7 @@ class PlumbingWaterDemandInput(BaseModel):
     static_head_m: float = Field(default=12.0, ge=0.0, le=500.0)
     friction_and_residual_head_m: float = Field(default=18.0, ge=0.0, le=500.0)
     pump_efficiency: float = Field(default=0.65, gt=0.05, le=1.0)
+    custom_peak_flow_lps: float | None = Field(default=None, gt=0.0, le=5000.0)
 
 
 class PlumbingPipeSizingInput(BaseModel):
@@ -316,6 +376,7 @@ class PlumbingPipeSizingInput(BaseModel):
     pipe_length_m: float = Field(..., gt=0.0, le=10000.0)
     pipe_material: Literal["PPR_PN20", "copper", "uPVC", "galvanized_steel"] = "PPR_PN20"
     nominal_diameter_mm: float | None = Field(default=None, gt=0.0, le=1000.0)
+    internal_diameter_mm: float | None = Field(default=None, gt=0.0, le=1000.0)
     max_velocity_mps: float = Field(default=1.5, gt=0.1, le=10.0)
     max_head_loss_m_per_100m: float = Field(default=5.0, gt=0.1, le=100.0)
     minor_loss_allowance_pct: float = Field(default=15.0, ge=0.0, le=200.0)
@@ -340,6 +401,25 @@ class CalculationEvaluation:
 
 def _r4(val: float) -> float:
     return round(float(val), 4)
+
+
+def _provenance_and_verdict(passed: bool, *, uses_builtin: bool) -> tuple[str, str, str, str]:
+    """Return (data_provenance, acceptance_outcome_label, pass_token, fail_token)."""
+    if uses_builtin:
+        pass_tok = "PRELIMINARY PASS (built-in baseline data)"
+        fail_tok = "PRELIMINARY FAIL (built-in baseline data)"
+        return (
+            BUILTIN_DATA_PROVENANCE,
+            pass_tok if passed else fail_tok,
+            pass_tok,
+            fail_tok,
+        )
+    return (
+        OWNER_DATA_PROVENANCE,
+        "PASS" if passed else "FAIL",
+        "PASS",
+        "FAIL",
+    )
 
 
 def _conductor_resistance_ohm_per_km(
@@ -456,17 +536,18 @@ def calculate_electrical_load_schedule(raw_inputs: dict[str, Any]) -> Calculatio
     feeder_ok = True if inp.feeder_capacity_a is None else (design_current_a <= inp.feeder_capacity_a)
     nonzero_ok = total_demand_r > 0.0
     passed = bool(nonzero_ok and unbalance_ok and feeder_ok)
+    data_provenance, outcome_label, pass_tok, fail_tok = _provenance_and_verdict(passed, uses_builtin=False)
 
     criteria = [
-        f"Total demand load > 0 kW: {total_demand_r} kW -> {'PASS' if nonzero_ok else 'FAIL'}",
+        f"Total demand load > 0 kW: {total_demand_r} kW -> {pass_tok if nonzero_ok else fail_tok}",
     ]
     if inp.phases == "3ph":
         criteria.append(
-            f"3-phase demand unbalance <= {inp.max_phase_unbalance_pct}%: {unbalance_pct}% -> {'PASS' if unbalance_ok else 'FAIL'} (verify against locally adopted code)"
+            f"3-phase demand unbalance <= {inp.max_phase_unbalance_pct}%: {unbalance_pct}% -> {pass_tok if unbalance_ok else fail_tok} (verify against locally adopted code)"
         )
     if inp.feeder_capacity_a is not None:
         criteria.append(
-            f"Design current <= feeder rating ({inp.feeder_capacity_a} A): {design_current_a} A -> {'PASS' if feeder_ok else 'FAIL'}"
+            f"Design current <= feeder rating ({inp.feeder_capacity_a} A): {design_current_a} A -> {pass_tok if feeder_ok else fail_tok}"
         )
 
     equations = (
@@ -498,6 +579,8 @@ def calculate_electrical_load_schedule(raw_inputs: dict[str, Any]) -> Calculatio
         "phase_l3_kw": l3_r,
         "phase_unbalance_pct": unbalance_pct,
         "circuits": circuits_out,
+        "data_provenance": data_provenance,
+        "acceptance_outcome_label": outcome_label,
         "acceptance_passed": passed,
     }
     units = {
@@ -559,6 +642,7 @@ def calculate_electrical_cable_sizing(raw_inputs: dict[str, Any]) -> Calculation
     chosen_dv_pct: float = 0.0
     governing = "ampacity"
 
+    uses_builtin = inp.custom_ampacity_a is None
     candidate_sizes = [inp.selected_size_mm2] if inp.selected_size_mm2 is not None else sorted(table.keys())
     for sz in candidate_sizes:
         assert sz is not None
@@ -595,7 +679,7 @@ def calculate_electrical_cable_sizing(raw_inputs: dict[str, Any]) -> Calculation
             governing = "manual_selection"
             break
         if amp_ok_candidate and vd_ok_candidate:
-            if sz > min(s for s, a in table.items() if a * derating >= breaker_a):
+            if inp.custom_ampacity_a is None and sz > min((s for s, a in table.items() if a * derating >= breaker_a), default=sz):
                 governing = "voltage_drop"
             else:
                 governing = "ampacity"
@@ -607,11 +691,12 @@ def calculate_electrical_cable_sizing(raw_inputs: dict[str, Any]) -> Calculation
     ampacity_ok = design_current_a <= breaker_a <= chosen_derated_amp
     vd_ok = chosen_dv_pct <= inp.max_voltage_drop_pct
     passed = bool(ampacity_ok and vd_ok)
+    data_provenance, outcome_label, pass_tok, fail_tok = _provenance_and_verdict(passed, uses_builtin=uses_builtin)
     margin_pct = _r4(((chosen_derated_amp - breaker_a) / breaker_a) * 100.0) if breaker_a > 0 else 0.0
 
     criteria = [
-        f"Ib <= In <= Iz_derated ({design_current_a} A <= {breaker_a} A <= {chosen_derated_amp} A) -> {'PASS' if ampacity_ok else 'FAIL'}",
-        f"Voltage drop <= {inp.max_voltage_drop_pct}%: {chosen_dv_pct}% -> {'PASS' if vd_ok else 'FAIL'} (verify against locally adopted code)",
+        f"Ib <= In <= Iz_derated ({design_current_a} A <= {breaker_a} A <= {chosen_derated_amp} A) -> {pass_tok if ampacity_ok else fail_tok}",
+        f"Voltage drop <= {inp.max_voltage_drop_pct}%: {chosen_dv_pct}% -> {pass_tok if vd_ok else fail_tok} (verify against locally adopted code)",
     ]
     equations = (
         f"I_b = (P * 1000) / ({'sqrt(3)' if inp.phases == '3ph' else '1'} * V * PF) ; "
@@ -626,7 +711,7 @@ def calculate_electrical_cable_sizing(raw_inputs: dict[str, Any]) -> Calculation
     )
     assumptions = [
         f"Operating conductor temperature assumed at maximum insulation rating ({temp_c} C) for resistance correction.",
-        f"Preliminary baseline ampacity table used unless custom_ampacity_a is supplied; baseline reactance X = {inp.custom_x_ohm_per_km} ohm/km.",
+        f"Data provenance: {data_provenance}. Baseline reactance X = {inp.custom_x_ohm_per_km} ohm/km.",
         "Installation method, ambient derating, and grouping factors must be verified against the manufacturer datasheet and locally adopted wiring code.",
     ]
     results = {
@@ -643,6 +728,8 @@ def calculate_electrical_cable_sizing(raw_inputs: dict[str, Any]) -> Calculation
         "voltage_drop_v": chosen_dv_v,
         "voltage_drop_pct": chosen_dv_pct,
         "governing_criterion": governing,
+        "data_provenance": data_provenance,
+        "acceptance_outcome_label": outcome_label,
         "acceptance_passed": passed,
     }
     units = {
@@ -686,6 +773,7 @@ def calculate_electrical_voltage_drop(raw_inputs: dict[str, Any]) -> Calculation
         assert inp.power_kw is not None
         current_a = _r4((inp.power_kw * 1000.0) / (v_factor * inp.voltage_v * inp.power_factor))
 
+    uses_builtin = inp.r_ohm_per_km is None
     r_km = (
         _r4(inp.r_ohm_per_km)
         if inp.r_ohm_per_km is not None
@@ -709,9 +797,10 @@ def calculate_electrical_voltage_drop(raw_inputs: dict[str, Any]) -> Calculation
     total_drop_pct = _r4(dv_pct + inp.upstream_drop_pct)
     receiving_v = _r4(inp.voltage_v * (1.0 - total_drop_pct / 100.0))
     passed = total_drop_pct <= inp.max_total_drop_pct
+    data_provenance, outcome_label, pass_tok, fail_tok = _provenance_and_verdict(passed, uses_builtin=uses_builtin)
 
     criteria = [
-        f"Total cumulative voltage drop <= {inp.max_total_drop_pct}%: {total_drop_pct}% -> {'PASS' if passed else 'FAIL'} (verify against locally adopted code)",
+        f"Total cumulative voltage drop <= {inp.max_total_drop_pct}%: {total_drop_pct}% -> {pass_tok if passed else fail_tok} (verify against locally adopted code)",
     ]
     equations = (
         "R(T) = rho_20 * [1 + alpha * (T - 20)] * 1000 / A ; "
@@ -724,7 +813,7 @@ def calculate_electrical_voltage_drop(raw_inputs: dict[str, Any]) -> Calculation
     )
     assumptions = [
         f"Conductor temperature = {inp.conductor_temp_c} C (unless explicit r_ohm_per_km provided).",
-        f"Inductive reactance X = {inp.x_ohm_per_km} ohm/km; upstream voltage drop = {inp.upstream_drop_pct}%.",
+        f"Data provenance: {data_provenance}. Inductive reactance X = {inp.x_ohm_per_km} ohm/km; upstream voltage drop = {inp.upstream_drop_pct}%.",
         "Confirm allowable branch/total voltage-drop limits against the locally adopted electrical code.",
     ]
     results = {
@@ -736,6 +825,8 @@ def calculate_electrical_voltage_drop(raw_inputs: dict[str, Any]) -> Calculation
         "upstream_drop_pct": _r4(inp.upstream_drop_pct),
         "total_voltage_drop_pct": total_drop_pct,
         "receiving_voltage_v": receiving_v,
+        "data_provenance": data_provenance,
+        "acceptance_outcome_label": outcome_label,
         "acceptance_passed": passed,
     }
     units = {
@@ -774,8 +865,13 @@ def calculate_plumbing_water_demand(raw_inputs: dict[str, Any]) -> CalculationEv
     total_wsfu = 0.0
     total_fixtures = 0
 
+    uses_builtin_wsfu = False
     for fx in inp.fixtures:
-        weight = fx.wsfu_per_unit if fx.wsfu_per_unit is not None else DEFAULT_WSFU_WEIGHTS.get(fx.fixture_type)
+        if fx.wsfu_per_unit is None:
+            uses_builtin_wsfu = True
+            weight = DEFAULT_WSFU_WEIGHTS.get(fx.fixture_type)
+        else:
+            weight = fx.wsfu_per_unit
         if weight is None:
             raise CalculationInputError(
                 f"Unknown fixture_type '{fx.fixture_type}' requires an explicit 'wsfu_per_unit' weight."
@@ -794,9 +890,16 @@ def calculate_plumbing_water_demand(raw_inputs: dict[str, Any]) -> CalculationEv
         )
 
     total_wsfu_r = _r4(total_wsfu)
-    peak_gpm = _r4(_interpolate_hunter_gpm(total_wsfu_r, inp.conversion_method))
-    peak_lps = _r4(peak_gpm * _GPM_TO_LPS)
+    if inp.custom_peak_flow_lps is not None:
+        uses_builtin_hunter = False
+        peak_lps = _r4(inp.custom_peak_flow_lps)
+        peak_gpm = _r4(peak_lps / _GPM_TO_LPS)
+    else:
+        uses_builtin_hunter = True
+        peak_gpm = _r4(_interpolate_hunter_gpm(total_wsfu_r, inp.conversion_method))
+        peak_lps = _r4(peak_gpm * _GPM_TO_LPS)
     peak_m3_h = _r4(peak_lps * 3.6)
+    uses_builtin = uses_builtin_wsfu or uses_builtin_hunter
 
     daily_l = _r4(inp.occupants_or_units * inp.daily_demand_l_per_person)
     daily_m3 = _r4(daily_l / 1000.0)
@@ -808,10 +911,11 @@ def calculate_plumbing_water_demand(raw_inputs: dict[str, Any]) -> CalculationEv
     demand_ok = total_wsfu_r > 0.0 and peak_lps > 0.0
     storage_ok = True if inp.occupants_or_units == 0 else (storage_m3 >= daily_m3)
     passed = bool(demand_ok and storage_ok)
+    data_provenance, outcome_label, pass_tok, fail_tok = _provenance_and_verdict(passed, uses_builtin=uses_builtin)
 
     criteria = [
-        f"Total WSFU > 0 and peak flow > 0 L/s: {total_wsfu_r} WSFU / {peak_lps} L/s -> {'PASS' if demand_ok else 'FAIL'}",
-        f"Reserve storage >= daily demand ({storage_m3} m3 >= {daily_m3} m3) -> {'PASS' if storage_ok else 'FAIL'} (verify against locally adopted code)",
+        f"Total WSFU > 0 and peak flow > 0 L/s: {total_wsfu_r} WSFU / {peak_lps} L/s -> {pass_tok if demand_ok else fail_tok}",
+        f"Reserve storage >= daily demand ({storage_m3} m3 >= {daily_m3} m3) -> {pass_tok if storage_ok else fail_tok} (verify against locally adopted code)",
     ]
     equations = (
         "Total_WSFU = sum(Count_i * WSFU_i) ; Q_peak(GPM) = Hunter_Interp(Total_WSFU) ; "
@@ -824,7 +928,7 @@ def calculate_plumbing_water_demand(raw_inputs: dict[str, Any]) -> CalculationEv
         f"for '{inp.system_name}' ({inp.building_type}), paired with daily tank autonomy sizing and hydraulic pump duty."
     )
     assumptions = [
-        "WSFU weights and Hunter probability curve represent preliminary planning baselines — verify against the locally adopted plumbing code.",
+        f"Data provenance: {data_provenance}.",
         f"Daily per-capita water consumption = {inp.daily_demand_l_per_person} L/day with {inp.storage_autonomy_days} day(s) storage autonomy.",
         f"Booster pump combined hydraulic/mechanical efficiency assumed at {inp.pump_efficiency * 100:.1f}%.",
     ]
@@ -841,6 +945,8 @@ def calculate_plumbing_water_demand(raw_inputs: dict[str, Any]) -> CalculationEv
         "hydraulic_power_kw": hyd_kw,
         "pump_shaft_power_kw": pump_kw,
         "fixtures": fixtures_out,
+        "data_provenance": data_provenance,
+        "acceptance_outcome_label": outcome_label,
         "acceptance_passed": passed,
     }
     units = {
@@ -873,14 +979,50 @@ def calculate_plumbing_water_demand(raw_inputs: dict[str, Any]) -> CalculationEv
 
 
 def calculate_plumbing_pipe_sizing(raw_inputs: dict[str, Any]) -> CalculationEvaluation:
-    """Deterministically size a water supply pipe using Darcy-Weisbach + Swamee-Jain friction loss."""
+    """Deterministically size a water supply pipe using Darcy-Weisbach + Swamee-Jain friction loss on internal bore."""
     inp = PlumbingPipeSizingInput.model_validate(raw_inputs)
     flow_m3_s = inp.flow_rate_lps / 1000.0
     roughness_mm = _PIPE_ROUGHNESS_MM[inp.pipe_material]
     roughness_m = roughness_mm / 1000.0
 
-    candidates = [inp.nominal_diameter_mm] if inp.nominal_diameter_mm is not None else list(STANDARD_PIPE_BORES_MM)
-    chosen_dn = float(candidates[-1])  # type: ignore[arg-type]
+    if inp.internal_diameter_mm is not None:
+        uses_builtin = False
+        dn_val = inp.nominal_diameter_mm if inp.nominal_diameter_mm is not None else inp.internal_diameter_mm
+        od_val: float | None = None
+        wall_val: float | None = None
+        if (
+            inp.nominal_diameter_mm is not None
+            and inp.pipe_material in ("PPR_PN20", "uPVC")
+            and inp.nominal_diameter_mm >= inp.internal_diameter_mm
+        ):
+            od_val = inp.nominal_diameter_mm
+            wall_val = _r4((inp.nominal_diameter_mm - inp.internal_diameter_mm) / 2.0)
+        candidates = [
+            _PipeDim(
+                nominal_mm=dn_val,
+                outer_mm=od_val,
+                wall_mm=wall_val,
+                internal_mm=inp.internal_diameter_mm,
+            )
+        ]
+    else:
+        uses_builtin = True
+        dims = _PRELIMINARY_PIPE_DIMENSIONS[inp.pipe_material]
+        if inp.nominal_diameter_mm is not None:
+            matched = [d for d in dims if abs(d.nominal_mm - inp.nominal_diameter_mm) < 1e-6]
+            if not matched:
+                supported = ", ".join(str(int(d.nominal_mm)) for d in dims)
+                raise CalculationInputError(
+                    f"No built-in dimension data for {inp.pipe_material} DN {inp.nominal_diameter_mm} mm; "
+                    f"choose standard DN ({supported}) or supply internal_diameter_mm."
+                )
+            candidates = matched
+        else:
+            candidates = list(dims)
+
+    _, _, tok_pass, tok_fail = _provenance_and_verdict(True, uses_builtin=uses_builtin)
+    evaluated_sizes: list[dict[str, Any]] = []
+    chosen = candidates[-1]
     chosen_vel = 0.0
     chosen_re = 0.0
     chosen_f = 0.0
@@ -888,9 +1030,8 @@ def calculate_plumbing_pipe_sizing(raw_inputs: dict[str, Any]) -> CalculationEva
     chosen_hf_total = 0.0
     chosen_dp_kpa = 0.0
 
-    for dn_mm in candidates:
-        assert dn_mm is not None
-        d_m = dn_mm / 1000.0
+    for cand in candidates:
+        d_m = cand.internal_mm / 1000.0
         area_m2 = math.pi * (d_m * d_m) / 4.0
         vel_mps = flow_m3_s / area_m2
         reynolds = (vel_mps * d_m) / _WATER_KINEMATIC_VISCOSITY_M2_S
@@ -899,7 +1040,7 @@ def calculate_plumbing_pipe_sizing(raw_inputs: dict[str, Any]) -> CalculationEva
         hf_total_m = hf_per_100m * (inp.pipe_length_m / 100.0) * (1.0 + inp.minor_loss_allowance_pct / 100.0)
         dp_kpa = (_WATER_DENSITY_KG_M3 * _GRAVITY_M_S2 * hf_total_m) / 1000.0
 
-        chosen_dn = dn_mm
+        chosen = cand
         chosen_vel = _r4(vel_mps)
         chosen_re = _r4(reynolds)
         chosen_f = round(f_factor, 6)
@@ -907,43 +1048,69 @@ def calculate_plumbing_pipe_sizing(raw_inputs: dict[str, Any]) -> CalculationEva
         chosen_hf_total = _r4(hf_total_m)
         chosen_dp_kpa = _r4(dp_kpa)
 
-        if inp.nominal_diameter_mm is not None:
+        row_ok = (chosen_vel <= inp.max_velocity_mps) and (chosen_hf100 <= inp.max_head_loss_m_per_100m)
+        evaluated_sizes.append(
+            {
+                "nominal_diameter_mm": _r4(cand.nominal_mm),
+                "outer_diameter_mm": _r4(cand.outer_mm) if cand.outer_mm is not None else None,
+                "wall_thickness_mm": _r4(cand.wall_mm) if cand.wall_mm is not None else None,
+                "internal_diameter_mm": _r4(cand.internal_mm),
+                "velocity_mps": chosen_vel,
+                "reynolds_number": chosen_re,
+                "darcy_friction_factor": chosen_f,
+                "head_loss_m_per_100m": chosen_hf100,
+                "total_head_loss_m": chosen_hf_total,
+                "pressure_drop_kpa": chosen_dp_kpa,
+                "status": tok_pass if row_ok else tok_fail,
+            }
+        )
+
+        if inp.internal_diameter_mm is not None or inp.nominal_diameter_mm is not None:
             break
-        if chosen_vel <= inp.max_velocity_mps and chosen_hf100 <= inp.max_head_loss_m_per_100m:
+        if row_ok:
             break
 
     vel_ok = chosen_vel <= inp.max_velocity_mps
     hf_ok = chosen_hf100 <= inp.max_head_loss_m_per_100m
     passed = bool(vel_ok and hf_ok)
+    data_provenance, outcome_label, pass_tok, fail_tok = _provenance_and_verdict(passed, uses_builtin=uses_builtin)
 
     criteria = [
-        f"Flow velocity <= {inp.max_velocity_mps} m/s: {chosen_vel} m/s -> {'PASS' if vel_ok else 'FAIL'}",
-        f"Friction gradient <= {inp.max_head_loss_m_per_100m} m/100m: {chosen_hf100} m/100m -> {'PASS' if hf_ok else 'FAIL'} (verify against locally adopted code)",
+        f"Flow velocity <= {inp.max_velocity_mps} m/s: {chosen_vel} m/s (at ID {chosen.internal_mm} mm) -> {pass_tok if vel_ok else fail_tok}",
+        f"Friction gradient <= {inp.max_head_loss_m_per_100m} m/100m: {chosen_hf100} m/100m -> {pass_tok if hf_ok else fail_tok} (verify against locally adopted code)",
     ]
     equations = (
-        "Q = Q_lps / 1000 ; A = pi * D^2 / 4 ; v = Q / A ; Re = v * D / nu ; "
-        "f = 64/Re (Re<2300) else 0.25 / [log10((eps/D)/3.7 + 5.74/Re^0.9)]^2 ; "
-        "hf_100 = f * (100/D) * (v^2 / (2*g)) ; "
+        "Q = Q_lps / 1000 ; D_i = (OD - 2*t_wall)/1000 (or owner internal_diameter_mm) ; "
+        "A = pi * D_i^2 / 4 ; v = Q / A ; Re = v * D_i / nu ; "
+        "f = 64/Re (Re<2300) else 0.25 / [log10((eps/D_i)/3.7 + 5.74/Re^0.9)]^2 ; "
+        "hf_100 = f * (100/D_i) * (v^2 / (2*g)) ; "
         "hf_total = hf_100 * (L/100) * (1 + minor%/100) ; dP_kPa = rho * g * hf_total / 1000"
     )
     method = (
         f"Darcy-Weisbach hydraulic pipe sizing for '{inp.pipe_run_name}' ({inp.pipe_material}) "
-        "using explicit Swamee-Jain friction factor correlation and velocity/gradient bounds."
+        "on actual internal diameter ID (OD minus 2*wall for OD-nominal plastics, or schedule/owner ID) "
+        "using Swamee-Jain friction factor and velocity/gradient bounds."
     )
     assumptions = [
         f"Clean water properties at 20 C: kinematic viscosity nu = 1.004e-6 m^2/s, density = 998.2 kg/m^3.",
         f"Absolute internal pipe roughness epsilon = {roughness_mm} mm for {inp.pipe_material}; minor fittings allowance = {inp.minor_loss_allowance_pct}%.",
-        "Selected nominal bore represents internal hydraulic diameter — verify SDR wall thickness and allowable velocity against locally adopted plumbing code.",
+        f"Hydraulic velocity and Darcy-Weisbach loss evaluated strictly on internal bore ID = {_r4(chosen.internal_mm)} mm. Data provenance: {data_provenance}.",
     ]
     results = {
         "flow_rate_m3_s": round(flow_m3_s, 6),
-        "selected_nominal_diameter_mm": _r4(chosen_dn),
+        "selected_nominal_diameter_mm": _r4(chosen.nominal_mm),
+        "outer_diameter_mm": _r4(chosen.outer_mm) if chosen.outer_mm is not None else None,
+        "wall_thickness_mm": _r4(chosen.wall_mm) if chosen.wall_mm is not None else None,
+        "internal_diameter_mm": _r4(chosen.internal_mm),
         "velocity_mps": chosen_vel,
         "reynolds_number": chosen_re,
         "darcy_friction_factor": chosen_f,
         "head_loss_m_per_100m": chosen_hf100,
         "total_head_loss_m": chosen_hf_total,
         "pressure_drop_kpa": chosen_dp_kpa,
+        "evaluated_sizes": evaluated_sizes,
+        "data_provenance": data_provenance,
+        "acceptance_outcome_label": outcome_label,
         "acceptance_passed": passed,
     }
     units = {
@@ -951,6 +1118,9 @@ def calculate_plumbing_pipe_sizing(raw_inputs: dict[str, Any]) -> CalculationEva
         "flow_rate_m3_s": "m3/s",
         "pipe_length_m": "m",
         "selected_nominal_diameter_mm": "mm",
+        "outer_diameter_mm": "mm",
+        "wall_thickness_mm": "mm",
+        "internal_diameter_mm": "mm",
         "velocity_mps": "m/s",
         "max_velocity_mps": "m/s",
         "head_loss_m_per_100m": "m/100m",
@@ -969,6 +1139,7 @@ def calculate_plumbing_pipe_sizing(raw_inputs: dict[str, Any]) -> CalculationEva
         results=results,
         acceptance_criteria=criteria,
         acceptance_passed=passed,
+        breakdown_rows=evaluated_sizes,
     )
 
 

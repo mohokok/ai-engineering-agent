@@ -85,6 +85,7 @@ interface CalcCopy {
   secDeliverables: string;
   passBadge: string;
   failBadge: string;
+  provenanceLabel: string;
   downloadLabel: string;
 }
 
@@ -127,6 +128,7 @@ const COPY: Record<Lang, CalcCopy> = {
     secDeliverables: "الملفات المُصدَّرة (04_Engineering_Calculations)",
     passBadge: "مقبول (PASS)",
     failBadge: "غير مقبول (FAIL)",
+    provenanceLabel: "مصدر البيانات (Data Provenance)",
     downloadLabel: "تنزيل",
   },
   en: {
@@ -167,6 +169,7 @@ const COPY: Record<Lang, CalcCopy> = {
     secDeliverables: "Exported Deliverables (04_Engineering_Calculations)",
     passBadge: "PASS",
     failBadge: "FAIL",
+    provenanceLabel: "Data Provenance",
     downloadLabel: "Download",
   },
 };
@@ -317,7 +320,14 @@ export function CalculationsView({
         references: [refPayload],
       });
       setSelectedCalc(created);
-      setStatusMsg(`${created.title} — ${created.acceptance_passed ? copy.passBadge : copy.failBadge}`);
+      const createdOutcome =
+        created.acceptance_outcome_label ||
+        (typeof created.results.acceptance_outcome_label === "string" && created.results.acceptance_outcome_label
+          ? created.results.acceptance_outcome_label
+          : created.acceptance_passed
+            ? copy.passBadge
+            : copy.failBadge);
+      setStatusMsg(`${created.title} — ${createdOutcome}`);
       const listRes = await listProjectCalculations(projectId);
       setCalculations(listRes.calculations);
     } catch (err) {
@@ -352,9 +362,23 @@ export function CalculationsView({
   const scalarEntries = (obj: Record<string, unknown>) =>
     Object.entries(obj).filter(([, val]) => typeof val !== "object" || val === null);
 
+  const selectedProvenance = selectedCalc
+    ? selectedCalc.data_provenance ||
+      (typeof selectedCalc.results.data_provenance === "string" ? selectedCalc.results.data_provenance : "")
+    : "";
+  const selectedOutcomeLabel = selectedCalc
+    ? selectedCalc.acceptance_outcome_label ||
+      (typeof selectedCalc.results.acceptance_outcome_label === "string" && selectedCalc.results.acceptance_outcome_label
+        ? selectedCalc.results.acceptance_outcome_label
+        : selectedCalc.acceptance_passed
+          ? copy.passBadge
+          : copy.failBadge)
+    : "";
+
   const breakdownRows = selectedCalc
     ? ((selectedCalc.results.circuits as Array<Record<string, unknown>> | undefined) ??
         (selectedCalc.results.fixtures as Array<Record<string, unknown>> | undefined) ??
+        (selectedCalc.results.evaluated_sizes as Array<Record<string, unknown>> | undefined) ??
         [])
     : [];
 
@@ -542,7 +566,7 @@ export function CalculationsView({
                 {selectedCalc.title} ({selectedCalc.revision} · v{selectedCalc.version})
               </h3>
               <span className={`badge ${selectedCalc.acceptance_passed ? "badge-ok" : "badge-warn"}`}>
-                {selectedCalc.acceptance_passed ? copy.passBadge : copy.failBadge}
+                {selectedOutcomeLabel}
               </span>{" "}
               <span className="badge">{selectedCalc.classification}</span>{" "}
               <span className="badge" dir="ltr">tokens: {selectedCalc.tokens_used}</span>
@@ -558,6 +582,18 @@ export function CalculationsView({
           </div>
 
           <div style={{ display: "grid", gap: "0.85rem" }}>
+            <div
+              className={`status-box ${selectedProvenance === "owner_supplied" ? "status-ok" : ""}`}
+              style={
+                selectedProvenance && selectedProvenance !== "owner_supplied"
+                  ? { borderColor: "#d97706", background: "#fffbeb", color: "#92400e" }
+                  : undefined
+              }
+              data-testid="calc-data-provenance"
+            >
+              <strong>{copy.provenanceLabel}:</strong>{" "}
+              <span dir="ltr">{selectedProvenance || "—"}</span>
+            </div>
             <div>
               <h4>{copy.secInputs} &amp; {copy.secUnits}</h4>
               <div className="table-wrap">
@@ -618,7 +654,7 @@ export function CalculationsView({
                     {scalarEntries(selectedCalc.results).map(([k, v]) => (
                       <tr key={k}>
                         <td dir="ltr"><code>{k}</code></td>
-                        <td dir="ltr"><strong>{String(v)}</strong></td>
+                        <td dir="ltr"><strong>{v === null || v === undefined ? "—" : String(v)}</strong></td>
                         <td dir="ltr">{selectedCalc.units[k] ?? "—"}</td>
                       </tr>
                     ))}
@@ -640,7 +676,9 @@ export function CalculationsView({
                       {breakdownRows.map((rowObj, idx) => (
                         <tr key={idx}>
                           {Object.keys(breakdownRows[0]).map((col) => (
-                            <td key={col} dir="auto">{String(rowObj[col] ?? "")}</td>
+                            <td key={col} dir="auto">
+                              {rowObj[col] === null || rowObj[col] === undefined ? "—" : String(rowObj[col])}
+                            </td>
                           ))}
                         </tr>
                       ))}
@@ -743,7 +781,7 @@ export function CalculationsView({
                     <td dir="ltr">v{c.version} (exp v{c.export_version})</td>
                     <td>
                       <span className={`badge ${c.acceptance_passed ? "badge-ok" : "badge-warn"}`}>
-                        {c.acceptance_passed ? copy.passBadge : copy.failBadge}
+                        {c.acceptance_outcome_label || (c.acceptance_passed ? copy.passBadge : copy.failBadge)}
                       </span>
                     </td>
                     <td>{c.classification}</td>

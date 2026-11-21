@@ -14,7 +14,11 @@ from app.core.config import Settings
 from app.db.models import Calculation, Deliverable, ResearchSource, Task
 from app.main import create_app
 from app.providers.secrets import SecretStore
-from app.schemas.calculations import VERIFY_CODE_LABEL
+from app.schemas.calculations import (
+    BUILTIN_DATA_PROVENANCE,
+    OWNER_DATA_PROVENANCE,
+    VERIFY_CODE_LABEL,
+)
 from app.services.calc_export import sha256_file
 from app.services.workspace import resolve_project_file_path
 from app.skills.calculations import (
@@ -78,9 +82,11 @@ def test_step13_hand_checked_electrical_and_plumbing_unit_calculations() -> None
     assert load_ev.results["phase_l2_kw"] == pytest.approx(10.7, rel=1e-4)
     assert load_ev.results["phase_l3_kw"] == pytest.approx(11.1, rel=1e-4)
     assert load_ev.results["phase_unbalance_pct"] == pytest.approx(5.5728, rel=1e-3)
+    assert load_ev.results["data_provenance"] == OWNER_DATA_PROVENANCE
+    assert load_ev.results["acceptance_outcome_label"] == "PASS"
     assert load_ev.equations and load_ev.method and load_ev.assumptions and load_ev.units and load_ev.acceptance_criteria
 
-    # 2. Electrical Cable Sizing (ampacity-governed vs voltage-drop-governed)
+    # 2. Electrical Cable Sizing (ampacity-governed vs voltage-drop-governed; built-in baseline table)
     cable_short = calculate_electrical_cable_sizing(
         {
             "circuit_name": "FEEDER-HVAC-01",
@@ -103,6 +109,8 @@ def test_step13_hand_checked_electrical_and_plumbing_unit_calculations() -> None
     assert cable_short.results["selected_cable_size_mm2"] == 6.0
     assert cable_short.results["voltage_drop_pct"] == pytest.approx(1.88, rel=1e-2)
     assert cable_short.results["governing_criterion"] == "ampacity"
+    assert cable_short.results["data_provenance"] == BUILTIN_DATA_PROVENANCE
+    assert cable_short.results["acceptance_outcome_label"] == "PRELIMINARY PASS (built-in baseline data)"
 
     # Long run forces step-up due to 3% voltage drop cap
     cable_long = calculate_electrical_cable_sizing(
@@ -123,8 +131,9 @@ def test_step13_hand_checked_electrical_and_plumbing_unit_calculations() -> None
     assert cable_long.acceptance_passed is True
     assert cable_long.results["selected_cable_size_mm2"] == 10.0
     assert cable_long.results["governing_criterion"] == "voltage_drop"
+    assert cable_long.results["data_provenance"] == BUILTIN_DATA_PROVENANCE
 
-    # 3. Electrical Voltage Drop (hand-checked 16 mm2 Cu at 70C)
+    # 3. Electrical Voltage Drop (hand-checked 16 mm2 Cu at 70C; built-in resistance physics when r_ohm_per_km omitted)
     vd_ev = calculate_electrical_voltage_drop(
         {
             "circuit_name": "SUBMAIN-LAB-01",
@@ -147,6 +156,8 @@ def test_step13_hand_checked_electrical_and_plumbing_unit_calculations() -> None
     assert vd_ev.results["circuit_voltage_drop_pct"] == pytest.approx(1.7740, rel=1e-3)
     assert vd_ev.results["total_voltage_drop_pct"] == pytest.approx(2.7740, rel=1e-3)
     assert vd_ev.results["receiving_voltage_v"] == pytest.approx(388.904, rel=1e-3)
+    assert vd_ev.results["data_provenance"] == BUILTIN_DATA_PROVENANCE
+    assert vd_ev.results["acceptance_outcome_label"] == "PRELIMINARY PASS (built-in baseline data)"
 
     # Failing voltage drop when limit is tight
     vd_fail = calculate_electrical_voltage_drop(
@@ -163,8 +174,9 @@ def test_step13_hand_checked_electrical_and_plumbing_unit_calculations() -> None
         }
     )
     assert vd_fail.acceptance_passed is False
+    assert vd_fail.results["acceptance_outcome_label"] == "PRELIMINARY FAIL (built-in baseline data)"
 
-    # 4. Plumbing Water Demand (21.5 WSFU Hunter flush-tank interpolation)
+    # 4. Plumbing Water Demand (21.5 WSFU Hunter flush-tank interpolation; built-in WSFU + Hunter table)
     wd_ev = calculate_plumbing_water_demand(
         {
             "system_name": "CWS-CLINIC-01",
@@ -192,8 +204,21 @@ def test_step13_hand_checked_electrical_and_plumbing_unit_calculations() -> None
     assert wd_ev.results["storage_tank_m3"] == pytest.approx(3.6, rel=1e-4)
     assert wd_ev.results["hydraulic_power_kw"] == pytest.approx(0.3281, rel=1e-2)
     assert wd_ev.results["pump_shaft_power_kw"] == pytest.approx(0.5048, rel=1e-2)
+    assert wd_ev.results["data_provenance"] == BUILTIN_DATA_PROVENANCE
+    assert wd_ev.results["acceptance_outcome_label"] == "PRELIMINARY PASS (built-in baseline data)"
 
-    # 5. Plumbing Pipe Sizing (1.5 L/s PPR selects DN40 at v = 1.1937 m/s <= 1.5 m/s)
+    # 5. Plumbing Pipe Sizing (1.5 L/s PPR_PN20 SDR 6 auto-selects DN63 — NOT DN40!)
+    # Hand calculation (PPR_PN20 SDR 6, Q = 1.5 L/s = 0.0015 m3/s, eps = 0.0015 mm, nu = 1.004e-6 m2/s):
+    #   DN40 (OD = 40.0 mm, wall = 6.7 mm, ID = 40.0 - 2*6.7 = 26.6 mm):
+    #     A = pi * (0.0266)^2 / 4 = 5.557163e-4 m^2
+    #     v = 0.0015 / 5.557163e-4 = 2.6992 m/s  (> 1.5 m/s limit -> FAIL!)
+    #   DN50 (OD = 50.0 mm, wall = 8.3 mm, ID = 50.0 - 2*8.3 = 33.4 mm):
+    #     A = pi * (0.0334)^2 / 4 = 8.761588e-4 m^2
+    #     v = 0.0015 / 8.761588e-4 = 1.7120 m/s  (> 1.5 m/s limit -> FAIL!)
+    #   DN63 (OD = 63.0 mm, wall = 10.5 mm, ID = 63.0 - 2*10.5 = 42.0 mm):
+    #     A = pi * (0.0420)^2 / 4 = 1.385442e-3 m^2
+    #     v = 0.0015 / 1.385442e-3 = 1.0827 m/s  (<= 1.5 m/s -> PASS!)
+    #     Re = 1.082687 * 0.042 / 1.004e-6 = 45291.7 ; f = 0.021370 ; hf_100 = 3.041 m/100m (<= 5.0 -> PASS!)
     pipe_ev = calculate_plumbing_pipe_sizing(
         {
             "pipe_run_name": "RISER-CWS-MAIN",
@@ -206,23 +231,148 @@ def test_step13_hand_checked_electrical_and_plumbing_unit_calculations() -> None
         }
     )
     assert pipe_ev.acceptance_passed is True
-    assert pipe_ev.results["selected_nominal_diameter_mm"] == 40.0
-    assert pipe_ev.results["velocity_mps"] == pytest.approx(1.1937, rel=1e-3)
-    assert pipe_ev.results["head_loss_m_per_100m"] <= 5.0
+    assert pipe_ev.results["selected_nominal_diameter_mm"] == 63.0
+    assert pipe_ev.results["outer_diameter_mm"] == 63.0
+    assert pipe_ev.results["wall_thickness_mm"] == 10.5
+    assert pipe_ev.results["internal_diameter_mm"] == 42.0
+    assert pipe_ev.results["velocity_mps"] == pytest.approx(1.0827, rel=1e-3)
+    assert pipe_ev.results["head_loss_m_per_100m"] == pytest.approx(3.041, rel=1e-3)
+    assert pipe_ev.results["data_provenance"] == BUILTIN_DATA_PROVENANCE
+    assert pipe_ev.results["acceptance_outcome_label"] == "PRELIMINARY PASS (built-in baseline data)"
+    assert any(
+        r["nominal_diameter_mm"] == 40.0 and r["internal_diameter_mm"] == 26.6 and "PRELIMINARY FAIL" in r["status"]
+        for r in pipe_ev.results["evaluated_sizes"]
+    )
 
-    # Forced small bore DN25 violates max velocity 1.5 m/s
-    pipe_fail = calculate_plumbing_pipe_sizing(
+    # Explicit check: PPR_PN20 DN40 at 1.5 L/s has ID=26.6 mm, v=2.6992 m/s and FAILS the 1.5 m/s limit!
+    pipe_dn40 = calculate_plumbing_pipe_sizing(
         {
-            "pipe_run_name": "RISER-TOO-SMALL",
+            "pipe_run_name": "RISER-PPR-DN40-CHECK",
             "flow_rate_lps": 1.5,
             "pipe_length_m": 35.0,
             "pipe_material": "PPR_PN20",
-            "nominal_diameter_mm": 25.0,
+            "nominal_diameter_mm": 40.0,
             "max_velocity_mps": 1.5,
         }
     )
-    assert pipe_fail.acceptance_passed is False
-    assert pipe_fail.results["velocity_mps"] > 1.5
+    assert pipe_dn40.acceptance_passed is False
+    assert pipe_dn40.results["outer_diameter_mm"] == 40.0
+    assert pipe_dn40.results["wall_thickness_mm"] == 6.7
+    assert pipe_dn40.results["internal_diameter_mm"] == 26.6
+    assert pipe_dn40.results["velocity_mps"] == pytest.approx(2.6992, rel=1e-3)
+    assert pipe_dn40.results["velocity_mps"] > 1.5
+    assert pipe_dn40.results["data_provenance"] == BUILTIN_DATA_PROVENANCE
+    assert pipe_dn40.results["acceptance_outcome_label"] == "PRELIMINARY FAIL (built-in baseline data)"
+
+
+def test_step13_owner_supplied_overrides_and_data_provenance() -> None:
+    """Verify owner-supplied inputs bypass built-in preliminary baseline labels across calculators."""
+    # 1. Cable sizing with custom_ampacity_a (+ custom R/X) -> owner_supplied + PASS
+    cable_owner = calculate_electrical_cable_sizing(
+        {
+            "circuit_name": "FEEDER-OWNER-01",
+            "design_power_kw": 18.0,
+            "voltage_v": 400.0,
+            "phases": "3ph",
+            "power_factor": 0.85,
+            "length_m": 45.0,
+            "selected_size_mm2": 10.0,
+            "custom_ampacity_a": 70.0,
+            "custom_r_ohm_per_km": 1.83,
+            "custom_x_ohm_per_km": 0.08,
+            "ambient_temp_factor": 0.87,
+            "grouping_factor": 0.80,
+            "max_voltage_drop_pct": 3.0,
+        }
+    )
+    assert cable_owner.acceptance_passed is True
+    assert cable_owner.results["data_provenance"] == OWNER_DATA_PROVENANCE
+    assert cable_owner.results["acceptance_outcome_label"] == "PASS"
+
+    # 2. Voltage drop with custom r_ohm_per_km -> owner_supplied
+    vd_owner = calculate_electrical_voltage_drop(
+        {
+            "circuit_name": "SUBMAIN-OWNER-01",
+            "load_current_a": 45.0,
+            "voltage_v": 400.0,
+            "phases": "3ph",
+            "power_factor": 0.85,
+            "length_m": 80.0,
+            "cable_size_mm2": 16.0,
+            "r_ohm_per_km": 1.15,
+            "x_ohm_per_km": 0.08,
+            "upstream_drop_pct": 4.5,
+            "max_total_drop_pct": 5.0,
+        }
+    )
+    assert vd_owner.acceptance_passed is False
+    assert vd_owner.results["data_provenance"] == OWNER_DATA_PROVENANCE
+    assert vd_owner.results["acceptance_outcome_label"] == "FAIL"
+
+    # 3. Water demand: wsfu_per_unit alone still uses built-in Hunter curve -> preliminary;
+    #    wsfu_per_unit + custom_peak_flow_lps -> owner_supplied
+    wd_partial = calculate_plumbing_water_demand(
+        {
+            "system_name": "CWS-HUNTER-ONLY",
+            "fixtures": [{"fixture_type": "custom_wc", "count": 4, "wsfu_per_unit": 2.5}],
+        }
+    )
+    assert wd_partial.results["data_provenance"] == BUILTIN_DATA_PROVENANCE
+    assert wd_partial.results["acceptance_outcome_label"] == "PRELIMINARY PASS (built-in baseline data)"
+
+    wd_owner = calculate_plumbing_water_demand(
+        {
+            "system_name": "CWS-OWNER-FULL",
+            "fixtures": [{"fixture_type": "custom_wc", "count": 4, "wsfu_per_unit": 2.5}],
+            "custom_peak_flow_lps": 1.25,
+        }
+    )
+    assert wd_owner.results["data_provenance"] == OWNER_DATA_PROVENANCE
+    assert wd_owner.results["acceptance_outcome_label"] == "PASS"
+
+    # 4. Pipe sizing with owner internal_diameter_mm=40.0 -> bypasses table, yields v=1.1937 m/s, owner_supplied + PASS
+    pipe_owner = calculate_plumbing_pipe_sizing(
+        {
+            "pipe_run_name": "RISER-CUSTOM-ID",
+            "flow_rate_lps": 1.5,
+            "pipe_length_m": 35.0,
+            "pipe_material": "PPR_PN20",
+            "nominal_diameter_mm": 63.0,
+            "internal_diameter_mm": 40.0,
+            "max_velocity_mps": 1.5,
+        }
+    )
+    assert pipe_owner.acceptance_passed is True
+    assert pipe_owner.results["internal_diameter_mm"] == 40.0
+    assert pipe_owner.results["wall_thickness_mm"] == pytest.approx(11.5, rel=1e-4)
+    assert pipe_owner.results["velocity_mps"] == pytest.approx(1.1937, rel=1e-3)
+    assert pipe_owner.results["data_provenance"] == OWNER_DATA_PROVENANCE
+    assert pipe_owner.results["acceptance_outcome_label"] == "PASS"
+
+    # Also check uPVC and copper tables use internal bore ID rather than nominal OD/DN
+    upvc_40 = calculate_plumbing_pipe_sizing(
+        {
+            "pipe_run_name": "UPVC-DN40",
+            "flow_rate_lps": 1.5,
+            "pipe_length_m": 20.0,
+            "pipe_material": "uPVC",
+            "nominal_diameter_mm": 40.0,
+        }
+    )
+    assert upvc_40.results["outer_diameter_mm"] == 40.0
+    assert upvc_40.results["internal_diameter_mm"] == 32.6
+    assert upvc_40.acceptance_passed is False  # v ~ 1.797 m/s > 1.5 m/s
+    copper_40 = calculate_plumbing_pipe_sizing(
+        {
+            "pipe_run_name": "CU-DN40",
+            "flow_rate_lps": 1.5,
+            "pipe_length_m": 20.0,
+            "pipe_material": "copper",
+            "nominal_diameter_mm": 40.0,
+        }
+    )
+    assert copper_40.results["internal_diameter_mm"] == 38.3
+    assert copper_40.acceptance_passed is True  # v ~ 1.302 m/s <= 1.5 m/s
 
 
 def test_step13_reference_validation_exports_docx_pdf_xlsx_and_qa_checks(tmp_path: Path) -> None:
@@ -360,6 +510,8 @@ def test_step13_reference_validation_exports_docx_pdf_xlsx_and_qa_checks(tmp_pat
         cid_ar = calc_ar["id"]
         assert calc_ar["tokens_used"] == 0
         assert calc_ar["acceptance_passed"] is True
+        assert calc_ar["data_provenance"] == OWNER_DATA_PROVENANCE
+        assert calc_ar["acceptance_outcome_label"] == "PASS"
         assert calc_ar["references"][0]["verification_label"] == VERIFY_CODE_LABEL
         assert VERIFY_CODE_LABEL in calc_ar["references_text"]
 
@@ -383,7 +535,12 @@ def test_step13_reference_validation_exports_docx_pdf_xlsx_and_qa_checks(tmp_pat
             },
         )
         assert calc_en_res.status_code == 201, calc_en_res.text
-        cid_en = calc_en_res.json()["id"]
+        calc_en = calc_en_res.json()
+        cid_en = calc_en["id"]
+        assert calc_en["data_provenance"] == BUILTIN_DATA_PROVENANCE
+        assert calc_en["acceptance_outcome_label"] == "PRELIMINARY PASS (built-in baseline data)"
+        assert calc_en["results"]["selected_nominal_diameter_mm"] == 63.0
+        assert calc_en["results"]["internal_diameter_mm"] == 42.0
 
         # 4. Update calculation inputs via PATCH increments version cleanly
         patch_res = client.patch(
@@ -430,6 +587,7 @@ def test_step13_reference_validation_exports_docx_pdf_xlsx_and_qa_checks(tmp_pat
         try:
             ws = wb.active
             assert ws is not None
+            assert OWNER_DATA_PROVENANCE in str(ws["A4"].value)
             formulas = [
                 ws.cell(row=r, column=c).value
                 for r in range(1, ws.max_row + 1)
@@ -442,6 +600,48 @@ def test_step13_reference_validation_exports_docx_pdf_xlsx_and_qa_checks(tmp_pat
             assert len(wb.sheetnames) == 2
         finally:
             wb.close()
+
+        # Verify DOCX, PDF, and XLSX headers/formulas for pipe sizing (cid_en — built-in preliminary data + internal bore ID)
+        en_detail = client.get(f"/api/calculations/{cid_en}").json()
+        en_by_fmt = {d["format"]: d for d in en_detail["deliverables"]}
+        en_docx_path = resolve_project_file_path(settings.workspaces_dir, ws_slug, en_by_fmt["docx"]["relative_path"])
+        en_pdf_path = resolve_project_file_path(settings.workspaces_dir, ws_slug, en_by_fmt["pdf"]["relative_path"])
+        en_xlsx_path = resolve_project_file_path(settings.workspaces_dir, ws_slug, en_by_fmt["xlsx"]["relative_path"])
+
+        en_doc = DocxDocument(str(en_docx_path))
+        en_docx_txt = "\n".join(p.text for p in en_doc.paragraphs)
+        assert BUILTIN_DATA_PROVENANCE in en_docx_txt
+        assert "PRELIMINARY PASS (built-in baseline data)" in en_docx_txt
+
+        with pymupdf.open(str(en_pdf_path)) as en_pdf:
+            en_pdf_txt = "\n".join(page.get_text("text") for page in en_pdf)
+        en_pdf_norm = " ".join(en_pdf_txt.replace("\xa0", " ").replace("\xad", "-").split())
+        assert BUILTIN_DATA_PROVENANCE in en_pdf_norm
+        assert "PRELIMINARY PASS (built-in baseline data)" in en_pdf_norm
+
+        en_wb = load_workbook(str(en_xlsx_path), data_only=False)
+        try:
+            en_ws = en_wb.active
+            assert en_ws is not None
+            assert BUILTIN_DATA_PROVENANCE in str(en_ws["A4"].value)
+            assert "PRELIMINARY PASS (built-in baseline data)" in str(en_ws["A4"].value)
+            id_row = [
+                r for r in range(1, en_ws.max_row + 1) if en_ws.cell(row=r, column=1).value == "internal_diameter_mm"
+            ][-1]
+            area_formula = next(
+                str(en_ws.cell(row=r, column=2).value)
+                for r in range(1, en_ws.max_row + 1)
+                if en_ws.cell(row=r, column=1).value == "Internal Pipe Area (m2)"
+            )
+            assert f"POWER(B{id_row}/1000,2)" in area_formula
+            live_verdict = next(
+                str(en_ws.cell(row=r, column=2).value)
+                for r in range(1, en_ws.max_row + 1)
+                if en_ws.cell(row=r, column=1).value == "Live Acceptance Check"
+            )
+            assert "PRELIMINARY PASS (built-in baseline data)" in live_verdict
+        finally:
+            en_wb.close()
 
         # 6. Run Step 12 QA Agent on clean exported Step 13 calculations -> PASSES at 0 AI tokens and allows /verify
         qa_pass_res = client.post(
@@ -467,7 +667,7 @@ def test_step13_reference_validation_exports_docx_pdf_xlsx_and_qa_checks(tmp_pat
             bad_calc = db.get(Calculation, cid_en)
             assert bad_calc is not None
             tampered = dict(bad_calc.results_json)
-            tampered["velocity_mps"] = 0.25  # wrong velocity vs deterministic 1.1937 m/s
+            tampered["velocity_mps"] = 0.25  # wrong velocity vs deterministic 1.0827 m/s
             tampered["acceptance_passed"] = False
             bad_calc.results_json = tampered
             bad_calc.acceptance_passed = False

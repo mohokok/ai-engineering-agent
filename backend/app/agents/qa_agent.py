@@ -694,6 +694,12 @@ def _check_arithmetic(
                     exp_num = _to_decimal(exp_val)
                     if stored_num is None or exp_num is None or abs(stored_num - exp_num) > Decimal("0.01"):
                         mismatches.append(f"{key}: stored={stored_res.get(key)}, expected={exp_val}")
+                elif key in ("data_provenance", "acceptance_outcome_label"):
+                    if str(stored_res.get(key) or "") != str(exp_val or ""):
+                        mismatches.append(f"{key}: stored={stored_res.get(key)}, expected={exp_val}")
+                elif exp_val is None and key in ("outer_diameter_mm", "wall_thickness_mm"):
+                    if stored_res.get(key) is not None:
+                        mismatches.append(f"{key}: stored={stored_res.get(key)}, expected=None")
             if mismatches:
                 findings.append(
                     QaCandidateFinding(

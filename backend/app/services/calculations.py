@@ -150,6 +150,9 @@ def _split_lines(raw: str | None) -> list[str]:
 
 
 def _to_summary_out(row: Calculation) -> CalculationSummaryOut:
+    res = dict(row.results_json or {})
+    provenance = str(res.get("data_provenance") or "")
+    outcome_label = str(res.get("acceptance_outcome_label") or ("PASS" if row.acceptance_passed else "FAIL"))
     return CalculationSummaryOut(
         id=row.id,
         project_id=row.project_id,
@@ -166,6 +169,8 @@ def _to_summary_out(row: Calculation) -> CalculationSummaryOut:
         export_version=row.export_version,
         status=row.status,
         acceptance_passed=bool(row.acceptance_passed),
+        data_provenance=provenance,
+        acceptance_outcome_label=outcome_label,
         tokens_used=int(row.tokens_used or 0),
         created_at=row.created_at,
         updated_at=row.updated_at,
@@ -423,6 +428,9 @@ def export_calculation_deliverables(
                 f"Refusing to overwrite existing calculation export file: {p.name}"
             )
 
+    res = dict(row.results_json or {})
+    provenance = str(res.get("data_provenance") or "")
+    outcome_label = str(res.get("acceptance_outcome_label") or ("PASS" if row.acceptance_passed else "FAIL"))
     render_data = CalculationRenderData(
         project_code=row.project.code,
         project_name=row.project.name,
@@ -440,9 +448,11 @@ def export_calculation_deliverables(
         equations=row.equations or "",
         method=row.methodology or "",
         assumptions=_split_lines(row.assumptions),
-        results=dict(row.results_json or {}),
+        results=res,
         acceptance_criteria=_split_lines(row.acceptance_criteria),
         acceptance_passed=bool(row.acceptance_passed),
+        data_provenance=provenance,
+        acceptance_outcome_label=outcome_label,
         references=list(row.references_json or []),
     )
 
@@ -462,6 +472,8 @@ def export_calculation_deliverables(
                 "inputs": render_data.inputs,
                 "units": render_data.units,
                 "results": render_data.results,
+                "data_provenance": render_data.data_provenance,
+                "acceptance_outcome_label": render_data.acceptance_outcome_label,
                 "acceptance_passed": render_data.acceptance_passed,
                 "references": render_data.references,
             },

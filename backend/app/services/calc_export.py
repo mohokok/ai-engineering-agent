@@ -48,6 +48,25 @@ class CalculationRenderData:
     acceptance_criteria: list[str]
     acceptance_passed: bool
     references: list[dict[str, Any]]
+    data_provenance: str = ""
+    acceptance_outcome_label: str = ""
+
+
+def _provenance_and_verdict_tokens(data: CalculationRenderData) -> tuple[str, str, str, str]:
+    """Return (data_provenance, acceptance_outcome_label, pass_token, fail_token)."""
+    prov = data.data_provenance or str(data.results.get("data_provenance") or "")
+    if prov and prov != "owner_supplied":
+        pass_tok = "PRELIMINARY PASS (built-in baseline data)"
+        fail_tok = "PRELIMINARY FAIL (built-in baseline data)"
+    else:
+        pass_tok = "PASS"
+        fail_tok = "FAIL"
+    outcome_lbl = (
+        data.acceptance_outcome_label
+        or str(data.results.get("acceptance_outcome_label") or "")
+        or (pass_tok if data.acceptance_passed else fail_tok)
+    )
+    return prov, outcome_lbl, pass_tok, fail_tok
 
 
 def sha256_file(path: Path) -> str:
@@ -83,6 +102,7 @@ _CALC_LABELS: dict[CalculationLanguage, dict[str, str]] = {
         "calc_type": "نوع الحساب",
         "rev_ver": "الإصدار والمراجعة",
         "date": "تاريخ الإصدار (UTC)",
+        "provenance": "مصدر البيانات (Data Provenance)",
         "outcome": "نتيجة معايير القبول",
         "pass": "مقبول (PASS)",
         "fail": "غير مقبول (FAIL)",
@@ -111,6 +131,7 @@ _CALC_LABELS: dict[CalculationLanguage, dict[str, str]] = {
         "calc_type": "Calculation Type",
         "rev_ver": "Version / Revision",
         "date": "Issue Date (UTC)",
+        "provenance": "Data Provenance",
         "outcome": "Acceptance Outcome",
         "pass": "PASS",
         "fail": "FAIL",
@@ -139,7 +160,7 @@ def _flat_scalar_entries(mapping: dict[str, Any], units: dict[str, str]) -> list
     for k, v in mapping.items():
         if isinstance(v, (list, dict)):
             continue
-        rows.append((k, str(v), units.get(k, "—")))
+        rows.append((k, "—" if v is None else str(v), units.get(k, "—")))
     return rows
 
 
@@ -151,6 +172,7 @@ def generate_calculation_xlsx(out_path: Path, data: CalculationRenderData) -> No
 
     is_ar = data.language == "ar"
     lbl = _CALC_LABELS[data.language]
+    prov_txt, outcome_txt, pass_tok, fail_tok = _provenance_and_verdict_tokens(data)
     wb = Workbook()
     ws = wb.active
     ws.title = "الحساب الهندسي" if is_ar else "Calculation Sheet"
@@ -180,7 +202,12 @@ def generate_calculation_xlsx(out_path: Path, data: CalculationRenderData) -> No
     ws["A3"].font = note_font
     ws.merge_cells("A3:H3")
 
-    row = 5
+    ws["A4"] = _safe_xlsx_text(f"{lbl['provenance']}: {prov_txt or '—'} | {lbl['outcome']}: {outcome_txt}")
+    ws["A4"].font = bold_font
+    ws["A4"].fill = warn_fill if (prov_txt and prov_txt != "owner_supplied") else ok_fill
+    ws.merge_cells("A4:H4")
+
+    row = 6
     # Inputs block with tracked cell coordinates for live Excel formulas
     ws.cell(row=row, column=1, value=_safe_xlsx_text(lbl["sec_inputs"])).font = bold_font
     row += 1
@@ -255,7 +282,7 @@ def generate_calculation_xlsx(out_path: Path, data: CalculationRenderData) -> No
             ("Design Apparent Power (kVA)", f"=ROUND(H{tot_row}*(1+{spare_cell}/100),4)", "kVA"),
             ("Design Current (A)", f'=ROUND((B{row+1}*1000)/(IF({ph_cell}="3ph",SQRT(3),1)*{v_cell}),4)', "A"),
             ("Phase Unbalance (%)", float(data.results.get("phase_unbalance_pct") or 0.0), "%"),
-            ("Acceptance Status", f'=IF(AND(F{tot_row}>0,B{row+3}<={max_unbal_cell}),"PASS","FAIL")', "—"),
+            ("Acceptance Status", f'=IF(AND(F{tot_row}>0,B{row+3}<={max_unbal_cell}),"{pass_tok}","{fail_tok}")', "—"),
         ]
         for label_txt, formula_val, unit_txt in summary_formulas:
             ws.cell(row=row, column=1, value=label_txt).font = bold_font
@@ -311,7 +338,7 @@ def generate_calculation_xlsx(out_path: Path, data: CalculationRenderData) -> No
             ("Total Dynamic Head (m)", f"=ROUND({stat_cell}+{fric_cell},4)", "m"),
             ("Hydraulic Power (kW)", f"=ROUND((9.80665*B{lps_row}*B{tdh_row})/1000,4)", "kW"),
             ("Pump Shaft Power (kW)", f"=ROUND(B{hyd_row}/{eff_cell},4)", "kW"),
-            ("Acceptance Status", f'=IF(AND(E{wsfu_tot_row}>0,B{lps_row}>0),"PASS","FAIL")', "—"),
+            ("Acceptance Status", f'=IF(AND(E{wsfu_tot_row}>0,B{lps_row}>0),"{pass_tok}","{fail_tok}")', "—"),
         ]
         for label_txt, formula_val, unit_txt in summary_formulas:
             ws.cell(row=row, column=1, value=label_txt).font = bold_font
@@ -334,7 +361,7 @@ def generate_calculation_xlsx(out_path: Path, data: CalculationRenderData) -> No
             c_val = ws.cell(row=row, column=2)
             raw_v = data.results[k]
             if k == "acceptance_passed":
-                c_val.value = "PASS" if data.acceptance_passed else "FAIL"
+                c_val.value = _safe_xlsx_text(outcome_txt)
                 c_val.fill = ok_fill if data.acceptance_passed else warn_fill
             elif isinstance(raw_v, (int, float)) and not isinstance(raw_v, bool):
                 c_val.value = float(raw_v)
@@ -365,7 +392,7 @@ def generate_calculation_xlsx(out_path: Path, data: CalculationRenderData) -> No
                 ("Total Derating Factor Ct", f"=ROUND({ca_c}*{cg_c},4)", "—"),
                 ("Derated Ampacity Iz_derated (A)", f"=ROUND({iz_r}*B{row+1},4)", "A"),
                 ("Voltage Drop (%)", f"=ROUND(({dv_v_r}/{v_c})*100,4)", "%"),
-                ("Live Acceptance Check", f'=IF(AND(B{row}<={in_r},{in_r}<=B{row+2},B{row+3}<={dv_max_c}),"PASS","FAIL")', "—"),
+                ("Live Acceptance Check", f'=IF(AND(B{row}<={in_r},{in_r}<=B{row+2},B{row+3}<={dv_max_c}),"{pass_tok}","{fail_tok}")', "—"),
             ]
         elif data.calculation_type == "electrical_voltage_drop":
             v_c = input_cell_map["voltage_v"]
@@ -376,7 +403,7 @@ def generate_calculation_xlsx(out_path: Path, data: CalculationRenderData) -> No
                 ("Circuit Voltage Drop (%)", f"=ROUND(({dv_v_r}/{v_c})*100,4)", "%"),
                 ("Total Cumulative Drop (%)", f"=ROUND(B{row}+{up_c},4)", "%"),
                 ("Receiving Voltage (V)", f"=ROUND({v_c}*(1-B{row+1}/100),4)", "V"),
-                ("Live Acceptance Check", f'=IF(B{row+1}<={max_c},"PASS","FAIL")', "—"),
+                ("Live Acceptance Check", f'=IF(B{row+1}<={max_c},"{pass_tok}","{fail_tok}")', "—"),
             ]
         else:  # plumbing_pipe_sizing
             q_c = input_cell_map["flow_rate_lps"]
@@ -384,15 +411,15 @@ def generate_calculation_xlsx(out_path: Path, data: CalculationRenderData) -> No
             min_c = input_cell_map["minor_loss_allowance_pct"]
             vmax_c = input_cell_map["max_velocity_mps"]
             hmax_c = input_cell_map["max_head_loss_m_per_100m"]
-            dn_r = result_cell_map["selected_nominal_diameter_mm"]
+            id_r = result_cell_map["internal_diameter_mm"]
             hf100_r = result_cell_map["head_loss_m_per_100m"]
             live_rows = [
                 ("Flow Q (m3/s)", f"=ROUND({q_c}/1000,6)", "m3/s"),
-                ("Internal Pipe Area (m2)", f"=PI()*POWER({dn_r}/1000,2)/4", "m2"),
+                ("Internal Pipe Area (m2)", f"=PI()*POWER({id_r}/1000,2)/4", "m2"),
                 ("Flow Velocity (m/s)", f"=ROUND(B{row}/B{row+1},4)", "m/s"),
                 ("Total Head Loss (m)", f"=ROUND({hf100_r}*({len_c}/100)*(1+{min_c}/100),4)", "m"),
                 ("Pressure Drop (kPa)", f"=ROUND(998.2*9.80665*B{row+3}/1000,4)", "kPa"),
-                ("Live Acceptance Check", f'=IF(AND(B{row+2}<={vmax_c},{hf100_r}<={hmax_c}),"PASS","FAIL")', "—"),
+                ("Live Acceptance Check", f'=IF(AND(B{row+2}<={vmax_c},{hf100_r}<={hmax_c}),"{pass_tok}","{fail_tok}")', "—"),
             ]
         for label_txt, formula_val, unit_txt in live_rows:
             ws.cell(row=row, column=1, value=label_txt).font = bold_font
@@ -402,6 +429,37 @@ def generate_calculation_xlsx(out_path: Path, data: CalculationRenderData) -> No
             if "Acceptance" in label_txt:
                 c_val.fill = ok_fill if data.acceptance_passed else warn_fill
             row += 1
+
+        eval_sizes = data.results.get("evaluated_sizes") or []
+        if isinstance(eval_sizes, list) and eval_sizes:
+            row += 1
+            ws.cell(row=row, column=1, value=_safe_xlsx_text(lbl["sec_breakdown"])).font = bold_font
+            row += 1
+            b_headers = [
+                "Nominal DN (mm)",
+                "Outer OD (mm)",
+                "Wall (mm)",
+                "Internal ID (mm)",
+                "Velocity (m/s)",
+                "Head Loss (m/100m)",
+                "Total Loss (m)",
+                "Status",
+            ]
+            for col_idx, h in enumerate(b_headers, start=1):
+                c = ws.cell(row=row, column=col_idx, value=h)
+                c.fill = navy_fill
+                c.font = hdr_font
+            row += 1
+            for item in eval_sizes:
+                ws.cell(row=row, column=1, value=float(item.get("nominal_diameter_mm") or 0.0))
+                ws.cell(row=row, column=2, value=float(item["outer_diameter_mm"]) if item.get("outer_diameter_mm") is not None else "—")
+                ws.cell(row=row, column=3, value=float(item["wall_thickness_mm"]) if item.get("wall_thickness_mm") is not None else "—")
+                ws.cell(row=row, column=4, value=float(item.get("internal_diameter_mm") or 0.0))
+                ws.cell(row=row, column=5, value=float(item.get("velocity_mps") or 0.0))
+                ws.cell(row=row, column=6, value=float(item.get("head_loss_m_per_100m") or 0.0))
+                ws.cell(row=row, column=7, value=float(item.get("total_head_loss_m") or 0.0))
+                ws.cell(row=row, column=8, value=_safe_xlsx_text(item.get("status")))
+                row += 1
 
     # Sheet 2: Documentation & References
     ws_doc = wb.create_sheet(title="المعادلات والمراجع" if is_ar else "Documentation & Refs")
@@ -482,7 +540,7 @@ def generate_calculation_docx(out_path: Path, data: CalculationRenderData) -> No
     h = doc.add_heading(f"{data.title} — [{lbl['classification_prefix']}: {data.classification}]", level=1)
     _style_paragraph(h, is_ar=is_ar, bold=True, font_size=15, color=RGBColor(0x1E, 0x3A, 0x5F))
 
-    outcome_lbl = lbl["pass"] if data.acceptance_passed else lbl["fail"]
+    prov_txt, outcome_lbl, _, _ = _provenance_and_verdict_tokens(data)
     meta = (
         f"{lbl['project']}: [{data.project_code}] {data.project_name} | "
         f"{lbl['discipline']}: {data.discipline} ({data.calculation_type}) | "
@@ -491,6 +549,15 @@ def generate_calculation_docx(out_path: Path, data: CalculationRenderData) -> No
     )
     p_meta = doc.add_paragraph(meta)
     _style_paragraph(p_meta, is_ar=is_ar, font_size=9, color=RGBColor(0x33, 0x41, 0x55))
+
+    p_prov = doc.add_paragraph(f"{lbl['provenance']}: {prov_txt or '—'}")
+    _style_paragraph(
+        p_prov,
+        is_ar=is_ar,
+        bold=True,
+        font_size=9,
+        color=RGBColor(0x9A, 0x34, 0x12) if (prov_txt and prov_txt != "owner_supplied") else RGBColor(0x16, 0x65, 0x34),
+    )
 
     p_disc = doc.add_paragraph(lbl["disclaimer"])
     _style_paragraph(p_disc, is_ar=is_ar, bold=True, font_size=9, color=RGBColor(0x9A, 0x34, 0x12))
@@ -540,8 +607,8 @@ def generate_calculation_docx(out_path: Path, data: CalculationRenderData) -> No
     _style_paragraph(p_h5, is_ar=is_ar, bold=True, font_size=12, color=RGBColor(0x1E, 0x3A, 0x5F))
     _add_kv_table(_flat_scalar_entries(data.results, data.units))
 
-    # Breakdown table for load schedule / fixtures if present
-    rows_list = data.results.get("circuits") or data.results.get("fixtures") or []
+    # Breakdown table for load schedule / fixtures / pipe sizes if present
+    rows_list = data.results.get("circuits") or data.results.get("fixtures") or data.results.get("evaluated_sizes") or []
     if isinstance(rows_list, list) and rows_list:
         p_hb = doc.add_heading(lbl["sec_breakdown"], level=3)
         _style_paragraph(p_hb, is_ar=is_ar, bold=True, font_size=11, color=RGBColor(0x1E, 0x3A, 0x5F))
@@ -555,7 +622,8 @@ def generate_calculation_docx(out_path: Path, data: CalculationRenderData) -> No
         for item_dict in rows_list:
             rc = btbl.add_row().cells
             for i, col_name in enumerate(cols):
-                rc[i].text = str(item_dict.get(col_name, ""))
+                val = item_dict.get(col_name)
+                rc[i].text = "—" if val is None else str(val)
                 _style_paragraph(rc[i].paragraphs[0], is_ar=is_ar, font_size=8)
 
     # 6. Acceptance Criteria
@@ -626,13 +694,13 @@ def generate_calculation_pdf(out_path: Path, data: CalculationRenderData) -> Non
             f"<th>{_esc(lbl['col_unit'])}</th></tr></thead><tbody>{rows}</tbody></table>"
         )
 
-    rows_list = data.results.get("circuits") or data.results.get("fixtures") or []
+    rows_list = data.results.get("circuits") or data.results.get("fixtures") or data.results.get("evaluated_sizes") or []
     breakdown_html = ""
     if isinstance(rows_list, list) and rows_list:
         cols = list(rows_list[0].keys())
         th_html = "".join(f"<th>{_esc_ltr(c)}</th>" for c in cols)
         tr_html = "".join(
-            "<tr>" + "".join(f"<td>{_esc(r.get(c, ''))}</td>" for c in cols) + "</tr>"
+            "<tr>" + "".join(f"<td>{_esc('—' if r.get(c) is None else r.get(c))}</td>" for c in cols) + "</tr>"
             for r in rows_list
         )
         breakdown_html = f"<h3>{_esc(lbl['sec_breakdown'])}</h3><table><thead><tr>{th_html}</tr></thead><tbody>{tr_html}</tbody></table>"
@@ -645,8 +713,9 @@ def generate_calculation_pdf(out_path: Path, data: CalculationRenderData) -> Non
         f"<td><strong>{_esc_ltr(r.get('verification_label') or VERIFY_CODE_LABEL)}</strong></td></tr>"
         for r in data.references
     )
+    prov_txt, outcome_txt, _, _ = _provenance_and_verdict_tokens(data)
     outcome_cls = "pass" if data.acceptance_passed else "fail"
-    outcome_txt = lbl["pass"] if data.acceptance_passed else lbl["fail"]
+    prov_cls = "disclaimer" if (prov_txt and prov_txt != "owner_supplied") else "prov-ok"
 
     html_doc = f"""<!DOCTYPE html>
 <html lang="{data.language}" dir="{dir_attr}">
@@ -663,6 +732,7 @@ h3 {{ color: #1e3a5f; font-size: 10pt; margin: 8pt 0 3pt 0; }}
 .pass {{ background-color: #15803d; color: #ffffff; padding: 2pt 6pt; font-size: 8.5pt; font-weight: bold; }}
 .fail {{ background-color: #b91c1c; color: #ffffff; padding: 2pt 6pt; font-size: 8.5pt; font-weight: bold; }}
 .disclaimer {{ color: #9a3412; font-weight: bold; font-size: 8.5pt; margin-top: 4pt; }}
+.prov-ok {{ color: #166534; font-weight: bold; font-size: 8.5pt; margin-top: 4pt; }}
 .eqbox {{ background-color: #f1f5f9; border: 0.7pt solid #cbd5e1; padding: 5pt; font-size: 8.5pt; direction: ltr; text-align: left; }}
 table {{ width: 100%; border-collapse: collapse; margin: 4pt 0 8pt 0; font-size: 8.5pt; }}
 th, td {{ border: 0.6pt solid #94a3b8; padding: 4pt; text-align: {align}; }}
@@ -673,6 +743,7 @@ th {{ background-color: #1e3a5f; color: #ffffff; font-weight: bold; }}
   <div class="banner">
     <h1>{_esc(data.title)} &nbsp; <span class="badge">{_esc(lbl['classification_prefix'])}: {_esc_ltr(data.classification)}</span> &nbsp; <span class="{outcome_cls}">{_esc(outcome_txt)}</span></h1>
     <div>{_esc(lbl['project'])}: {_esc_ltr('[' + data.project_code + ']')} {_esc(data.project_name)} | {_esc(lbl['discipline'])}: {_esc_ltr(data.discipline)} ({_esc_ltr(data.calculation_type)}) | {_esc(lbl['rev_ver'])}: {_esc_ltr(f'v{data.version} ({data.revision})')}</div>
+    <div class="{prov_cls}">{_esc(lbl['provenance'])}: {_esc_ltr(prov_txt or '—')}</div>
     <div class="disclaimer">{_esc(lbl['disclaimer'])}</div>
   </div>
   <h2>{_esc(lbl['sec_inputs'])}</h2>

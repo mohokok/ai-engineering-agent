@@ -2431,6 +2431,8 @@ describe("App Step 10 BOQ & quantity UI", () => {
       export_version: 1,
       status: "exported",
       acceptance_passed: true,
+      data_provenance: "owner_supplied",
+      acceptance_outcome_label: "PASS",
       tokens_used: 0,
       created_at: "2026-11-21T16:00:00Z",
       updated_at: "2026-11-21T16:00:00Z",
@@ -2510,6 +2512,56 @@ describe("App Step 10 BOQ & quantity UI", () => {
     expect(viewEn).toContain("verify against the locally adopted code");
     expect(viewEn).toContain("65.8178");
     expect(viewEn).toContain("Download XLSX");
+    expect(viewEn).toContain("owner_supplied");
+
+    const builtinPipeCalc = {
+      ...sampleCalc,
+      id: "calc-13-pipe",
+      discipline: "plumbing",
+      calculation_type: "plumbing_pipe_sizing",
+      title: "Synthetic Cold Water Main Riser Sizing (RISER-CWS-MAIN)",
+      acceptance_passed: true,
+      data_provenance:
+        "built-in preliminary baseline data, not from a cited source, verify against manufacturer datasheet and locally adopted code",
+      acceptance_outcome_label: "PRELIMINARY PASS (built-in baseline data)",
+      results: {
+        selected_nominal_diameter_mm: 63.0,
+        outer_diameter_mm: 63.0,
+        wall_thickness_mm: 10.5,
+        internal_diameter_mm: 42.0,
+        velocity_mps: 1.0827,
+        data_provenance:
+          "built-in preliminary baseline data, not from a cited source, verify against manufacturer datasheet and locally adopted code",
+        acceptance_outcome_label: "PRELIMINARY PASS (built-in baseline data)",
+        acceptance_passed: true,
+        evaluated_sizes: [
+          {
+            nominal_diameter_mm: 40.0,
+            outer_diameter_mm: 40.0,
+            wall_thickness_mm: 6.7,
+            internal_diameter_mm: 26.6,
+            velocity_mps: 2.6992,
+            status: "PRELIMINARY FAIL (built-in baseline data)",
+          },
+          {
+            nominal_diameter_mm: 63.0,
+            outer_diameter_mm: 63.0,
+            wall_thickness_mm: 10.5,
+            internal_diameter_mm: 42.0,
+            velocity_mps: 1.0827,
+            status: "PRELIMINARY PASS (built-in baseline data)",
+          },
+        ],
+      },
+    };
+    const viewBuiltin = renderToStaticMarkup(
+      <CalculationsView lang="en" initialCalculation={builtinPipeCalc} initialCalculations={[builtinPipeCalc]} />
+    );
+    expect(viewBuiltin).toContain(
+      "built-in preliminary baseline data, not from a cited source, verify against manufacturer datasheet and locally adopted code"
+    );
+    expect(viewBuiltin).toContain("PRELIMINARY PASS (built-in baseline data)");
+    expect(viewBuiltin).toContain("26.6");
 
     const viewAr = renderToStaticMarkup(
       <CalculationsView lang="ar" initialCalculation={sampleCalc} initialCalculations={[sampleCalc]} />

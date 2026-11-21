@@ -9,6 +9,11 @@ from app.schemas.projects import ProjectClassification
 from app.schemas.reports import DeliverableOut
 
 VERIFY_CODE_LABEL = "verify against the locally adopted code"
+BUILTIN_DATA_PROVENANCE = (
+    "built-in preliminary baseline data, not from a cited source, "
+    "verify against manufacturer datasheet and locally adopted code"
+)
+OWNER_DATA_PROVENANCE = "owner_supplied"
 
 CalculationDiscipline = Literal["electrical", "plumbing"]
 CalculationType = Literal[
@@ -109,6 +114,8 @@ class CalculationSummaryOut(BaseModel):
     export_version: int
     status: str
     acceptance_passed: bool
+    data_provenance: str = ""
+    acceptance_outcome_label: str = ""
     tokens_used: int = 0
     created_at: datetime
     updated_at: datetime

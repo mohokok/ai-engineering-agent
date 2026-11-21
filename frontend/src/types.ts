@@ -1334,6 +1334,8 @@ export interface CalculationSummaryOut {
   export_version: number;
   status: string;
   acceptance_passed: boolean;
+  data_provenance?: string;
+  acceptance_outcome_label?: string;
   tokens_used: number;
   created_at: string;
   updated_at: string;
