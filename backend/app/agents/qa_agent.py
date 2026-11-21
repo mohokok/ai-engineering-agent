@@ -295,6 +295,39 @@ def build_isolated_qa_context(
     return ctx
 
 
+def count_inspected_artefacts(ctx: QaContextData) -> int:
+    """Return total concrete deliverables, BOQ sheets, drawings, and reports available for QA inspection."""
+    return (
+        len(ctx.boq_sheets)
+        + len(ctx.drawings)
+        + len(ctx.review_reports)
+        + len(ctx.deliverables)
+    )
+
+
+def _expected_deliverable_covered(exp: str, ctx: QaContextData) -> bool:
+    """Return True when a non-BOQ/drawing/report expected deliverable matches at least one inspected artefact."""
+    haystacks = [
+        f"{d.get('title', '')} {d.get('deliverable_type', '')} {d.get('filename', '')} {d.get('folder_name', '')}".lower()
+        for d in ctx.deliverables
+    ]
+    haystacks.extend(f"{b.get('title', '')} boq bill of quantities".lower() for b in ctx.boq_sheets)
+    haystacks.extend(f"{dr.get('title', '')} {dr.get('drawing_no', '')} drawing plan cad".lower() for dr in ctx.drawings)
+    haystacks.extend(f"{rp.get('title', '')} {rp.get('discipline', '')} report review".lower() for rp in ctx.review_reports)
+    if not haystacks:
+        return False
+
+    tokens = re.findall(r"[\w\u0600-\u06FF]{3,}", exp.lower())
+    stop = {"and", "the", "for", "with", "from", "into"}
+    generic = {"sheet", "document", "schedule", "list", "draft", "output", "file", "deliverable", "memo", "package"}
+    informative = [t for t in tokens if t not in stop]
+    specific = [t for t in informative if t not in generic]
+    target_tokens = specific or informative
+    if not target_tokens:
+        return bool(ctx.deliverables)
+    return any(any(tok in hay for tok in target_tokens) for hay in haystacks)
+
+
 def build_qa_context_isolation_report(ctx: QaContextData) -> QaContextIsolationReport:
     """Build serializable QA context audit showing exact inspected artifacts and zero producer reasoning exposure."""
     return QaContextIsolationReport(
@@ -480,13 +513,20 @@ def _check_arithmetic(
 
     # Check exported XLSX files on disk verify formulas vs hardcoded static totals
     for d in ctx.deliverables:
-        if d.get("format") == "xlsx" and d.get("relative_path"):
+        if str(d.get("format") or "").lower() == "xlsx":
             checked += 1
+            rel_xlsx = d.get("relative_path")
             try:
-                fpath = resolve_project_file_path(settings.workspaces_dir, workspace_slug, d["relative_path"])
-                if fpath.is_file():
-                    wb = load_workbook(str(fpath), data_only=False)
+                if not rel_xlsx:
+                    raise FileNotFoundError("Deliverable has no workspace relative_path for XLSX inspection.")
+                fpath = resolve_project_file_path(settings.workspaces_dir, workspace_slug, rel_xlsx)
+                if not fpath.is_file():
+                    raise FileNotFoundError(f"Exported XLSX '{rel_xlsx}' does not exist on disk.")
+                wb = load_workbook(str(fpath), data_only=False)
+                try:
                     ws = wb.active
+                    if ws is None:
+                        raise ValueError(f"Exported XLSX '{rel_xlsx}' has no active worksheet.")
                     for row_idx in range(6, ws.max_row + 1):
                         qty_cell = ws.cell(row=row_idx, column=4).value
                         rate_cell = ws.cell(row=row_idx, column=5).value
@@ -510,15 +550,31 @@ def _check_arithmetic(
                                                     f"XLSX row {row_idx} ({item_no_cell}) contains non-formula total {t_d} "
                                                     f"instead of expected {exp}."
                                                 ),
-                                                reference=str(d["relative_path"]),
+                                                reference=str(rel_xlsx),
                                                 corrective_action="Re-export BOQ XLSX with live Excel formulas.",
                                                 deliverable_id=d["id"],
                                                 task_id=d.get("task_id"),
                                             )
                                         )
+                finally:
                     wb.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                findings.append(
+                    QaCandidateFinding(
+                        check_category="integrity",
+                        discipline=d.get("discipline") or "quantity_surveying",
+                        severity="high",
+                        title="Exported XLSX unreadable or missing",
+                        description=(
+                            f"Exported XLSX '{rel_xlsx or d.get('title')}' failed workbook read during arithmetic QA "
+                            f"({type(exc).__name__}: {exc})."
+                        ),
+                        reference=str(rel_xlsx or f"Deliverable {d['id'][:8]}"),
+                        corrective_action="Restore or re-export a readable valid XLSX workbook into 06_BOQ.",
+                        deliverable_id=d["id"],
+                        task_id=d.get("task_id"),
+                    )
+                )
 
     # Recompute parametric drawing Shoelace areas strictly from model_json coordinates
     deliv_by_dwg = {d["drawing_id"]: d["id"] for d in ctx.deliverables if d.get("drawing_id")}
@@ -1254,42 +1310,58 @@ def _check_missing_deliverables_and_integrity(
         for exp in ctx.expected_task_deliverables:
             checked += 1
             low = exp.lower()
-            if any(k in low for k in ("boq", "bill of quantities", "quantity", "كميات")) and not has_boq:
-                findings.append(
-                    QaCandidateFinding(
-                        check_category="missing_deliverable",
-                        discipline="quantity_surveying",
-                        severity="high",
-                        title="Missing expected BOQ deliverable for task",
-                        description=f"Task expects deliverable '{exp}', but no BOQ sheet or 06_BOQ deliverable is linked.",
-                        reference=f"Task {ctx.task_id[:8]} / {exp}",
-                        corrective_action="Generate and link BOQ deliverable for this task before verification.",
-                        task_id=ctx.task_id,
+            if any(k in low for k in ("boq", "bill of quantities", "quantity", "كميات")):
+                if not has_boq:
+                    findings.append(
+                        QaCandidateFinding(
+                            check_category="missing_deliverable",
+                            discipline="quantity_surveying",
+                            severity="high",
+                            title="Missing expected BOQ deliverable for task",
+                            description=f"Task expects deliverable '{exp}', but no BOQ sheet or 06_BOQ deliverable is linked.",
+                            reference=f"Task {ctx.task_id[:8]} / {exp}",
+                            corrective_action="Generate and link BOQ deliverable for this task before verification.",
+                            task_id=ctx.task_id,
+                        )
                     )
-                )
-            elif any(k in low for k in ("drawing", "plan", "dxf", "cad", "مخطط", "لوحة")) and not has_drawing:
-                findings.append(
-                    QaCandidateFinding(
-                        check_category="missing_deliverable",
-                        discipline="architecture",
-                        severity="high",
-                        title="Missing expected CAD drawing deliverable for task",
-                        description=f"Task expects deliverable '{exp}', but no Parametric CAD drawing or 05_Design_Drawings deliverable is linked.",
-                        reference=f"Task {ctx.task_id[:8]} / {exp}",
-                        corrective_action="Generate and link DXF + true-scale PDF drawing package for this task.",
-                        task_id=ctx.task_id,
+            elif any(k in low for k in ("drawing", "plan", "dxf", "cad", "مخطط", "لوحة")):
+                if not has_drawing:
+                    findings.append(
+                        QaCandidateFinding(
+                            check_category="missing_deliverable",
+                            discipline="architecture",
+                            severity="high",
+                            title="Missing expected CAD drawing deliverable for task",
+                            description=f"Task expects deliverable '{exp}', but no Parametric CAD drawing or 05_Design_Drawings deliverable is linked.",
+                            reference=f"Task {ctx.task_id[:8]} / {exp}",
+                            corrective_action="Generate and link DXF + true-scale PDF drawing package for this task.",
+                            task_id=ctx.task_id,
+                        )
                     )
-                )
-            elif any(k in low for k in ("report", "review", "تقرير", "مراجعة")) and not has_report:
+            elif any(k in low for k in ("report", "review", "تقرير", "مراجعة")):
+                if not has_report:
+                    findings.append(
+                        QaCandidateFinding(
+                            check_category="missing_deliverable",
+                            discipline="multidisciplinary",
+                            severity="high",
+                            title="Missing expected review report deliverable for task",
+                            description=f"Task expects deliverable '{exp}', but no Review Report deliverable in 08_Reports/10_Final_Deliverables is linked.",
+                            reference=f"Task {ctx.task_id[:8]} / {exp}",
+                            corrective_action="Generate DOCX + PDF Review Report for this task before verification.",
+                            task_id=ctx.task_id,
+                        )
+                    )
+            elif not _expected_deliverable_covered(exp, ctx):
                 findings.append(
                     QaCandidateFinding(
                         check_category="missing_deliverable",
                         discipline="multidisciplinary",
                         severity="high",
-                        title="Missing expected review report deliverable for task",
-                        description=f"Task expects deliverable '{exp}', but no Review Report deliverable in 08_Reports/10_Final_Deliverables is linked.",
+                        title="Missing expected deliverable for task",
+                        description=f"Task expects deliverable '{exp}', but no matching deliverable is linked.",
                         reference=f"Task {ctx.task_id[:8]} / {exp}",
-                        corrective_action="Generate DOCX + PDF Review Report for this task before verification.",
+                        corrective_action=f"Produce and link '{exp}' deliverable for this task before verification.",
                         task_id=ctx.task_id,
                     )
                 )

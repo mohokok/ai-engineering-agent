@@ -25,10 +25,15 @@ interface QaCopy {
   taskLabel: string;
   allProjectDeliverablesOpt: string;
   runQaBtn: string;
+  rerunQaBtn: string;
+  rerunQaShortBtn: string;
   runningQaBtn: string;
   verifyTaskBtn: string;
   verifyingTaskBtn: string;
   isolationBanner: string;
+  noEvidenceNotice: string;
+  rerunRequiredNotice: string;
+  issueClosedRerunHint: string;
   checksHeading: string;
   issuesHeading: string;
   statusFilterLabel: string;
@@ -37,8 +42,11 @@ interface QaCopy {
   filterClosed: string;
   noIssues: string;
   closeIssueBtn: string;
+  confirmCloseBtn: string;
+  cancelCloseBtn: string;
   reopenIssueBtn: string;
   closureNotePrompt: string;
+  closureNoteMinError: string;
   addManualHeading: string;
   descLabel: string;
   disciplineLabel: string;
@@ -67,11 +75,19 @@ const COPY: Record<Lang, QaCopy> = {
     taskLabel: "التكليف المستهدف (اختياري للتحقق)",
     allProjectDeliverablesOpt: "كافة مخرجات المشروع",
     runQaBtn: "تشغيل فحص الجودة المستقل (0 توكن)",
+    rerunQaBtn: "إعادة تشغيل فحص الجودة (0 توكن)",
+    rerunQaShortBtn: "إعادة فحص الجودة (Re-run QA)",
     runningQaBtn: "جاري تشغيل الفحص المستقل...",
     verifyTaskBtn: "اعتماد تحقق التكليف (يتطلب نجاح QA وإغلاق كل القضايا)",
     verifyingTaskBtn: "جاري التحقق...",
     isolationBanner:
       "عزل سياق الجودة المستقل مُفعَّل: تم استبعاد خطط وافتراضات ونتائج المُنتِج تماماً عن فحص QA.",
+    noEvidenceNotice:
+      "لم يتم فحص أي مخرجات (no_evidence): لا توجد جداول كميات أو لوحات أو تقارير أو مخرجات. أنتج المخرجات ثم أعد فحص الجودة.",
+    rerunRequiredNotice:
+      "يتطلب اعتماد التحقق إعادة تشغيل فحص الجودة (Re-run QA) بعد إغلاق القضايا.",
+    issueClosedRerunHint:
+      "تم إغلاق القضية بملاحظة مُوثَّقة. يرجى إعادة تشغيل فحص الجودة (Re-run QA) قبل اعتماد التحقق.",
     checksHeading: "نتائج فحوصات التدقيق المستقلة",
     issuesHeading: "سجل قضايا الجودة (Issue Register)",
     statusFilterLabel: "تصفية الحالة",
@@ -80,8 +96,12 @@ const COPY: Record<Lang, QaCopy> = {
     filterClosed: "مغلقة (Closed)",
     noIssues: "لا توجد قضايا مسجلة في هذا التصنيف.",
     closeIssueBtn: "إغلاق القضية",
+    confirmCloseBtn: "تأكيد الإغلاق",
+    cancelCloseBtn: "إلغاء",
     reopenIssueBtn: "إعادة فتح",
-    closureNotePrompt: "ملاحظة الإغلاق / الإجراء التصحيحي المتخذ (اختياري):",
+    closureNotePrompt: "ملاحظة الإغلاق مطلوبة (10 أحرف على الأقل):",
+    closureNoteMinError:
+      "إغلاق القضية يتطلب إدخال ملاحظة إغلاق لا تقل عن 10 أحرف توضّح التصحيح المُتحقَّق.",
     addManualHeading: "إضافة قضية جودة يدوياً",
     descLabel: "الوصف الهندسي للمشكلة",
     disciplineLabel: "التخصص",
@@ -108,11 +128,19 @@ const COPY: Record<Lang, QaCopy> = {
     taskLabel: "Target Task (optional Verification Gate)",
     allProjectDeliverablesOpt: "All Project Deliverables",
     runQaBtn: "Run Independent QA Review (0 AI Tokens)",
+    rerunQaBtn: "Re-run QA (0 AI Tokens)",
+    rerunQaShortBtn: "Re-run QA",
     runningQaBtn: "Running Independent QA...",
     verifyTaskBtn: "Verify Task (Requires Passing QA & 0 Open Issues)",
     verifyingTaskBtn: "Verifying...",
     isolationBanner:
       "Independent QA Isolation Verified: producer plan_summary, result_summary, and step reasoning excluded.",
+    noEvidenceNotice:
+      "No evidence inspected (status: no_evidence): no BOQ, drawing, report, or deliverable existed to review. Generate deliverables and Re-run QA.",
+    rerunRequiredNotice:
+      "Re-run QA after closing issues before verifying the task.",
+    issueClosedRerunHint:
+      "Issue closed with verified note. Click Re-run QA before verifying the task.",
     checksHeading: "Deterministic Independent QA Check Results",
     issuesHeading: "Engineering Issue Register",
     statusFilterLabel: "Status Filter",
@@ -121,8 +149,12 @@ const COPY: Record<Lang, QaCopy> = {
     filterClosed: "Closed",
     noIssues: "No QA issues match the current filter.",
     closeIssueBtn: "Close Issue",
+    confirmCloseBtn: "Confirm Close",
+    cancelCloseBtn: "Cancel",
     reopenIssueBtn: "Reopen",
-    closureNotePrompt: "Closure note / verified corrective evidence (optional):",
+    closureNotePrompt: "Closure note required (min 10 characters):",
+    closureNoteMinError:
+      "Closing an issue requires a closure note of at least 10 characters explaining the verified fix.",
     addManualHeading: "Log Manual QA Issue",
     descLabel: "Issue Description",
     disciplineLabel: "Discipline",
@@ -147,12 +179,14 @@ export interface QaIssuesViewProps {
   lang: Lang;
   initialReview?: QaReviewDetailOut | null;
   initialIssues?: IssueOut[];
+  initialClosingIssueId?: string | null;
 }
 
 export function QaIssuesView({
   lang,
   initialReview = null,
   initialIssues,
+  initialClosingIssueId = null,
 }: QaIssuesViewProps) {
   const copy = COPY[lang];
 
@@ -161,7 +195,9 @@ export function QaIssuesView({
   const [tasks, setTasks] = useState<TaskSummaryOut[]>([]);
   const [taskId, setTaskId] = useState<string>("");
 
-  const [latestReview, setLatestReview] = useState<QaReviewDetailOut | null>(initialReview);
+  const [reviews, setReviews] = useState<QaReviewDetailOut[]>(
+    initialReview ? [initialReview] : []
+  );
   const [issues, setIssues] = useState<IssueOut[]>(initialIssues ?? []);
   const [openCount, setOpenCount] = useState<number>(
     (initialIssues ?? []).filter((i) => i.status !== "closed").length
@@ -171,7 +207,9 @@ export function QaIssuesView({
   );
   const [statusFilter, setStatusFilter] = useState<string>("");
 
+  const [closingIssueId, setClosingIssueId] = useState<string | null>(initialClosingIssueId);
   const [closureNotesById, setClosureNotesById] = useState<Record<string, string>>({});
+  const [justClosedIssue, setJustClosedIssue] = useState(false);
   const [manualDesc, setManualDesc] = useState("");
   const [manualDisc, setManualDisc] = useState("multidisciplinary");
   const [manualSev, setManualSev] = useState<IssueSeverity>("medium");
@@ -183,11 +221,15 @@ export function QaIssuesView({
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  const latestReview = taskId
+    ? (reviews.find((r) => r.task_id === taskId || !r.task_id) ?? reviews[0] ?? null)
+    : (reviews[0] ?? null);
+
   const refreshData = useCallback(
     async (pid: string, sFilter: string) => {
       if (!pid) {
         setTasks([]);
-        setLatestReview(initialReview ?? null);
+        setReviews(initialReview ? [initialReview] : []);
         setIssues(initialIssues ?? []);
         return;
       }
@@ -198,7 +240,7 @@ export function QaIssuesView({
           listProjectIssues(pid, sFilter ? { status: sFilter } : undefined),
         ]);
         setTasks(taskRes.tasks);
-        setLatestReview(revRes.reviews[0] ?? null);
+        setReviews(revRes.reviews);
         setIssues(issRes.issues);
         setOpenCount(issRes.open_count);
         setClosedCount(issRes.closed_count);
@@ -238,7 +280,8 @@ export function QaIssuesView({
       const rev = await runProjectQaReview(projectId, {
         task_id: taskId || null,
       });
-      setLatestReview(rev);
+      setReviews((prev) => [rev, ...prev.filter((r) => r.id !== rev.id)]);
+      setJustClosedIssue(false);
       await refreshData(projectId, statusFilter);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -253,8 +296,12 @@ export function QaIssuesView({
     setError(null);
     setStatusMsg(null);
     try {
+      const matchingReviewId =
+        latestReview && (!latestReview.task_id || latestReview.task_id === taskId)
+          ? latestReview.id
+          : null;
       const res = await verifyTaskWithQa(taskId, {
-        qa_review_id: latestReview?.id ?? null,
+        qa_review_id: matchingReviewId,
       });
       setStatusMsg(res.message);
       await refreshData(projectId, statusFilter);
@@ -265,15 +312,42 @@ export function QaIssuesView({
     }
   }
 
-  async function handleToggleIssueStatus(issue: IssueOut) {
+  async function handleConfirmCloseIssue(issue: IssueOut) {
     setError(null);
     setStatusMsg(null);
-    const closing = issue.status !== "closed";
+    const trimmedNote = (closureNotesById[issue.id] || "").trim();
+    if (trimmedNote.length < 10) {
+      setClosingIssueId(issue.id);
+      setError(copy.closureNoteMinError);
+      return;
+    }
     try {
       await updateQaIssue(issue.id, {
-        status: closing ? "closed" : "open",
-        closure_note: closing ? (closureNotesById[issue.id] || "").trim() || "Closed in QA Register" : undefined,
+        status: "closed",
+        closure_note: trimmedNote,
       });
+      setClosingIssueId(null);
+      setClosureNotesById((prev) => {
+        const next = { ...prev };
+        delete next[issue.id];
+        return next;
+      });
+      setJustClosedIssue(true);
+      setStatusMsg(copy.issueClosedRerunHint);
+      await refreshData(projectId, statusFilter);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function handleReopenIssue(issue: IssueOut) {
+    setError(null);
+    setStatusMsg(null);
+    try {
+      await updateQaIssue(issue.id, {
+        status: "open",
+      });
+      setJustClosedIssue(false);
       await refreshData(projectId, statusFilter);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -334,6 +408,10 @@ export function QaIssuesView({
               onChange={(e) => {
                 setProjectId(e.target.value);
                 setTaskId("");
+                setClosingIssueId(null);
+                setJustClosedIssue(false);
+                setError(null);
+                setStatusMsg(null);
               }}
             >
               <option value="">--</option>
@@ -365,7 +443,11 @@ export function QaIssuesView({
             disabled={!projectId || runningQa}
             onClick={() => void handleRunQa()}
           >
-            {runningQa ? copy.runningQaBtn : copy.runQaBtn}
+            {runningQa
+              ? copy.runningQaBtn
+              : latestReview
+                ? copy.rerunQaBtn
+                : copy.runQaBtn}
           </button>
 
           {taskId && (
@@ -392,10 +474,50 @@ export function QaIssuesView({
         <section className="subpanel" aria-label={copy.checksHeading}>
           <div className="panel-header">
             <h3 className="panel-title">{copy.checksHeading}</h3>
-            <span className={`badge ${latestReview.status === "passed" ? "badge-ok" : ""}`}>
-              {latestReview.status} · {latestReview.open_issues_count} open
-            </span>
+            <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap" }}>
+              <span className={`badge ${latestReview.status === "passed" ? "badge-ok" : "badge-warn"}`}>
+                {latestReview.status} · {latestReview.open_issues_count} open
+              </span>
+              <button
+                type="button"
+                className="btn btn-compact btn-secondary"
+                disabled={!projectId || runningQa}
+                onClick={() => void handleRunQa()}
+              >
+                {runningQa ? copy.runningQaBtn : copy.rerunQaShortBtn}
+              </button>
+            </div>
           </div>
+
+          {latestReview.status === "no_evidence" && (
+            <div className="status-box status-err" role="alert" style={{ marginBottom: "0.75rem" }}>
+              {copy.noEvidenceNotice}
+            </div>
+          )}
+
+          {((latestReview.status !== "passed" && openCount === 0 && closedCount > 0) || justClosedIssue) && (
+            <div
+              className="status-box"
+              style={{
+                marginBottom: "0.75rem",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                gap: "0.75rem",
+                flexWrap: "wrap",
+              }}
+            >
+              <span>{copy.rerunRequiredNotice}</span>
+              <button
+                type="button"
+                className="btn btn-compact"
+                disabled={!projectId || runningQa}
+                onClick={() => void handleRunQa()}
+              >
+                {runningQa ? copy.runningQaBtn : copy.rerunQaShortBtn}
+              </button>
+            </div>
+          )}
 
           {latestReview.producer_reasoning_excluded && (
             <div className="status-box status-ok" style={{ marginBottom: "0.75rem" }}>
@@ -426,8 +548,16 @@ export function QaIssuesView({
                     <td dir="ltr">{chk.checked_count}</td>
                     <td dir="ltr">{chk.failed_count}</td>
                     <td>
-                      <span className={`badge ${chk.passed ? "badge-ok" : "badge-warn"}`}>
-                        {chk.passed ? "PASS" : "FAIL"}
+                      <span
+                        className={`badge ${
+                          chk.checked_count === 0
+                            ? "badge-warn"
+                            : chk.passed
+                              ? "badge-ok"
+                              : "badge-warn"
+                        }`}
+                      >
+                        {chk.checked_count === 0 ? "NO EVIDENCE" : chk.passed ? "PASS" : "FAIL"}
                       </span>
                     </td>
                     <td dir="auto">{chk.details}</td>
@@ -504,24 +634,58 @@ export function QaIssuesView({
                       </span>
                     </td>
                     <td>
-                      {it.status !== "closed" && (
-                        <input
-                          type="text"
-                          style={{ width: "9rem", marginBottom: "0.25rem", display: "block" }}
-                          placeholder={copy.closureNotePrompt}
-                          value={closureNotesById[it.id] || ""}
-                          onChange={(e) =>
-                            setClosureNotesById((prev) => ({ ...prev, [it.id]: e.target.value }))
-                          }
-                        />
+                      {it.status === "closed" ? (
+                        <button
+                          type="button"
+                          className="btn btn-compact btn-secondary"
+                          onClick={() => void handleReopenIssue(it)}
+                        >
+                          {copy.reopenIssueBtn}
+                        </button>
+                      ) : closingIssueId === it.id ? (
+                        <div style={{ display: "grid", gap: "0.35rem", minWidth: "12rem" }}>
+                          <label style={{ display: "grid", gap: "0.2rem", fontSize: "0.8rem" }}>
+                            <span>{copy.closureNotePrompt}</span>
+                            <input
+                              type="text"
+                              required
+                              minLength={10}
+                              placeholder={copy.closureNotePrompt}
+                              value={closureNotesById[it.id] || ""}
+                              onChange={(e) =>
+                                setClosureNotesById((prev) => ({ ...prev, [it.id]: e.target.value }))
+                              }
+                            />
+                          </label>
+                          <div style={{ display: "flex", gap: "0.35rem", flexWrap: "wrap" }}>
+                            <button
+                              type="button"
+                              className="btn btn-compact"
+                              onClick={() => void handleConfirmCloseIssue(it)}
+                            >
+                              {copy.confirmCloseBtn}
+                            </button>
+                            <button
+                              type="button"
+                              className="btn btn-compact btn-secondary"
+                              onClick={() => setClosingIssueId(null)}
+                            >
+                              {copy.cancelCloseBtn}
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          className="btn btn-compact btn-secondary"
+                          onClick={() => {
+                            setError(null);
+                            setClosingIssueId(it.id);
+                          }}
+                        >
+                          {copy.closeIssueBtn}
+                        </button>
                       )}
-                      <button
-                        type="button"
-                        className="btn btn-compact btn-secondary"
-                        onClick={() => void handleToggleIssueStatus(it)}
-                      >
-                        {it.status === "closed" ? copy.reopenIssueBtn : copy.closeIssueBtn}
-                      </button>
                     </td>
                   </tr>
                 ))}

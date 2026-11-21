@@ -162,3 +162,5 @@ def update_issue_endpoint(
         return update_issue(db, issue_id, payload)
     except QaNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except QaValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc

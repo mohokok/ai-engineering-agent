@@ -9,9 +9,10 @@ from fastapi.testclient import TestClient
 
 from app.agents.qa_agent import build_isolated_qa_context, serialize_isolated_qa_prompt_context
 from app.core.config import Settings
-from app.db.models import BoqItem, Deliverable, Issue, ParametricDrawing, Project, ResearchSource, ReviewReport, Task, TaskStep
+from app.db.models import BoqItem, Deliverable, ParametricDrawing, Project, ResearchSource, ReviewReport, Task, TaskStep
 from app.main import create_app
 from app.providers.secrets import SecretStore
+from app.services.parametric_cad import sha256_file
 from app.services.parametric_drawings import build_synthetic_clinic_preset
 from app.services.workspace import resolve_project_file_path
 
@@ -258,6 +259,16 @@ def test_step12_qa_catches_all_seeded_errors_and_manages_issue_register_lifecycl
         assert boq_res.status_code == 201
         boq_id = boq_res.json()["id"]
 
+        # Remember one PDF path to restore later when fixing defects for QA re-run verification
+        pdf_paths_deleted: list[tuple[str, str]] = []
+        saved_pdf_bytes: bytes = b""
+        with app.state.session_factory() as db:
+            for deliv in db.query(Deliverable).filter(Deliverable.drawing_id == dwg["id"]).all():
+                if deliv.format == "pdf" and deliv.relative_path:
+                    pdf_disk = resolve_project_file_path(settings.workspaces_dir, workspace_slug, deliv.relative_path)
+                    pdf_paths_deleted.append((deliv.id, deliv.relative_path))
+                    break
+
         with app.state.session_factory() as db:
             task = Task(
                 project_id=pid,
@@ -293,6 +304,7 @@ def test_step12_qa_catches_all_seeded_errors_and_manages_issue_register_lifecycl
                 if deliv.format == "pdf" and deliv.relative_path:
                     pdf_disk = resolve_project_file_path(settings.workspaces_dir, workspace_slug, deliv.relative_path)
                     if pdf_disk.is_file():
+                        saved_pdf_bytes = pdf_disk.read_bytes()
                         pdf_disk.unlink()
 
             # Unreviewed research source in log (HTTP 403 paywall -> reviewed=False)
@@ -457,7 +469,17 @@ def test_step12_qa_catches_all_seeded_errors_and_manages_issue_register_lifecycl
         assert list_open["open_count"] == len(qa_out["issues"]) + 1
         assert list_open["closed_count"] == 0
 
-        # Close every open issue via PATCH /api/issues/{id}
+        # Closing without a note or with <10 chars MUST return HTTP 422
+        first_issue_id = list_open["issues"][0]["id"]
+        no_note_close = client.patch(f"/api/issues/{first_issue_id}", json={"status": "closed"})
+        assert no_note_close.status_code == 422
+        short_note_close = client.patch(
+            f"/api/issues/{first_issue_id}",
+            json={"status": "closed", "closure_note": "too short"},
+        )
+        assert short_note_close.status_code == 422
+
+        # Close every open issue via PATCH /api/issues/{id} with valid >=10-char closure_note
         for issue_row in list_open["issues"]:
             close_res = client.patch(
                 f"/api/issues/{issue_row['id']}",
@@ -469,12 +491,65 @@ def test_step12_qa_catches_all_seeded_errors_and_manages_issue_register_lifecycl
             assert closed["closed_at"] is not None
             assert "Resolved" in closed["closure_note"]
 
-        # Now open count is 0 -> task verification gate succeeds!
+        # Closing issues MUST NOT flip the QA review to "passed" or verify without a QA re-run
         list_after_close = client.get(f"/api/projects/{pid}/issues").json()
         assert list_after_close["open_count"] == 0
         assert list_after_close["closed_count"] == len(qa_out["issues"]) + 1
 
-        verify_ok = client.post(f"/api/tasks/{tid}/verify", json={"verifier_note": "All issues resolved"})
+        stale_review = client.get(f"/api/qa-reviews/{qa_out['id']}").json()
+        assert stale_review["status"] == "issues_found"
+        assert stale_review["open_issues_count"] == 0
+
+        verify_without_rerun = client.post(f"/api/tasks/{tid}/verify", json={"verifier_note": "Attempt before re-run"})
+        assert verify_without_rerun.status_code == 422
+        assert "re-run" in verify_without_rerun.json()["detail"].lower()
+
+        # Now actually fix the underlying seeded defects so a QA re-run can pass
+        with app.state.session_factory() as db:
+            dwg_fix = db.get(ParametricDrawing, dwg["id"])
+            assert dwg_fix is not None
+            fixed_metrics = dict(dwg_fix.computed_metrics_json)
+            fixed_metrics["total_area_m2"] = 80.0
+            dwg_fix.computed_metrics_json = fixed_metrics
+            for _deliv_id, rel_p in pdf_paths_deleted:
+                restore_disk = resolve_project_file_path(settings.workspaces_dir, workspace_slug, rel_p)
+                restore_disk.parent.mkdir(parents=True, exist_ok=True)
+                restore_disk.write_bytes(saved_pdf_bytes)
+            for b_item in db.query(BoqItem).filter(BoqItem.boq_sheet_id == boq_id).all():
+                if b_item.item_no == "B-01":
+                    b_item.quantity = 5.0
+                    b_item.total = 1000.0
+                    b_item.reported_total = 1000.0
+                elif b_item.item_no == "B-02":
+                    b_item.description = "Acoustic firestop collar assembly"
+                    b_item.unit = "nos"
+                    b_item.drawing_reference = "A-101"
+                    b_item.technical_reference = "Owner vendor schedule"
+                elif b_item.item_no == "B-03":
+                    b_item.unit = "m"
+                    b_item.rate_source_kind = "owner_input"
+                    b_item.rate_source_ref = "Owner cable quote"
+            # Remove the incomplete seeded ReviewReport stub & remove report expectation so task has clean drawing+BOQ
+            db.query(ReviewReport).filter(ReviewReport.task_id == tid).delete()
+            t_fix = db.get(Task, tid)
+            assert t_fix is not None
+            t_fix.structured_output_json = {
+                "expected_deliverables": ["Parametric Drawing", "Bill of Quantities"],
+            }
+            db.commit()
+
+        # Re-run independent QA after closing all issues and fixing defects
+        rerun_res = client.post(
+            f"/api/projects/{pid}/qa-reviews",
+            json={"task_id": tid, "classification": "For Review"},
+        )
+        assert rerun_res.status_code == 201, rerun_res.text
+        rerun_out = rerun_res.json()
+        assert rerun_out["status"] == "passed"
+        assert rerun_out["task_verification_status"] == "qa_passed"
+
+        # Now task verification gate accepts verification cleanly
+        verify_ok = client.post(f"/api/tasks/{tid}/verify", json={"verifier_note": "All issues resolved and QA re-run passed"})
         assert verify_ok.status_code == 200, verify_ok.text
         assert verify_ok.json()["verification_status"] == "verified"
 
@@ -483,3 +558,256 @@ def test_step12_qa_catches_all_seeded_errors_and_manages_issue_register_lifecycl
         assert reopen_res.status_code == 200
         assert reopen_res.json()["status"] == "open"
         assert client.get(f"/api/tasks/{tid}").json()["verification_status"] == "qa_failed"
+
+
+def test_step12_empty_project_qa_is_no_evidence_and_verify_returns_422(tmp_path: Path) -> None:
+    """Fix (1): Empty project or task with zero inspected artefacts / missing expected deliverables must NEVER pass QA or verify."""
+    settings = _test_settings(tmp_path)
+    app = create_app(settings, secret_store=_InMemorySecretStore())
+
+    with TestClient(app) as client:
+        project = client.post(
+            "/api/projects",
+            json={"name": "Empty QA Project", "code": "EMP-QA-12", "classification": "Preliminary"},
+        ).json()
+        pid = project["id"]
+
+        # Create a task in the empty project (with non-keyword expected_deliverables too)
+        with app.state.session_factory() as db:
+            empty_task = Task(
+                project_id=pid,
+                title="Empty Task With No Deliverables",
+                prompt="Check empty project",
+                task_type="assignment",
+                status="completed",
+                verification_status="unverified",
+                classification="Preliminary",
+                structured_output_json={
+                    "expected_deliverables": ["Structural Calculation Sheet", "Bill of Quantities"],
+                },
+            )
+            db.add(empty_task)
+            db.commit()
+            tid = empty_task.id
+
+        # 1) Project-level QA on completely empty project (0 BOQ/drawing/report/deliverable)
+        proj_qa_res = client.post(f"/api/projects/{pid}/qa-reviews", json={})
+        assert proj_qa_res.status_code == 201, proj_qa_res.text
+        proj_qa = proj_qa_res.json()
+        assert proj_qa["status"] == "no_evidence"
+        assert proj_qa["status"] != "passed"
+
+        # Attempting /verify referencing the empty-project QA review MUST return 422
+        verify_proj_empty = client.post(
+            f"/api/tasks/{tid}/verify",
+            json={"qa_review_id": proj_qa["id"]},
+        )
+        assert verify_proj_empty.status_code == 422
+
+        # 2) Task-level QA on empty task (no deliverables produced at all)
+        task_qa_res = client.post(f"/api/projects/{pid}/qa-reviews", json={"task_id": tid})
+        assert task_qa_res.status_code == 201, task_qa_res.text
+        task_qa = task_qa_res.json()
+        assert task_qa["status"] == "no_evidence"
+        assert task_qa["task_verification_status"] == "qa_failed"
+        assert task_qa["issues_opened_count"] >= 2
+
+        verify_task_empty = client.post(f"/api/tasks/{tid}/verify", json={})
+        assert verify_task_empty.status_code == 422
+
+        # 3) Task-level QA with check_missing_deliverables=False on empty task MUST STILL NOT pass
+        bypass_qa_res = client.post(
+            f"/api/projects/{pid}/qa-reviews",
+            json={"task_id": tid, "check_missing_deliverables": False},
+        )
+        assert bypass_qa_res.status_code == 201
+        assert bypass_qa_res.json()["status"] == "no_evidence"
+        assert bypass_qa_res.json()["task_verification_status"] == "qa_failed"
+        assert client.post(f"/api/tasks/{tid}/verify", json={}).status_code == 422
+
+
+def test_step12_issue_closure_requires_note_and_verify_requires_qa_rerun(tmp_path: Path) -> None:
+    """Fix (2): Closing an issue requires >=10-char closure_note, keeps review non-passed, and /verify requires a QA re-run after closure."""
+    settings = _test_settings(tmp_path)
+    app = create_app(settings, secret_store=_InMemorySecretStore())
+
+    with TestClient(app) as client:
+        project = client.post(
+            "/api/projects",
+            json={"name": "Closure Gate Clinic", "code": "CLS-QA-12", "classification": "For Review"},
+        ).json()
+        pid = project["id"]
+
+        clinic_model = build_synthetic_clinic_preset().model_dump()
+        dwg_res = client.post(
+            f"/api/projects/{pid}/parametric-drawings",
+            json={
+                "drawing_no": "A-101",
+                "title": "Clean Plan",
+                "scale_denominator": 100,
+                "paper_size": "A3",
+                "plan_model": clinic_model,
+            },
+        )
+        assert dwg_res.status_code == 201
+        dwg_id = dwg_res.json()["id"]
+
+        with app.state.session_factory() as db:
+            task = Task(
+                project_id=pid,
+                title="Drawing Verification Task",
+                prompt="Verify plan",
+                task_type="assignment",
+                status="completed",
+                verification_status="unverified",
+                classification="For Review",
+                structured_output_json={"expected_deliverables": ["Parametric Drawing"]},
+            )
+            db.add(task)
+            db.flush()
+            tid = task.id
+            dwg_row = db.get(ParametricDrawing, dwg_id)
+            assert dwg_row is not None
+            dwg_row.task_id = tid
+            for d in db.query(Deliverable).filter(Deliverable.drawing_id == dwg_id).all():
+                d.task_id = tid
+            db.commit()
+
+        # First QA run passes cleanly
+        pass_qa_1 = client.post(f"/api/projects/{pid}/qa-reviews", json={"task_id": tid})
+        assert pass_qa_1.status_code == 201
+        pass_rev_1 = pass_qa_1.json()
+        assert pass_rev_1["status"] == "passed"
+
+        # Log a manual issue on the task -> resets task to qa_failed
+        man = client.post(
+            f"/api/projects/{pid}/issues",
+            json={
+                "task_id": tid,
+                "description": "Add egress exit sign notation on corridor wall.",
+                "discipline": "fire_life_safety",
+                "severity": "medium",
+                "reference": "Sheet A-101",
+                "corrective_action": "Add illuminated exit sign symbol at Corridor R-03.",
+            },
+        )
+        assert man.status_code == 201
+        issue_id = man.json()["id"]
+
+        # Closing with missing or <10-char closure_note MUST fail with 422
+        assert client.patch(f"/api/issues/{issue_id}", json={"status": "closed"}).status_code == 422
+        assert client.patch(
+            f"/api/issues/{issue_id}",
+            json={"status": "closed", "closure_note": "   fixed  "},
+        ).status_code == 422
+
+        # Closing with >=10-char closure_note succeeds
+        closed = client.patch(
+            f"/api/issues/{issue_id}",
+            json={"status": "closed", "closure_note": "Added exit sign symbol on sheet A-101 Rev 02."},
+        )
+        assert closed.status_code == 200
+        assert closed.json()["status"] == "closed"
+
+        # Trying /verify using the old pre-closure passing review MUST fail 422 requiring a re-run
+        stale_verify = client.post(
+            f"/api/tasks/{tid}/verify",
+            json={"qa_review_id": pass_rev_1["id"]},
+        )
+        assert stale_verify.status_code == 422
+        assert "re-run" in stale_verify.json()["detail"].lower()
+
+        # Re-running QA after issue closure creates a new passing review and unlocks /verify
+        pass_qa_2 = client.post(f"/api/projects/{pid}/qa-reviews", json={"task_id": tid})
+        assert pass_qa_2.status_code == 201
+        pass_rev_2 = pass_qa_2.json()
+        assert pass_rev_2["status"] == "passed"
+
+        verify_ok = client.post(
+            f"/api/tasks/{tid}/verify",
+            json={"qa_review_id": pass_rev_2["id"], "verifier_note": "Verified after QA re-run"},
+        )
+        assert verify_ok.status_code == 200
+        assert verify_ok.json()["verification_status"] == "verified"
+
+
+def test_step12_corrupt_xlsx_raises_integrity_finding(tmp_path: Path) -> None:
+    """Fix (3): Corrupt or unreadable exported XLSX must raise a high-severity 'integrity' QA finding instead of passing silently."""
+    settings = _test_settings(tmp_path)
+    app = create_app(settings, secret_store=_InMemorySecretStore())
+
+    with TestClient(app) as client:
+        project = client.post(
+            "/api/projects",
+            json={"name": "Corrupt XLSX QA Project", "code": "XLSX-QA-12", "classification": "For Review"},
+        ).json()
+        pid = project["id"]
+        workspace_slug = project["workspace_slug"]
+
+        with app.state.session_factory() as db:
+            task = Task(
+                project_id=pid,
+                title="BOQ Export QA Task",
+                prompt="Prepare BOQ export",
+                task_type="assignment",
+                status="completed",
+                verification_status="unverified",
+                classification="For Review",
+                structured_output_json={"expected_deliverables": ["Bill of Quantities"]},
+            )
+            db.add(task)
+            db.commit()
+            tid = task.id
+
+        boq_res = client.post(
+            f"/api/projects/{pid}/boq-sheets",
+            json={"task_id": tid, "title": "Corrupt Test BOQ", "currency": "LYD", "language": "en"},
+        )
+        assert boq_res.status_code == 201
+        boq_id = boq_res.json()["id"]
+
+        add_res = client.post(
+            f"/api/boq-sheets/{boq_id}/items",
+            json={
+                "item_no": "Q-01",
+                "description": "Concrete slab finishing",
+                "unit": "m2",
+                "quantity": 50.0,
+                "unit_rate": 120.0,
+                "rate_source_kind": "owner_input",
+                "rate_source_ref": "Owner quote",
+            },
+        )
+        assert add_res.status_code == 201
+
+        exp_res = client.post(f"/api/boq-sheets/{boq_id}/export", json={"language": "en"})
+        assert exp_res.status_code == 201, exp_res.text
+
+        # Corrupt the exported XLSX bytes on disk AND sync sha256 so arithmetic XLSX check is tested directly
+        with app.state.session_factory() as db:
+            xlsx_deliv = (
+                db.query(Deliverable)
+                .filter(Deliverable.boq_id == boq_id, Deliverable.format == "xlsx")
+                .first()
+            )
+            assert xlsx_deliv is not None and xlsx_deliv.relative_path
+            xlsx_path = resolve_project_file_path(settings.workspaces_dir, workspace_slug, xlsx_deliv.relative_path)
+            xlsx_path.write_bytes(b"NOT_A_VALID_XLSX_ZIP_ARCHIVE_CORRUPT")
+            xlsx_deliv.sha256 = sha256_file(xlsx_path)
+            db.commit()
+
+        qa_res = client.post(f"/api/projects/{pid}/qa-reviews", json={"task_id": tid})
+        assert qa_res.status_code == 201, qa_res.text
+        qa_out = qa_res.json()
+        assert qa_out["status"] == "issues_found"
+        assert qa_out["task_verification_status"] == "qa_failed"
+
+        integrity_issues = [
+            it for it in qa_out["issues"] if it["check_category"] == "integrity" and it["severity"] == "high"
+        ]
+        assert len(integrity_issues) == 1
+        assert "unreadable or missing" in integrity_issues[0]["title"].lower()
+        assert ".xlsx" in (integrity_issues[0]["reference"] or "").lower()
+
+        # Verify gate blocks task with corrupt XLSX
+        assert client.post(f"/api/tasks/{tid}/verify", json={}).status_code == 422

@@ -2327,14 +2327,33 @@ describe("App Step 10 BOQ & quantity UI", () => {
     expect(qaHtmlAr).toContain("BOQ-A101 total does not equal quantity * unit_rate");
     expect(qaHtmlAr).toContain("Fixed BOQ-A101 formula and re-exported");
     expect(qaHtmlAr).toContain("عزل سياق الجودة المستقل مُفعَّل");
+    expect(qaHtmlAr).toContain("إعادة فحص الجودة (Re-run QA)");
 
     const qaHtmlEn = renderToStaticMarkup(
-      <QaIssuesView lang="en" initialReview={sampleReview} initialIssues={[sampleIssue, closedIssue]} />
+      <QaIssuesView
+        lang="en"
+        initialReview={sampleReview}
+        initialIssues={[sampleIssue, closedIssue]}
+        initialClosingIssueId="iss-1"
+      />
     );
     expect(qaHtmlEn).toContain("Independent QA Isolation Verified");
     expect(qaHtmlEn).toContain("Task.plan_summary");
     expect(qaHtmlEn).toContain("ISS-001");
     expect(qaHtmlEn).toContain("architecture");
+    expect(qaHtmlEn).toContain("Re-run QA");
+    expect(qaHtmlEn).toContain("Closure note required (min 10 characters):");
+    expect(qaHtmlEn).toContain("Confirm Close");
+
+    const qaNoEvidenceHtml = renderToStaticMarkup(
+      <QaIssuesView
+        lang="en"
+        initialReview={{ ...sampleReview, status: "no_evidence", open_issues_count: 0 }}
+        initialIssues={[]}
+      />
+    );
+    expect(qaNoEvidenceHtml).toContain("status: no_evidence");
+    expect(qaNoEvidenceHtml).toContain("Re-run QA");
 
     const fetchMock = vi
       .fn()
@@ -2381,7 +2400,7 @@ describe("App Step 10 BOQ & quantity UI", () => {
     expect(created.issue_number).toBe("ISS-001");
     const closed = await updateQaIssue("iss-1", {
       status: "closed",
-      closure_note: "Resolved",
+      closure_note: "Resolved BOQ-A101 arithmetic and re-exported",
     });
     expect(closed.status).toBe("closed");
     const verified = await verifyTaskWithQa("task-12", { verifier_note: "All clear" });

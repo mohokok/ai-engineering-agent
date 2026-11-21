@@ -1,13 +1,15 @@
 """Step 12 QA Agent orchestration, issue register lifecycle, and task verification gate (0 AI tokens)."""
 
+from datetime import datetime, timedelta, timezone
 import re
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.agents.qa_agent import (
     build_isolated_qa_context,
     build_qa_context_isolation_report,
+    count_inspected_artefacts,
     evaluate_independent_qa,
 )
 from app.core.config import Settings
@@ -41,6 +43,15 @@ class QaValidationError(ValueError):
 
 class QaVerificationBlockedError(ValueError):
     """Raised when attempting to verify a task without a passing independent QA review and zero open issues."""
+
+
+def _as_utc(dt: datetime | None) -> datetime | None:
+    """Normalize SQLite naive datetimes and aware datetimes to UTC for safe comparison."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 
 def _next_issue_number(db: Session, project_id: str) -> int:
@@ -148,6 +159,16 @@ def run_project_qa_review(
 
     review_id = new_uuid()
     next_seq = _next_issue_number(db, project_id)
+    inspected_artefacts = count_inspected_artefacts(ctx)
+    total_checked = sum(m.checked_count for m in metrics)
+
+    max_closed_raw = db.scalar(
+        select(func.max(Issue.closed_at)).where(Issue.project_id == project.id)
+    )
+    max_closed = _as_utc(max_closed_raw)
+    review_created_at = utc_now()
+    if max_closed is not None and review_created_at <= max_closed:
+        review_created_at = max_closed + timedelta(microseconds=1)
 
     # Reuse matching already-open issues instead of duplicating rows on repeat QA runs
     existing_open_rows = db.scalars(
@@ -162,13 +183,14 @@ def run_project_qa_review(
         project_id=project.id,
         task_id=task_row.id if task_row else None,
         classification=effective_classification,
-        status="passed" if not candidate_findings and not existing_open_rows else "issues_found",
+        status="no_evidence" if (inspected_artefacts == 0 or total_checked == 0) else "issues_found",
         producer_reasoning_excluded=True,
         checks_summary_json={"checks": [m.model_dump() for m in metrics]},
         qa_context_snapshot_json=isolation_report.model_dump(),
         issues_opened_count=0,
         open_issues_count=0,
         tokens_used=0,
+        created_at=review_created_at,
     )
     db.add(review_row)
     db.flush()
@@ -179,6 +201,8 @@ def run_project_qa_review(
         existing_match = existing_open_keys.get(dedupe_key)
         if existing_match is not None:
             existing_match.qa_review_id = review_row.id
+            if task_row is not None and existing_match.task_id is None and f.task_id is None:
+                existing_match.task_id = task_row.id
             continue
 
         issue_num = f"QA-{next_seq:03d}"
@@ -209,14 +233,21 @@ def run_project_qa_review(
         open_stmt = open_stmt.where(Issue.task_id == task_row.id)
     total_open_now = len(db.scalars(open_stmt).all())
 
+    if inspected_artefacts == 0 or total_checked == 0:
+        review_status = "no_evidence"
+    elif total_open_now > 0:
+        review_status = "issues_found"
+    else:
+        review_status = "passed"
+
     review_row.issues_opened_count = opened_count
     review_row.open_issues_count = total_open_now
-    review_row.status = "passed" if total_open_now == 0 else "issues_found"
+    review_row.status = review_status
 
     # Never mark a task "verified" on generation alone; advance only to qa_passed (or qa_failed) on independent QA.
     if task_row is not None:
         task_row.last_qa_review_id = review_row.id
-        task_row.verification_status = "qa_passed" if total_open_now == 0 else "qa_failed"
+        task_row.verification_status = "qa_passed" if review_status == "passed" else "qa_failed"
 
     db.add(
         AuditLog(
@@ -228,6 +259,7 @@ def run_project_qa_review(
             details_json={
                 "task_id": task_row.id if task_row else None,
                 "status": review_row.status,
+                "inspected_artefacts_count": inspected_artefacts,
                 "issues_opened_count": opened_count,
                 "open_issues_count": total_open_now,
                 "producer_reasoning_excluded": True,
@@ -286,10 +318,59 @@ def verify_task_after_qa(
             f"({', '.join(it.issue_number for it in relevant_open[:5])})."
         )
 
-    if qa_row.open_issues_count > 0 and qa_row.status != "passed":
-        # Issues were closed after QA found defects: confirm re-run or verify explicitly cleanly
-        qa_row.open_issues_count = 0
-        qa_row.status = "passed"
+    snap = qa_row.qa_context_snapshot_json or {}
+    inspected_total = (
+        len(snap.get("inspected_boq_ids") or [])
+        + len(snap.get("inspected_drawing_ids") or [])
+        + len(snap.get("inspected_report_ids") or [])
+        + len(snap.get("inspected_deliverable_ids") or [])
+    )
+    if qa_row.status == "no_evidence" or inspected_total == 0:
+        if task.verification_status == "qa_passed":
+            task.verification_status = "qa_failed"
+            db.commit()
+        raise QaVerificationBlockedError(
+            "Task cannot be marked verified: the referenced QA review inspected zero artefacts "
+            "(status: no_evidence). Produce deliverables and re-run independent QA first."
+        )
+
+    task_review_ids = set(
+        db.scalars(
+            select(QaReview.id).where(
+                QaReview.project_id == task.project_id,
+                QaReview.task_id == task.id,
+            )
+        ).all()
+    )
+    task_review_ids.add(qa_row.id)
+    closed_issues = db.scalars(
+        select(Issue).where(
+            Issue.project_id == task.project_id,
+            Issue.status == "closed",
+            Issue.closed_at.is_not(None),
+        )
+    ).all()
+    relevant_closed = [
+        it
+        for it in closed_issues
+        if it.task_id == task.id or (it.qa_review_id and it.qa_review_id in task_review_ids)
+    ]
+    last_closed_at = max(
+        (_as_utc(it.closed_at) for it in relevant_closed if it.closed_at is not None),
+        default=None,
+    )
+    qa_created_at = _as_utc(qa_row.created_at)
+    if last_closed_at is not None and qa_created_at is not None and qa_created_at <= last_closed_at:
+        raise QaVerificationBlockedError(
+            "Issues were closed after the last QA review — please re-run independent QA for this task "
+            "before verifying."
+        )
+
+    if qa_row.status != "passed":
+        raise QaVerificationBlockedError(
+            f"Task cannot be marked verified because QA review status is '{qa_row.status}' — "
+            "re-run independent QA until it passes."
+        )
 
     task.verification_status = "verified"
     task.last_qa_review_id = qa_row.id
@@ -439,22 +520,47 @@ def update_issue(
     issue_id: str,
     payload: IssueUpdateRequest,
 ) -> IssueOut:
-    """Close, reopen, or update a QA issue register entry cleanly syncing linked task/review counts."""
+    """Close, reopen, or update a QA issue register entry cleanly without promoting QA reviews to passed."""
     row = db.get(Issue, issue_id)
     if row is None:
         raise QaNotFoundError(f"QA issue '{issue_id}' was not found.")
+
+    target_status = payload.status if payload.status is not None else row.status
+    if target_status == "closed":
+        if payload.closure_note is not None:
+            cleaned_note = payload.closure_note.strip()
+        elif row.status == "closed" and row.closure_note:
+            cleaned_note = row.closure_note.strip()
+        else:
+            cleaned_note = ""
+        if len(cleaned_note) < 10:
+            raise QaValidationError(
+                "Closing a QA issue requires a non-empty closure_note of at least 10 characters."
+            )
+        row.closure_note = cleaned_note
+    elif payload.closure_note is not None:
+        row.closure_note = payload.closure_note.strip() or None
 
     if payload.severity is not None:
         row.severity = payload.severity
     if payload.corrective_action is not None:
         row.recommended_action = payload.corrective_action.strip() or row.recommended_action
-    if payload.closure_note is not None:
-        row.closure_note = payload.closure_note.strip() or None
 
     if payload.status is not None:
         row.status = payload.status
         if payload.status == "closed":
-            row.closed_at = utc_now()
+            max_rev_raw = db.scalar(
+                select(func.max(QaReview.created_at)).where(QaReview.project_id == row.project_id)
+            )
+            max_rev = _as_utc(max_rev_raw)
+            closed_ts = utc_now()
+            if max_rev is not None and closed_ts <= max_rev:
+                closed_ts = max_rev + timedelta(microseconds=1)
+            row.closed_at = closed_ts
+            if row.task_id:
+                t_row = db.get(Task, row.task_id)
+                if t_row is not None and t_row.verification_status in ("qa_passed", "verified"):
+                    t_row.verification_status = "qa_failed"
         else:
             row.closed_at = None
             row.closure_note = None
@@ -474,7 +580,9 @@ def update_issue(
                 ).all()
             )
             qa_row.open_issues_count = open_for_review
-            qa_row.status = "passed" if open_for_review == 0 else "issues_found"
+            # Never flip qa_row.status to "passed" on closure; only a new QA re-run can pass.
+            if open_for_review > 0 and qa_row.status == "passed":
+                qa_row.status = "issues_found"
 
     db.add(
         AuditLog(

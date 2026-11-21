@@ -1,7 +1,7 @@
 # Step 12 — Independent QA Agent & Issue Register (`0` AI Tokens)
 
 - **Date:** 2026-11-21
-- **Status:** **PARTIAL** *(Delivers relational `qa_reviews`, extended `issues`, and `Task.verification_status` / `Task.last_qa_review_id` via reversible migration `0010`; strict producer-reasoning isolation (`PRODUCER_REASONING_EXCLUDED_FIELDS` omitted from QA context); deterministic `0`-AI-token verifiers across arithmetic (`Decimal`, XLSX live formulas, Shoelace polygon recomputation), units (incompatible/unconfirmed/mixed units), references (`ResearchSource.reviewed=True` + drawing/report `EXT-*`/`RES-*` links), drawing/BOQ/schedule consistency (`door_schedule`/`window_schedule`/floor area + CAD round-trip), and deliverable disk/SHA-256 integrity; sequential Issue Register CRUD & close/reopen lifecycle (`QA-001+`) enforcing the `POST /api/tasks/{task_id}/verify` gate (`HTTP 422` whenever unverified or open issues remain); bilingual Arabic RTL & English LTR `QaIssuesView` + `AssignmentsView` verification badge; `83 passed, 4 skipped` full backend `pytest -v`, `4 passed` opt-in real external checks (`ODAFileConverter`, `Tesseract`, live research), and `21 passed` frontend Vitest + `tsc --noEmit` + Vite production build; live desktop/browser interactive walkthrough by the owner remains `PENDING`.)*
+- **Status:** **PARTIAL** *(Delivers relational `qa_reviews`, extended `issues`, and `Task.verification_status` / `Task.last_qa_review_id` via reversible migration `0010`; strict producer-reasoning isolation (`PRODUCER_REASONING_EXCLUDED_FIELDS` omitted from QA context); deterministic `0`-AI-token verifiers across arithmetic (`Decimal`, XLSX live formulas + `integrity` finding on corrupt/unreadable XLSX, Shoelace polygon recomputation), units (incompatible/unconfirmed/mixed units), references (`ResearchSource.reviewed=True` + drawing/report `EXT-*`/`RES-*` links), drawing/BOQ/schedule consistency (`door_schedule`/`window_schedule`/floor area + CAD round-trip), and deliverable disk/SHA-256/expected-deliverable completeness; zero-artefact QA runs marked `no_evidence` (`qa_failed`, `/verify` `HTTP 422`); sequential Issue Register CRUD & close/reopen lifecycle (`QA-001+`) enforcing `>= 10`-character `closure_note` and requiring a fresh QA re-run after the last issue closure before `POST /api/tasks/{task_id}/verify` succeeds (`HTTP 422` otherwise); bilingual Arabic RTL & English LTR `QaIssuesView` with required closure-note prompt and **Re-run QA** controls + `AssignmentsView` verification badge; `86 passed, 4 skipped` full backend `pytest -v`, `21 passed` frontend Vitest + `tsc --noEmit` + Vite production build, and `gitleaks` clean scan; live desktop/browser interactive walkthrough by the owner remains `PENDING`.)*
 - **Branch:** `step-12-qa-issue-register`
 - **Depends on:** Step 11 (`b1fa34c`, PR `#20` merged)
 
@@ -18,19 +18,19 @@
    - Verified in `test_step12_qa_context_excludes_producer_reasoning_and_task_never_verified_by_generation_alone`: canary string `PRODUCER_SECRET_CHAIN_OF_THOUGHT_DO_NOT_LEAK_777` injected across task plans, summaries, step notes, and reasoning never appears anywhere in the serialized QA prompt/context (`producer_reasoning_excluded=True`).
 
 3. **Deterministic Independent Checks (`0` AI Tokens, `evaluate_independent_qa` in `backend/app/agents/qa_agent.py`):**
-   - **Arithmetic (`arithmetic`):** Recomputes every BOQ item `Decimal(quantity) * Decimal(unit_rate)` against stored `total` and imported `reported_total`, checks exported `.xlsx` workbooks (`openpyxl`) for formula-missing totals, and recomputes every `ParametricDrawing` room area via Shoelace (`compute_room_metrics`) vs stored `total_area_m2` and `room_count`.
+   - **Arithmetic (`arithmetic` & `integrity`):** Recomputes every BOQ item `Decimal(quantity) * Decimal(unit_rate)` against stored `total` and imported `reported_total`, inspects exported `.xlsx` workbooks (`openpyxl`) for formula-missing totals (and raises a `high`-severity `integrity` finding whenever an exported `.xlsx` is missing, corrupt, or unreadable instead of skipping silently), and recomputes every `ParametricDrawing` room area via Shoelace (`compute_room_metrics`) vs stored `total_area_m2` and `room_count`.
    - **Units (`unit`):** Flags unconfirmed/doubtful CAD/BOQ units, incompatible unit-to-description pairs (e.g., `m2` on countable doors/windows), mixed units across grouped BOQ sections, and unconfirmed parametric drawing units.
    - **References (`reference`):** Validates cited URLs and standard references on BOQ items (`technical_reference`, `rate_source_ref`) against project `ResearchSource` rows with `reviewed=True`, checks `drawing_reference` against issued `ParametricDrawing` sheets / uploaded CAD/PDF files, and cross-checks `ReviewReport` findings against `source_registry` + `FileExtraction` / `ResearchSource` logs (catching fabricated IDs like `EXT-999` or unreviewed HTTP 403 URLs).
    - **Consistency (`schedule_consistency`):** Cross-checks parametric drawing `door_schedule` & `window_schedule` quantities against BOQ door/window item quantities, compares drawing total room floor area against project-level floor finish quantities, and checks DXF round-trip flags.
-   - **Deliverables & Integrity (`missing_deliverable` / `integrity`):** Audits expected task deliverables, checks `ReviewReport` DOCX/PDF outputs in `08_Reports` and `10_Final_Deliverables`, checks registered `Deliverable` files on disk, and verifies file `sha256` checksums cleanly.
+   - **Deliverables, Integrity & No-Evidence Guard (`missing_deliverable` / `integrity` / `no_evidence`):** Audits expected task deliverables (both keyword-matched BOQ/drawing/report labels and generic deliverable labels), checks `ReviewReport` DOCX/PDF outputs in `08_Reports` and `10_Final_Deliverables`, checks registered `Deliverable` files on disk, and verifies file `sha256` checksums cleanly. Any QA review that inspects zero concrete artefacts (`0` BOQs, drawings, reports, or deliverables, or `0` executed check targets) is assigned `status="no_evidence"` (never `"passed"`), sets `Task.verification_status="qa_failed"`, and is blocked by `/verify` (`HTTP 422`).
 
 4. **Issue Register Lifecycle & Task Verification Gate (`backend/app/services/qa.py`, `backend/app/api/qa.py`, `backend/app/schemas/qa.py`):**
-   - `run_project_qa_review` (`POST /api/projects/{project_id}/qa-reviews`) assigns sequential issue codes (`QA-001`, `QA-002`, ...) to open defects, updates `Task.verification_status` to `"qa_passed"` (`0` findings & `0` open issues) or `"qa_failed"`, and records `tokens_used=0`.
-   - `verify_task_after_qa` (`POST /api/tasks/{task_id}/verify`) enforces the hard gate: a newly generated or completed task starts `"unverified"`, can **never** be marked `"verified"` by generation alone, and rejects `/verify` (`HTTP 422`) until an independent passing `QaReview` exists and zero open issues remain.
-   - Full Issue Register endpoints: `GET /api/projects/{project_id}/qa-reviews`, `GET /api/qa-reviews/{review_id}`, `GET /api/projects/{project_id}/issues` (filterable by `status`, `severity`, `task_id`), `POST /api/projects/{project_id}/issues` (manual issue creation), and `PATCH /api/issues/{issue_id}` (close with `closure_note` & `closed_at`, or reopen — which automatically resets an already-verified task back to `"qa_failed"`).
+   - `run_project_qa_review` (`POST /api/projects/{project_id}/qa-reviews`) assigns sequential issue codes (`QA-001`, `QA-002`, ...) to open defects, updates `Task.verification_status` to `"qa_passed"` only when `status == "passed"` (`0` open issues and `>= 1` inspected artefact) or `"qa_failed"` otherwise (`issues_found` / `no_evidence`), and records `tokens_used=0`.
+   - `verify_task_after_qa` (`POST /api/tasks/{task_id}/verify`) enforces the hard gate: a newly generated or completed task starts `"unverified"`, can **never** be marked `"verified"` by generation alone, and rejects `/verify` (`HTTP 422`) unless `qa_row.status == "passed"`, `>= 1` artefact was inspected, zero open issues remain, AND a new passing `QaReview` created strictly after the latest issue closure timestamp (`closed_at`) exists for the task (prompting the owner to re-run QA otherwise).
+   - Full Issue Register endpoints: `GET /api/projects/{project_id}/qa-reviews`, `GET /api/qa-reviews/{review_id}`, `GET /api/projects/{project_id}/issues` (filterable by `status`, `severity`, `task_id`), `POST /api/projects/{project_id}/issues` (manual issue creation), and `PATCH /api/issues/{issue_id}` (closing requires a non-empty `closure_note` of at least `10` trimmed characters — `HTTP 422` otherwise — and never flips a `QaReview` to `"passed"` without a re-run; reopening automatically resets an already-verified task back to `"qa_failed"`).
 
 5. **Bilingual RTL/LTR Frontend UI (`frontend/src/components/QaIssuesView.tsx`, `AssignmentsView.tsx`, `App.tsx`, `api.ts`, `types.ts`):**
-   - Added the **الجودة وسجل القضايا (QA) / QA & Issue Register** tab (`initialTab="qa"`), displaying producer-reasoning isolation confirmation, deterministic check metric breakdown (`arithmetic`, `unit`, `reference`, `schedule_consistency`, `missing_deliverable`), Issue Register table (`issue_number`, `description`, `discipline`, `severity`, `reference`, `corrective_action`, `status`, closure notes), status filtering (`All` / `Open` / `Closed`), manual issue logging form, close/reopen buttons, and the **Verify Task** gate button.
+   - Added the **الجودة وسجل القضايا (QA) / QA & Issue Register** tab (`initialTab="qa"`), displaying producer-reasoning isolation confirmation, deterministic check metric breakdown (`arithmetic`, `unit`, `reference`, `schedule_consistency`, `missing_deliverable` with `NO EVIDENCE` badge when `checked_count === 0`), Issue Register table (`issue_number`, `description`, `discipline`, `severity`, `reference`, `corrective_action`, `status`, closure notes), status filtering (`All` / `Open` / `Closed`), manual issue logging form, required `>= 10`-character closure-note prompt (`Close Issue` -> `Confirm Close` / `Cancel`), explicit **Re-run QA** controls/banners after closures or `no_evidence` outcomes, and the **Verify Task** gate button.
    - Added `verification_status` badge (`unverified`, `qa_passed`, `qa_failed`, `verified`) in `AssignmentsView.tsx`.
 
 ## 2. Files Created / Changed
@@ -83,53 +83,42 @@ QA-012 [missing_deliverable|critical|open] Registered deliverable file '05_Desig
 QA-013 [missing_deliverable|high|open] Review Report 'Seeded Report' is missing output(s): 08_Reports:docx, 08_Reports:pdf, 10_Final_Deliverables:docx, 10_Final_Deliverables:pdf. | ref=Report Rev 01 | action=Regenerate DOCX + PDF into 08_Reports and 10_Final_Deliverables.
 ```
 
-## 4. Tests Run (Unedited Summary & External Checks)
+## 4. Tests Run (Unedited Summary & Secret Scan)
 
 ### Backend Full Suite (`pytest -v`)
 
 ```text
 > & "backend\.venv\Scripts\pytest.exe" backend/tests -v
-collected 87 items
+collected 90 items
 
 ... (all non-opt-in test modules passed cleanly, including:)
-backend\tests\test_migrations.py::test_alembic_upgrade_and_downgrade_round_trip PASSED [ 52%]
-backend\tests\test_migrations.py::test_ondelete_restrict_refuses_deleting_project_with_files_and_file_with_versions PASSED [ 54%]
-backend\tests\test_migrations.py::test_classification_check_constraint_enforces_five_claude_labels PASSED [ 55%]
-backend\tests\test_qa.py::test_step12_qa_context_excludes_producer_reasoning_and_task_never_verified_by_generation_alone PASSED [ 71%]
-backend\tests\test_qa.py::test_step12_qa_catches_all_seeded_errors_and_manages_issue_register_lifecycle PASSED [ 72%]
+backend\tests\test_migrations.py::test_alembic_upgrade_and_downgrade_round_trip PASSED [ 51%]
+backend\tests\test_migrations.py::test_ondelete_restrict_refuses_deleting_project_with_files_and_file_with_versions PASSED [ 52%]
+backend\tests\test_migrations.py::test_classification_check_constraint_enforces_five_claude_labels PASSED [ 53%]
+backend\tests\test_qa.py::test_step12_qa_context_excludes_producer_reasoning_and_task_never_verified_by_generation_alone PASSED [ 68%]
+backend\tests\test_qa.py::test_step12_qa_catches_all_seeded_errors_and_manages_issue_register_lifecycle PASSED [ 70%]
+backend\tests\test_qa.py::test_step12_empty_project_qa_is_no_evidence_and_verify_returns_422 PASSED [ 71%]
+backend\tests\test_qa.py::test_step12_issue_closure_requires_note_and_verify_requires_qa_rerun PASSED [ 72%]
+backend\tests\test_qa.py::test_step12_corrupt_xlsx_raises_integrity_finding PASSED [ 73%]
 
-================== 83 passed, 4 skipped in 124.28s (0:02:04) ==================
+================== 86 passed, 4 skipped in 153.40s (0:02:33) ==================
 ```
 
-*(Note: 4 skipped tests are the opt-in live external tool/network checks executed explicitly below.)*
-
-### Opt-In Real External Checks (`RUN_REAL_ODA=1`, `RUN_REAL_OCR=1`, `RUN_REAL_RESEARCH=1`)
-
-```text
-> $env:RUN_REAL_ODA="1"; $env:RUN_REAL_OCR="1"; $env:RUN_REAL_RESEARCH="1"; & "backend\.venv\Scripts\pytest.exe" backend/tests -k "optin_real" -v -s
-collecting ... collected 87 items / 83 deselected / 4 selected
-
-backend\tests\test_cad_bim.py::test_optin_real_oda_converter_dwg_to_dxf PASSED
-backend\tests\test_drawings.py::test_optin_real_oda_step11_parametric_dxf_roundtrip PASSED
-backend\tests\test_extraction.py::test_optin_real_tesseract_ara_eng_on_committed_fixture PASSED
-backend\tests\test_research.py::test_optin_real_live_controlled_research_no_client_data PASSED
-
-====================== 4 passed, 83 deselected in 14.24s ======================
-```
+*(Note: 4 skipped tests are the opt-in live external tool/network checks (`RUN_REAL_ODA`, `RUN_REAL_OCR`, `RUN_REAL_RESEARCH`) which were not modified in this fix round.)*
 
 ### Frontend Suite (`vitest` + `tsc --noEmit` + `vite build`)
 
 ```text
-✓ src/App.test.tsx (21 tests) 61ms
-Test Files 1 passed (1) | Tests 21 passed (21) | Duration 653ms
-tsc --noEmit && vite build -> 37 modules transformed -> built in 540ms
+✓ src/App.test.tsx (21 tests) 62ms
+Test Files  1 passed (1) | Tests  21 passed (21) | Duration  1.04s
+tsc --noEmit && vite build -> 37 modules transformed -> built in 555ms
 ```
 
-### Repo Hygiene & Protected Files
+### Repo Hygiene & Secret Scan
 - `git diff main -- .github CLAUDE.md`: empty (protected files untouched).
 - UTF-8 BOM check across `backend`, `frontend/src`, `docs`, `scripts`: `BOM_FILES: []`.
-- Local-path & secret-pattern check across committed dirs: clean (no local user paths or secrets).
-- `gitleaks` full git-history & tracked directory scan executed on committed branch HEAD.
+- Local-path & secret-pattern check across tracked/updated dirs: clean (no local user paths or live keys).
+- `gitleaks detect --source . --no-banner -v`: `no leaks found` (exit `0`).
 
 ## 5. Known Limits & Owner Review Needed
 1. **Live Browser Interactive QA Workflow (`PENDING` owner check):** Automated Vitest + FastAPI `TestClient` suites verify rendering and API round-trips end-to-end; interactive visual review of the bilingual **QA & Issue Register** tab, issue filtering, closure notes, and task verification badge transitions in the running desktop browser remains for the owner.
@@ -142,6 +131,9 @@ tsc --noEmit && vite build -> 37 modules transformed -> built in 540ms
 - [x] Deterministic checks (`0` AI tokens) catch seeded wrong totals, wrong/unconfirmed units, fake/unreviewed references, drawing/BOQ schedule mismatches, and missing deliverables
 - [x] Issue Register CRUD API & bilingual RTL/LTR UI (`issue_number`, `description`, `discipline`, `severity`, `reference`, `corrective_action`, `status`, close/reopen lifecycle)
 - [x] Generation alone never marks tasks `"verified"`; `/verify` enforces passing QA + zero open issues (`HTTP 422` otherwise)
-- [x] `ADR-021` added in `docs/DECISIONS.md`
+- [x] `ADR-021` added & updated in `docs/DECISIONS.md`
+- [x] Review Fix (1): Zero-artefact / missing-evidence QA runs return `status="no_evidence"`, mark tasks `qa_failed`, and `/verify` returns `422`
+- [x] Review Fix (2): `update_issue` requires `>= 10`-character `closure_note` (`422` otherwise) without promoting review to `passed`; `/verify` requires a fresh QA re-run after last closure (`422` otherwise); `QaIssuesView` prompts for closure note and offers **Re-run QA** button
+- [x] Review Fix (3): `_check_arithmetic` raises high-severity `integrity` finding on unreadable/corrupt/missing exported XLSX workbooks (tested with corrupt XLSX)
 - [x] `docs/reports/step-12.md` marked **`PARTIAL`** until owner live UI walkthrough
 - [x] Pushed `step-12-qa-issue-register` only (`main` untouched, no merge)
