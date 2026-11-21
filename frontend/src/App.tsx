@@ -9,9 +9,20 @@ import { ProjectWorkspaceView } from "./components/ProjectWorkspaceView";
 import { ProviderSettingsView } from "./components/ProviderSettingsView";
 import { QaIssuesView } from "./components/QaIssuesView";
 import { ResearchView } from "./components/ResearchView";
+import { SpecificationsView } from "./components/SpecificationsView";
 import type { HealthPayload, Lang } from "./types";
 
-type ActiveTab = "projects" | "assignments" | "research" | "deliverables" | "boq" | "drawings" | "calculations" | "qa" | "settings";
+type ActiveTab =
+  | "projects"
+  | "assignments"
+  | "research"
+  | "deliverables"
+  | "boq"
+  | "drawings"
+  | "calculations"
+  | "specifications"
+  | "qa"
+  | "settings";
 
 const COPY: Record<
   Lang,
@@ -32,13 +43,15 @@ const COPY: Record<
     boqTab: string;
     drawingsTab: string;
     calculationsTab: string;
+    specificationsTab: string;
     qaTab: string;
     settingsTab: string;
   }
 > = {
   ar: {
     title: "الوكيل الهندسي الاستشاري المحلي",
-    subtitle: "الخطوة 13 — إطار الحسابات الهندسية (الكهرباء والسباكة) + الجودة + الرسم البارامتري + جداول الكميات",
+    subtitle:
+      "الخطوة 14 — مولّد المواصفات الفنية المرتبط بجداول الكميات والمخططات + الحسابات + الجودة + الرسم البارامتري",
     classificationLabel: "التصنيف: أولي (Preliminary)",
     toggleLang: "Switch to English (LTR)",
     refreshHealth: "تحديث فحص الخادم",
@@ -53,12 +66,14 @@ const COPY: Record<
     boqTab: "جداول الكميات (BOQ)",
     drawingsTab: "الرسم الهندسي (CAD)",
     calculationsTab: "الحسابات الهندسية (MEP)",
+    specificationsTab: "المواصفات الفنية (Specs)",
     qaTab: "الجودة وسجل القضايا (QA)",
     settingsTab: "إعدادات Gemini والمزودين",
   },
   en: {
     title: "Local AI Engineering Consultancy Agent",
-    subtitle: "Step 13 — Deterministic Electrical & Plumbing Calculations, QA Register, Parametric CAD & BOQ",
+    subtitle:
+      "Step 14 — BOQ & Drawing-Linked Technical Specifications, Deterministic MEP Calculations, QA Register & Parametric CAD",
     classificationLabel: "Classification: Preliminary",
     toggleLang: "التبديل إلى العربية (RTL)",
     refreshHealth: "Refresh Health Check",
@@ -73,6 +88,7 @@ const COPY: Record<
     boqTab: "BOQ & Quantities",
     drawingsTab: "Parametric CAD",
     calculationsTab: "Calculations (MEP)",
+    specificationsTab: "Technical Specs",
     qaTab: "QA & Issue Register",
     settingsTab: "AI Provider Settings",
   },
@@ -220,6 +236,13 @@ export function App({
           </button>
           <button
             type="button"
+            className={`btn ${activeTab === "specifications" ? "" : "btn-secondary"}`}
+            onClick={() => setActiveTab("specifications")}
+          >
+            {text.specificationsTab}
+          </button>
+          <button
+            type="button"
             className={`btn ${activeTab === "qa" ? "" : "btn-secondary"}`}
             onClick={() => setActiveTab("qa")}
           >
@@ -248,6 +271,8 @@ export function App({
           <ParametricDrawingView lang={lang} />
         ) : activeTab === "calculations" ? (
           <CalculationsView lang={lang} />
+        ) : activeTab === "specifications" ? (
+          <SpecificationsView lang={lang} />
         ) : activeTab === "qa" ? (
           <QaIssuesView lang={lang} />
         ) : (

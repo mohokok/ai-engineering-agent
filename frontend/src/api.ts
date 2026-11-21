@@ -744,3 +744,77 @@ export function exportCalculationDeliverables(
     }
   );
 }
+
+export function listSpecificationPresets(): Promise<import("./types").SpecificationPresetListResponse> {
+  return requestJson<import("./types").SpecificationPresetListResponse>("/api/specifications/presets");
+}
+
+export function generateProjectSpecification(
+  projectId: string,
+  payload: {
+    task_id?: string | null;
+    title?: string | null;
+    discipline?: string;
+    language?: import("./types").ReportLanguage;
+    classification?: ProjectClassification;
+    boq_sheet_ids?: string[];
+    drawing_ids?: string[];
+    research_source_ids?: string[];
+    use_ai?: boolean;
+    complexity?: TaskComplexity;
+    change_note?: string | null;
+  }
+): Promise<import("./types").SpecificationDetailOut> {
+  return requestJson<import("./types").SpecificationDetailOut>(
+    `/api/projects/${encodeURIComponent(projectId)}/specifications`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }
+  );
+}
+
+export function listProjectSpecifications(
+  projectId: string
+): Promise<import("./types").SpecificationListResponse> {
+  return requestJson<import("./types").SpecificationListResponse>(
+    `/api/projects/${encodeURIComponent(projectId)}/specifications`
+  );
+}
+
+export function getSpecificationDetail(
+  specId: string
+): Promise<import("./types").SpecificationDetailOut> {
+  return requestJson<import("./types").SpecificationDetailOut>(
+    `/api/specifications/${encodeURIComponent(specId)}`
+  );
+}
+
+export function approveSpecificationDraft(
+  specId: string,
+  payload: { approved_by?: string; approval_note?: string | null; export_after_approval?: boolean }
+): Promise<import("./types").SpecificationDetailOut> {
+  return requestJson<import("./types").SpecificationDetailOut>(
+    `/api/specifications/${encodeURIComponent(specId)}/approve`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }
+  );
+}
+
+export function exportSpecificationDeliverables(
+  specId: string,
+  payload?: { language?: import("./types").ReportLanguage; change_note?: string | null }
+): Promise<import("./types").SpecificationExportOut> {
+  return requestJson<import("./types").SpecificationExportOut>(
+    `/api/specifications/${encodeURIComponent(specId)}/export`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload ?? {}),
+    }
+  );
+}

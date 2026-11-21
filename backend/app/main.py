@@ -20,6 +20,7 @@ from app.api.qa import router as qa_router
 from app.api.reports import router as reports_router
 from app.api.research import router as research_router
 from app.api.settings import router as settings_router
+from app.api.specifications import router as specifications_router
 from app.api.tasks import router as tasks_router
 from app.core.config import Settings, get_settings
 from app.db.migrations import upgrade_database
@@ -128,6 +129,7 @@ def create_app(
     application.include_router(boq_router, prefix="/api")
     application.include_router(calculations_router, prefix="/api")
     application.include_router(drawings_router, prefix="/api")
+    application.include_router(specifications_router, prefix="/api")
     application.include_router(qa_router, prefix="/api")
     application.include_router(settings_router, prefix="/api")
     return application

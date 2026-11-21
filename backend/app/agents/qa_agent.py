@@ -22,11 +22,13 @@ from app.db.models import (
     ProjectFile,
     ResearchSource,
     ReviewReport,
+    Specification,
     Task,
 )
 from app.schemas.calculations import VERIFY_CODE_LABEL
 from app.schemas.drawings import ParametricPlanModel
 from app.schemas.qa import IssueCategory, IssueSeverity, QaCheckMetricOut, QaContextIsolationReport
+from app.schemas.specifications import NO_VERIFIED_STANDARD_LABEL, SPEC_SECTION_PARTS
 from app.services.parametric_cad import build_schedules_from_model, compute_room_metrics, sha256_file
 from app.services.workspace import resolve_project_file_path
 from app.skills.calculations import evaluate_calculation
@@ -85,6 +87,7 @@ class QaContextData:
     drawings: list[dict[str, Any]] = field(default_factory=list)
     review_reports: list[dict[str, Any]] = field(default_factory=list)
     calculations: list[dict[str, Any]] = field(default_factory=list)
+    specifications: list[dict[str, Any]] = field(default_factory=list)
     extractions: list[dict[str, Any]] = field(default_factory=list)
     project_files: list[dict[str, Any]] = field(default_factory=list)
     reviewed_research_urls: set[str] = field(default_factory=set)
@@ -132,6 +135,7 @@ def build_isolated_qa_context(
                 "boq_id": d.boq_id,
                 "drawing_id": d.drawing_id,
                 "calculation_id": d.calculation_id,
+                "specification_id": d.specification_id,
                 "title": d.title,
                 "deliverable_type": d.deliverable_type,
                 "discipline": d.discipline,
@@ -271,6 +275,35 @@ def build_isolated_qa_context(
             }
         )
 
+    spec_rows = db.scalars(
+        select(Specification)
+        .where(Specification.project_id == project.id)
+        .order_by(Specification.created_at.desc())
+    ).all()
+    for sp in spec_rows:
+        if task is not None and sp.task_id and sp.task_id != task.id:
+            continue
+        sp_payload = sp.structured_payload_json if isinstance(sp.structured_payload_json, dict) else {}
+        ctx.specifications.append(
+            {
+                "id": sp.id,
+                "task_id": sp.task_id,
+                "title": sp.title,
+                "discipline": sp.discipline,
+                "language": sp.language,
+                "revision": sp.revision,
+                "version": sp.version,
+                "export_version": sp.export_version,
+                "status": sp.status,
+                "use_ai": bool(sp.use_ai),
+                "ai_draft_status": sp.ai_draft_status,
+                "source_boq_sheet_ids": list(sp_payload.get("source_boq_sheet_ids") or []),
+                "source_drawing_ids": list(sp_payload.get("source_drawing_ids") or []),
+                "source_research_ids": list(sp_payload.get("source_research_ids") or []),
+                "sections": list(sp_payload.get("sections") or []),
+            }
+        )
+
     files = db.scalars(select(ProjectFile).where(ProjectFile.project_id == project.id)).all()
     file_name_by_id = {f.id: f.original_filename for f in files}
     for f in files:
@@ -332,12 +365,13 @@ def build_isolated_qa_context(
 
 
 def count_inspected_artefacts(ctx: QaContextData) -> int:
-    """Return total concrete deliverables, BOQ sheets, drawings, calculations, and reports available for QA inspection."""
+    """Return total concrete deliverables, BOQ sheets, drawings, calculations, specifications, and reports available for QA inspection."""
     return (
         len(ctx.boq_sheets)
         + len(ctx.drawings)
         + len(ctx.review_reports)
         + len(ctx.calculations)
+        + len(ctx.specifications)
         + len(ctx.deliverables)
     )
 
@@ -354,6 +388,10 @@ def _expected_deliverable_covered(exp: str, ctx: QaContextData) -> bool:
     haystacks.extend(
         f"{c.get('title', '')} {c.get('discipline', '')} {c.get('calculation_type', '')} calculation".lower()
         for c in ctx.calculations
+    )
+    haystacks.extend(
+        f"{s.get('title', '')} {s.get('discipline', '')} specification specifications".lower()
+        for s in ctx.specifications
     )
     if not haystacks:
         return False
@@ -378,6 +416,7 @@ def build_qa_context_isolation_report(ctx: QaContextData) -> QaContextIsolationR
         inspected_drawing_ids=[d["id"] for d in ctx.drawings],
         inspected_report_ids=[r["id"] for r in ctx.review_reports],
         inspected_calculation_ids=[c["id"] for c in ctx.calculations],
+        inspected_specification_ids=[s["id"] for s in ctx.specifications],
         inspected_deliverable_ids=[d["id"] for d in ctx.deliverables],
         inspected_extraction_ids=[e["id"] for e in ctx.extractions],
         inspected_research_source_count=len(ctx.all_research_sources),
@@ -427,6 +466,16 @@ def serialize_isolated_qa_prompt_context(ctx: QaContextData) -> str:
                 "references": c["references_json"],
             }
             for c in ctx.calculations
+        ],
+        "specifications": [
+            {
+                "id": s["id"],
+                "title": s["title"],
+                "discipline": s["discipline"],
+                "ai_draft_status": s["ai_draft_status"],
+                "sections_count": len(s.get("sections") or []),
+            }
+            for s in ctx.specifications
         ],
         "deliverables": ctx.deliverables,
         "reviewed_research_urls": sorted(ctx.reviewed_research_urls),
@@ -1251,6 +1300,167 @@ def _check_references(ctx: QaContextData) -> tuple[QaCheckMetricOut, list[QaCand
                     )
                 )
 
+    # 4. Check Step 14 specifications: no orphan/unsourced standards, unreviewed URLs, or invented standard codes
+    deliv_by_spec = {d["specification_id"]: d["id"] for d in ctx.deliverables if d.get("specification_id")}
+    reviewed_rs_by_id = {
+        str(rs["id"]): rs
+        for rs in ctx.all_research_sources
+        if rs.get("reviewed") and rs.get("access_status") in ("accessible", "owner_provided")
+    }
+    boq_ref_corpus = " ".join(
+        f"{it.get('technical_reference') or ''} {it.get('description') or ''}"
+        for b in ctx.boq_sheets
+        for it in b["items"]
+    ).lower()
+    reviewed_corpus = (
+        " ".join(
+            f"{rs.get('source_name') or ''} {rs.get('url') or ''} {rs.get('relevant_info') or ''}"
+            for rs in reviewed_rs_by_id.values()
+        ).lower()
+        + " "
+        + boq_ref_corpus
+    )
+    ungrounded_std_re = re.compile(
+        r"\b(?:ASTM|ACI|BS|EN|IEC|IEEE|ISO|ASHRAE|NFPA|ASME|ANSI|SBC|LBC)\s*[A-Z]?\s*\d[\w./-]*\b",
+        re.IGNORECASE,
+    )
+
+    for spec in ctx.specifications:
+        checked += 1
+        spec_deliv_id = deliv_by_spec.get(spec["id"])
+        spec_ref = f"Specification {spec['title']} ({spec['id'][:8]})"
+        sections = spec.get("sections") or []
+        for sec in sections:
+            if not isinstance(sec, dict):
+                continue
+            sec_code = str(sec.get("section_code") or "SPEC")
+            stds = sec.get("standards") or []
+            if not stds:
+                findings.append(
+                    QaCandidateFinding(
+                        check_category="reference",
+                        discipline=str(sec.get("discipline") or spec.get("discipline") or "multidisciplinary"),
+                        severity="high",
+                        title="Specification section missing standards declaration",
+                        description=(
+                            f"Specification '{spec['title']}' section {sec_code} has an empty standards list "
+                            f"and fails to state '{NO_VERIFIED_STANDARD_LABEL}'."
+                        ),
+                        reference=f"{spec_ref} / {sec_code}",
+                        corrective_action=f"Cite reviewed source-log entries or set '{NO_VERIFIED_STANDARD_LABEL}'.",
+                        deliverable_id=spec_deliv_id,
+                        task_id=spec.get("task_id"),
+                    )
+                )
+            for st in stds:
+                if not isinstance(st, dict):
+                    continue
+                checked += 1
+                st_status = str(st.get("status") or "")
+                rs_id = str(st.get("research_source_id") or "").strip()
+                st_url = str(st.get("url") or "").strip()
+                cite_txt = str(st.get("citation_text") or "")
+                verif_lbl = str(st.get("verification_label") or "")
+                if st_status == "no_verified_standard_on_file":
+                    if (
+                        NO_VERIFIED_STANDARD_LABEL not in cite_txt.lower()
+                        and NO_VERIFIED_STANDARD_LABEL not in verif_lbl.lower()
+                    ):
+                        findings.append(
+                            QaCandidateFinding(
+                                check_category="reference",
+                                discipline=str(sec.get("discipline") or "multidisciplinary"),
+                                severity="high",
+                                title="Missing unverified-standard disclaimer in specification",
+                                description=(
+                                    f"Section {sec_code} in '{spec['title']}' lacks the mandatory "
+                                    f"'{NO_VERIFIED_STANDARD_LABEL}' notice."
+                                ),
+                                reference=f"{spec_ref} / {sec_code}",
+                                corrective_action=f"Include exact label '{NO_VERIFIED_STANDARD_LABEL}'.",
+                                deliverable_id=spec_deliv_id,
+                                task_id=spec.get("task_id"),
+                            )
+                        )
+                elif st_status == "verified_source_log":
+                    rs_ok = bool(rs_id and rs_id in reviewed_rs_by_id)
+                    url_ok = bool(st_url and _url_is_reviewed(st_url))
+                    if not (rs_ok and url_ok):
+                        findings.append(
+                            QaCandidateFinding(
+                                check_category="reference",
+                                discipline=str(sec.get("discipline") or "multidisciplinary"),
+                                severity="high",
+                                title="Orphan or unsourced standard cited in specification",
+                                description=(
+                                    f"Specification '{spec['title']}' section {sec_code} cites standard "
+                                    f"'{st.get('source_name')}' (source_id={rs_id or 'none'}, url={st_url or 'none'}) "
+                                    "which is missing, unreviewed, or inaccessible in ResearchSource log."
+                                ),
+                                reference=f"{spec_ref} / {sec_code}",
+                                corrective_action="Replace orphan/unreviewed standard with a reviewed ResearchSource or explicit unverified-standard notice.",
+                                deliverable_id=spec_deliv_id,
+                                task_id=spec.get("task_id"),
+                            )
+                        )
+                else:
+                    findings.append(
+                        QaCandidateFinding(
+                            check_category="reference",
+                            discipline=str(sec.get("discipline") or "multidisciplinary"),
+                            severity="high",
+                            title="Unsourced standard status in specification",
+                            description=f"Section {sec_code} declares unsupported standard status '{st_status}'.",
+                            reference=f"{spec_ref} / {sec_code}",
+                            corrective_action="Use only verified_source_log entries or no_verified_standard_on_file.",
+                            deliverable_id=spec_deliv_id,
+                            task_id=spec.get("task_id"),
+                        )
+                    )
+
+            for cl in sec.get("clauses") or []:
+                if not isinstance(cl, dict):
+                    continue
+                cl_txt = str(cl.get("text") or "")
+                for url_hit in _URL_RE.findall(cl_txt):
+                    checked += 1
+                    if not _url_is_reviewed(url_hit):
+                        findings.append(
+                            QaCandidateFinding(
+                                check_category="reference",
+                                discipline=str(sec.get("discipline") or "multidisciplinary"),
+                                severity="high",
+                                title="Specification clause cites unreviewed URL",
+                                description=(
+                                    f"Section {sec_code} clause {cl.get('clause_id')} cites '{url_hit}' "
+                                    "which is absent from reviewed project ResearchSource entries."
+                                ),
+                                reference=f"{spec_ref} / {cl.get('clause_id')}",
+                                corrective_action="Remove unreviewed URL or verify source via Research log first.",
+                                deliverable_id=spec_deliv_id,
+                                task_id=spec.get("task_id"),
+                            )
+                        )
+                for std_hit in ungrounded_std_re.findall(cl_txt):
+                    checked += 1
+                    if std_hit.lower() not in reviewed_corpus:
+                        findings.append(
+                            QaCandidateFinding(
+                                check_category="reference",
+                                discipline=str(sec.get("discipline") or "multidisciplinary"),
+                                severity="high",
+                                title="Unsourced standard code citation in specification clause",
+                                description=(
+                                    f"Specification '{spec['title']}' section {sec_code} clause {cl.get('clause_id')} "
+                                    f"cites unverified code '{std_hit}' not present in reviewed project ResearchSource or BOQ logs."
+                                ),
+                                reference=f"{spec_ref} / {cl.get('clause_id')}",
+                                corrective_action="Cite standards ONLY from reviewed source-log entries or state 'no verified standard on file - verify against the locally adopted code'.",
+                                deliverable_id=spec_deliv_id,
+                                task_id=spec.get("task_id"),
+                            )
+                        )
+
     failed_cnt = len(findings)
     return (
         QaCheckMetricOut(
@@ -1485,6 +1695,164 @@ def _check_cross_deliverable_consistency(ctx: QaContextData) -> tuple[QaCheckMet
                 )
             )
 
+    # 4. Check Step 14 specifications: every section maps to >= 1 BOQ item/drawing, zero orphan refs, all 8 sub-sections present
+    deliv_by_spec = {d["specification_id"]: d["id"] for d in ctx.deliverables if d.get("specification_id")}
+    valid_boq_item_ids = {str(it["id"]) for b in ctx.boq_sheets for it in b["items"]}
+    valid_drawing_ids = {str(d["id"]) for d in ctx.drawings}
+    valid_source_ids = {str(rs["id"]) for rs in ctx.all_research_sources if rs.get("reviewed") and rs.get("access_status") in ("accessible", "owner_provided")}
+
+    for spec in ctx.specifications:
+        checked += 1
+        spec_deliv_id = deliv_by_spec.get(spec["id"])
+        spec_ref = f"Specification {spec['title']} ({spec['id'][:8]})"
+
+        if spec.get("ai_draft_status") == "unverified_ai_draft":
+            findings.append(
+                QaCandidateFinding(
+                    check_category="schedule_consistency",
+                    discipline=spec.get("discipline") or "multidisciplinary",
+                    severity="high",
+                    title="AI-drafted specification pending owner approval",
+                    description=(
+                        f"Specification '{spec['title']}' contains AI-drafted prose marked 'unverified_ai_draft' "
+                        "and has not yet been approved by the owner."
+                    ),
+                    reference=spec_ref,
+                    corrective_action="Review clauses and record owner approval via POST /api/specifications/{id}/approve.",
+                    deliverable_id=spec_deliv_id,
+                    task_id=spec.get("task_id"),
+                )
+            )
+
+        sections = spec.get("sections") or []
+        if not sections:
+            findings.append(
+                QaCandidateFinding(
+                    check_category="schedule_consistency",
+                    discipline=spec.get("discipline") or "multidisciplinary",
+                    severity="high",
+                    title="Specification package missing sections",
+                    description=f"Specification '{spec['title']}' has no specification sections.",
+                    reference=spec_ref,
+                    corrective_action="Regenerate specification from active BOQ items and drawing schedules.",
+                    deliverable_id=spec_deliv_id,
+                    task_id=spec.get("task_id"),
+                )
+            )
+            continue
+
+        for sec in sections:
+            if not isinstance(sec, dict):
+                continue
+            checked += 1
+            sec_code = str(sec.get("section_code") or "SPEC")
+            sec_disc = str(sec.get("discipline") or spec.get("discipline") or "multidisciplinary")
+            mapped_boqs = [str(bid) for bid in (sec.get("mapped_boq_item_ids") or []) if str(bid)]
+            mapped_dwgs = [str(did) for did in (sec.get("mapped_drawing_ids") or []) if str(did)]
+
+            orphan_boqs = [bid for bid in mapped_boqs if bid not in valid_boq_item_ids]
+            orphan_dwgs = [did for did in mapped_dwgs if did not in valid_drawing_ids]
+            valid_links_cnt = (len(mapped_boqs) - len(orphan_boqs)) + (len(mapped_dwgs) - len(orphan_dwgs))
+
+            if orphan_boqs or orphan_dwgs or valid_links_cnt == 0:
+                findings.append(
+                    QaCandidateFinding(
+                        check_category="schedule_consistency",
+                        discipline=sec_disc,
+                        severity="high",
+                        title="Orphan or unmapped specification section",
+                        description=(
+                            f"Specification '{spec['title']}' section {sec_code} fails BOQ/drawing traceability "
+                            f"(valid_links={valid_links_cnt}, orphan_boqs={orphan_boqs}, orphan_drawings={orphan_dwgs})."
+                        ),
+                        reference=f"{spec_ref} / {sec_code}",
+                        corrective_action="Ensure every specification section maps directly to existing project BOQ items or parametric drawing schedules.",
+                        deliverable_id=spec_deliv_id,
+                        task_id=spec.get("task_id"),
+                    )
+                )
+
+            clauses = [c for c in (sec.get("clauses") or []) if isinstance(c, dict)]
+            present_parts = {str(c.get("part") or "") for c in clauses if str(c.get("text") or "").strip()}
+            missing_parts = [p for p in SPEC_SECTION_PARTS if p not in present_parts]
+            if missing_parts:
+                findings.append(
+                    QaCandidateFinding(
+                        check_category="schedule_consistency",
+                        discipline=sec_disc,
+                        severity="high",
+                        title="Specification section missing mandatory sub-sections",
+                        description=(
+                            f"Specification '{spec['title']}' section {sec_code} is missing required sub-section(s): "
+                            f"{', '.join(missing_parts)}."
+                        ),
+                        reference=f"{spec_ref} / {sec_code}",
+                        corrective_action="Populate all 8 mandatory parts (scope, standards, materials, execution, testing, acceptance, submittals, warranty).",
+                        deliverable_id=spec_deliv_id,
+                        task_id=spec.get("task_id"),
+                    )
+                )
+
+            for cl in clauses:
+                traces = [tr for tr in (cl.get("trace_refs") or []) if isinstance(tr, dict)]
+                if not traces:
+                    findings.append(
+                        QaCandidateFinding(
+                            check_category="schedule_consistency",
+                            discipline=sec_disc,
+                            severity="high",
+                            title="Specification clause missing source traceability anchor",
+                            description=f"Section {sec_code} clause {cl.get('clause_id')} has zero BOQ/drawing/source traces.",
+                            reference=f"{spec_ref} / {cl.get('clause_id')}",
+                            corrective_action="Attach valid BOQ item, drawing schedule, or source trace reference to every clause.",
+                            deliverable_id=spec_deliv_id,
+                            task_id=spec.get("task_id"),
+                        )
+                    )
+                for tr in traces:
+                    if tr.get("boq_item_id") and str(tr["boq_item_id"]) not in valid_boq_item_ids:
+                        findings.append(
+                            QaCandidateFinding(
+                                check_category="schedule_consistency",
+                                discipline=sec_disc,
+                                severity="high",
+                                title="Specification clause traces to missing BOQ item",
+                                description=f"Clause {cl.get('clause_id')} traces to non-existent BOQ item ID '{tr['boq_item_id']}'.",
+                                reference=f"{spec_ref} / {cl.get('clause_id')}",
+                                corrective_action="Re-generate specification from active project BOQ items.",
+                                deliverable_id=spec_deliv_id,
+                                task_id=spec.get("task_id"),
+                            )
+                        )
+                    if tr.get("drawing_id") and str(tr["drawing_id"]) not in valid_drawing_ids:
+                        findings.append(
+                            QaCandidateFinding(
+                                check_category="schedule_consistency",
+                                discipline=sec_disc,
+                                severity="high",
+                                title="Specification clause traces to missing drawing",
+                                description=f"Clause {cl.get('clause_id')} traces to non-existent drawing ID '{tr['drawing_id']}'.",
+                                reference=f"{spec_ref} / {cl.get('clause_id')}",
+                                corrective_action="Re-generate specification from active project drawings.",
+                                deliverable_id=spec_deliv_id,
+                                task_id=spec.get("task_id"),
+                            )
+                        )
+                    if tr.get("research_source_id") and str(tr["research_source_id"]) not in valid_source_ids:
+                        findings.append(
+                            QaCandidateFinding(
+                                check_category="reference",
+                                discipline=sec_disc,
+                                severity="high",
+                                title="Specification clause traces to unreviewed/missing ResearchSource",
+                                description=f"Clause {cl.get('clause_id')} traces to unreviewed/missing source '{tr['research_source_id']}'.",
+                                reference=f"{spec_ref} / {cl.get('clause_id')}",
+                                corrective_action="Replace trace with reviewed ResearchSource ID.",
+                                deliverable_id=spec_deliv_id,
+                                task_id=spec.get("task_id"),
+                            )
+                        )
+
     failed_cnt = len(findings)
     return (
         QaCheckMetricOut(
@@ -1511,6 +1879,7 @@ def _check_missing_deliverables_and_integrity(
     delivs_by_report: dict[str, set[str]] = {}
     delivs_by_boq: dict[str, set[str]] = {}
     delivs_by_calc: dict[str, set[str]] = {}
+    delivs_by_spec: dict[str, set[str]] = {}
 
     for d in ctx.deliverables:
         checked += 1
@@ -1523,6 +1892,8 @@ def _check_missing_deliverables_and_integrity(
             delivs_by_boq.setdefault(d["boq_id"], set()).add(str(d.get("format") or "").lower())
         if d.get("calculation_id"):
             delivs_by_calc.setdefault(d["calculation_id"], set()).add(str(d.get("format") or "").lower())
+        if d.get("specification_id"):
+            delivs_by_spec.setdefault(d["specification_id"], set()).add(str(d.get("format") or "").lower())
 
         if not rel:
             findings.append(
@@ -1654,6 +2025,28 @@ def _check_missing_deliverables_and_integrity(
                     )
                 )
 
+    for spec in ctx.specifications:
+        if int(spec.get("export_version") or 0) > 0:
+            checked += 1
+            fmts = delivs_by_spec.get(spec["id"], set())
+            missing = sorted({"docx", "pdf"} - fmts)
+            if missing:
+                findings.append(
+                    QaCandidateFinding(
+                        check_category="missing_deliverable",
+                        discipline=spec.get("discipline") or "multidisciplinary",
+                        severity="high",
+                        title="Exported specification deliverables incomplete",
+                        description=(
+                            f"Specification '{spec['title']}' is missing {', '.join(missing).upper()} "
+                            "export file(s) in 07_Technical_Specifications."
+                        ),
+                        reference=f"Specification {spec['title']}",
+                        corrective_action="Re-export specification DOCX + PDF into 07_Technical_Specifications.",
+                        task_id=spec.get("task_id"),
+                    )
+                )
+
     # 3. Task expected deliverables coverage check (without reading producer reasoning)
     if ctx.task_id and ctx.expected_task_deliverables:
         has_boq = bool(ctx.boq_sheets) or any(d.get("folder_name") == "06_BOQ" for d in ctx.deliverables)
@@ -1663,6 +2056,9 @@ def _check_missing_deliverables_and_integrity(
         )
         has_calc = bool(ctx.calculations) or any(
             d.get("folder_name") == "04_Engineering_Calculations" for d in ctx.deliverables
+        )
+        has_spec = bool(ctx.specifications) or any(
+            d.get("folder_name") == "07_Technical_Specifications" for d in ctx.deliverables
         )
         for exp in ctx.expected_task_deliverables:
             checked += 1
@@ -1723,6 +2119,20 @@ def _check_missing_deliverables_and_integrity(
                             task_id=ctx.task_id,
                         )
                     )
+            elif any(k in low for k in ("spec", "specification", "specifications", "مواصفات", "مواصفة")):
+                if not has_spec:
+                    findings.append(
+                        QaCandidateFinding(
+                            check_category="missing_deliverable",
+                            discipline="multidisciplinary",
+                            severity="high",
+                            title="Missing expected technical specification deliverable for task",
+                            description=f"Task expects deliverable '{exp}', but no Specification or 07_Technical_Specifications deliverable is linked.",
+                            reference=f"Task {ctx.task_id[:8]} / {exp}",
+                            corrective_action="Generate and link project Technical Specifications (DOCX + PDF) for this task.",
+                            task_id=ctx.task_id,
+                        )
+                    )
             elif not _expected_deliverable_covered(exp, ctx):
                 findings.append(
                     QaCandidateFinding(
@@ -1738,7 +2148,9 @@ def _check_missing_deliverables_and_integrity(
                 )
 
     # Also catch zero-deliverable QA run on a task so an empty task never falsely passes verification
-    if ctx.task_id and not (ctx.deliverables or ctx.boq_sheets or ctx.drawings or ctx.review_reports or ctx.calculations):
+    if ctx.task_id and not (
+        ctx.deliverables or ctx.boq_sheets or ctx.drawings or ctx.review_reports or ctx.calculations or ctx.specifications
+    ):
         checked += 1
         findings.append(
             QaCandidateFinding(

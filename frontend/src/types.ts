@@ -772,6 +772,7 @@ export interface DeliverableOut {
   boq_id?: string | null;
   drawing_id?: string | null;
   calculation_id?: string | null;
+  specification_id?: string | null;
   task_id?: string | null;
   file_id?: string | null;
   title: string;
@@ -1229,6 +1230,8 @@ export interface QaContextIsolationReport {
   inspected_boq_ids: string[];
   inspected_drawing_ids: string[];
   inspected_report_ids: string[];
+  inspected_calculation_ids?: string[];
+  inspected_specification_ids?: string[];
   inspected_deliverable_ids: string[];
   inspected_extraction_ids: string[];
   inspected_research_source_count: number;
@@ -1379,4 +1382,131 @@ export interface CalculationPresetOut {
 
 export interface CalculationPresetListResponse {
   presets: CalculationPresetOut[];
+}
+
+export type SpecPartKey =
+  | "scope"
+  | "standards"
+  | "materials"
+  | "execution"
+  | "testing"
+  | "acceptance"
+  | "submittals"
+  | "warranty";
+
+export type SpecDraftStatus = "not_used" | "unverified_ai_draft" | "owner_approved";
+
+export interface SpecTraceRef {
+  trace_id: string;
+  trace_kind: "boq_item" | "drawing" | "drawing_schedule" | "research_source";
+  boq_sheet_id?: string | null;
+  boq_item_id?: string | null;
+  boq_item_no?: string | null;
+  drawing_id?: string | null;
+  drawing_no?: string | null;
+  schedule_kind?: string | null;
+  research_source_id?: string | null;
+  source_url?: string | null;
+  label: string;
+}
+
+export interface SpecClause {
+  clause_id: string;
+  part: SpecPartKey | string;
+  text: string;
+  draft_origin: "deterministic_template" | "ai_unverified_draft" | "owner_approved" | string;
+  trace_refs: SpecTraceRef[];
+}
+
+export interface SpecStandardCitation {
+  research_source_id?: string | null;
+  source_name: string;
+  url: string;
+  publication_date?: string | null;
+  status: "verified_source_log" | "no_verified_standard_on_file" | string;
+  citation_text: string;
+  verification_label: string;
+}
+
+export interface SpecSection {
+  section_code: string;
+  title: string;
+  discipline: string;
+  mapped_boq_item_ids: string[];
+  mapped_drawing_ids: string[];
+  mapped_drawing_refs: string[];
+  standards: SpecStandardCitation[];
+  clauses: SpecClause[];
+  missing_parts: string[];
+}
+
+export interface SpecificationSummaryOut {
+  id: string;
+  project_id: string;
+  project_code: string;
+  project_name: string;
+  task_id?: string | null;
+  title: string;
+  discipline: string;
+  language: ReportLanguage | string;
+  classification: ProjectClassification | string;
+  revision: string;
+  version: number;
+  export_version: number;
+  status: string;
+  use_ai: boolean;
+  ai_draft_status: SpecDraftStatus | string;
+  ai_draft_label: string;
+  owner_approved_by?: string | null;
+  owner_approved_at?: string | null;
+  sections_count: number;
+  clauses_count: number;
+  tokens_used: number;
+  summary?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SpecificationDetailOut extends SpecificationSummaryOut {
+  source_boq_sheet_ids: string[];
+  source_drawing_ids: string[];
+  source_research_ids: string[];
+  missing_standards_notices: string[];
+  sections: SpecSection[];
+  token_usage: TaskTokenUsageOut;
+  deliverables: DeliverableOut[];
+}
+
+export interface SpecificationListResponse {
+  specifications: SpecificationSummaryOut[];
+  total: number;
+}
+
+export interface SpecificationExportOut {
+  specification: SpecificationDetailOut;
+  docx_deliverable: DeliverableOut;
+  pdf_deliverable: DeliverableOut;
+}
+
+export interface SpecificationPresetOut {
+  key: string;
+  title_en: string;
+  title_ar: string;
+  description_en: string;
+  description_ar: string;
+  discipline: string;
+  boq_items: Array<Record<string, unknown>>;
+  drawing_summary: Record<string, unknown>;
+  reviewed_source: Record<string, unknown>;
+  request_defaults: {
+    title?: string | null;
+    discipline: string;
+    language: ReportLanguage;
+    classification: ProjectClassification;
+    use_ai: boolean;
+  };
+}
+
+export interface SpecificationPresetListResponse {
+  presets: SpecificationPresetOut[];
 }
