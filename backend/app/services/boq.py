@@ -1346,6 +1346,7 @@ def _to_deliverable_out(row: Deliverable) -> DeliverableOut:
         project_id=row.project_id,
         report_id=row.report_id,
         boq_id=row.boq_id,
+        drawing_id=row.drawing_id,
         task_id=row.task_id,
         file_id=row.file_id,
         title=row.title,

@@ -3,12 +3,13 @@ import { fetchHealth } from "./api";
 import { AssignmentsView } from "./components/AssignmentsView";
 import { BoqView } from "./components/BoqView";
 import { DeliverablesView } from "./components/DeliverablesView";
+import { ParametricDrawingView } from "./components/ParametricDrawingView";
 import { ProjectWorkspaceView } from "./components/ProjectWorkspaceView";
 import { ProviderSettingsView } from "./components/ProviderSettingsView";
 import { ResearchView } from "./components/ResearchView";
 import type { HealthPayload, Lang } from "./types";
 
-type ActiveTab = "projects" | "assignments" | "research" | "deliverables" | "boq" | "settings";
+type ActiveTab = "projects" | "assignments" | "research" | "deliverables" | "boq" | "drawings" | "settings";
 
 const COPY: Record<
   Lang,
@@ -27,6 +28,7 @@ const COPY: Record<
     researchTab: string;
     deliverablesTab: string;
     boqTab: string;
+    drawingsTab: string;
     settingsTab: string;
   }
 > = {
@@ -45,6 +47,7 @@ const COPY: Record<
     researchTab: "البحث وسجل المصادر",
     deliverablesTab: "التقارير والمخرجات",
     boqTab: "جداول الكميات (BOQ)",
+    drawingsTab: "الرسم الهندسي (CAD)",
     settingsTab: "إعدادات Gemini والمزودين",
   },
   en: {
@@ -62,6 +65,7 @@ const COPY: Record<
     researchTab: "Research & Source Log",
     deliverablesTab: "Deliverables & Reports",
     boqTab: "BOQ & Quantities",
+    drawingsTab: "Parametric CAD",
     settingsTab: "AI Provider Settings",
   },
 };
@@ -194,6 +198,13 @@ export function App({
           </button>
           <button
             type="button"
+            className={`btn ${activeTab === "drawings" ? "" : "btn-secondary"}`}
+            onClick={() => setActiveTab("drawings")}
+          >
+            {text.drawingsTab}
+          </button>
+          <button
+            type="button"
             className={`btn ${activeTab === "settings" ? "" : "btn-secondary"}`}
             onClick={() => setActiveTab("settings")}
           >
@@ -211,6 +222,8 @@ export function App({
           <DeliverablesView lang={lang} />
         ) : activeTab === "boq" ? (
           <BoqView lang={lang} />
+        ) : activeTab === "drawings" ? (
+          <ParametricDrawingView lang={lang} />
         ) : (
           <ProviderSettingsView lang={lang} />
         )}

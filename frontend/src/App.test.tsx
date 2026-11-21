@@ -11,7 +11,12 @@ import {
   enhanceReviewReportAi,
   exportBoqDeliverables,
   extractProjectFile,
+  generateParametricDrawing,
   generateReviewReport,
+  getClinicPresetModel,
+  getParametricDrawingDetail,
+  listProjectParametricDrawings,
+  suggestParametricModel,
   getDeliverableDownloadUrl,
   getExtractionCapabilities,
   getExtractionDetail,
@@ -42,6 +47,7 @@ import {
 import { AssignmentsView } from "./components/AssignmentsView";
 import { BoqView } from "./components/BoqView";
 import { DeliverablesView } from "./components/DeliverablesView";
+import { ParametricDrawingView } from "./components/ParametricDrawingView";
 import { ProjectFilesPanel } from "./components/ProjectFilesPanel";
 import { ProjectWorkspaceView } from "./components/ProjectWorkspaceView";
 import { ProviderSettingsView } from "./components/ProviderSettingsView";
@@ -1970,5 +1976,212 @@ describe("App Step 10 BOQ & quantity UI", () => {
     expect(checked.checks.issues_count).toBe(1);
     const exported = await exportBoqDeliverables("boq-10", { language: "en" });
     expect(exported.xlsx_deliverable.folder_name).toBe("06_BOQ");
+  });
+
+  it("renders ParametricDrawingView (Arabic RTL + English LTR), 05_Design_Drawings filter, and parametric CAD API wrappers", async () => {
+    const sampleModel = {
+      units: "mm" as const,
+      north_angle_deg: 0,
+      rooms: [
+        {
+          room_id: "R-01",
+          name_ar: "الاستقبال والانتظار",
+          name_en: "Reception & Waiting",
+          x_mm: 0,
+          y_mm: 0,
+          width_mm: 6000,
+          height_mm: 4000,
+        },
+      ],
+      walls: [
+        {
+          wall_id: "W-1",
+          start_mm: [0, 0] as [number, number],
+          end_mm: [6000, 0] as [number, number],
+          thickness_mm: 200,
+          wall_type: "exterior" as const,
+        },
+      ],
+      doors: [
+        {
+          door_id: "DR-01",
+          mark: "D1",
+          position_mm: [3000, 0] as [number, number],
+          width_mm: 1200,
+          height_mm: 2200,
+        },
+      ],
+      windows: [
+        {
+          window_id: "WN-01",
+          mark: "W1",
+          position_mm: [5000, 0] as [number, number],
+          width_mm: 1500,
+          height_mm: 1200,
+        },
+      ],
+    };
+
+    const sampleDrawing: import("./types").ParametricDrawingDetailOut = {
+      id: "dwg-11",
+      project_id: "proj-11",
+      project_code: "CLN-11",
+      project_name: "Clinic 11",
+      drawing_no: "A-101",
+      title: "مخطط العيادة / Clinic Plan",
+      scale_denominator: 100,
+      scale_label: "1:100",
+      paper_size: "A3",
+      units: "mm",
+      classification: "For Review",
+      revision: "Rev 01",
+      version: 1,
+      status: "verified",
+      round_trip_passed: true,
+      ai_suggested: false,
+      plan_model: sampleModel,
+      rooms_computed: [
+        {
+          room_id: "R-01",
+          name_ar: "الاستقبال والانتظار",
+          name_en: "Reception & Waiting",
+          polygon_mm: [[0, 0], [6000, 0], [6000, 4000], [0, 4000]],
+          area_mm2: 24000000,
+          area_m2: 24.0,
+          perimeter_mm: 20000,
+          perimeter_m: 20.0,
+          centroid_mm: [3000, 2000],
+          floor_finish: "Porcelain",
+          wall_finish: "Paint",
+          ceiling_finish: "Gypsum",
+          skirting: "Porcelain",
+        },
+      ],
+      total_area_m2: 24.0,
+      door_schedule: [
+        {
+          mark: "D1",
+          width_mm: 1200,
+          height_mm: 2200,
+          swing: "right",
+          material: "Aluminum Glass",
+          fire_rating: "30 min",
+          hardware: "Closer",
+          count: 1,
+          door_ids: ["DR-01"],
+          room_refs: ["R-01"],
+        },
+      ],
+      window_schedule: [
+        {
+          mark: "W1",
+          width_mm: 1500,
+          height_mm: 1200,
+          sill_mm: 900,
+          glazing: "Double Low-E",
+          count: 1,
+          window_ids: ["WN-01"],
+          room_refs: ["R-01"],
+        },
+      ],
+      round_trip_check: {
+        passed: true,
+        insunits_code: 4,
+        units: "mm",
+        units_doubtful: false,
+        ttf_font_styles: ["ARABIC_TTF:tahoma.ttf"],
+        uses_shx_font: false,
+        expected_room_count: 1,
+        extracted_area_contour_count: 1,
+        expected_total_area_m2: 24.0,
+        extracted_total_area_m2: 24.0,
+        area_diff_m2: 0.0,
+        expected_doors_count: 1,
+        extracted_doors_count: 1,
+        expected_windows_count: 1,
+        extracted_windows_count: 1,
+        mismatches: [],
+      },
+      deliverables: [
+        {
+          id: "del-dxf-11",
+          project_id: "proj-11",
+          drawing_id: "dwg-11",
+          title: "A-101 Plan (Rev 01 — DXF)",
+          deliverable_type: "parametric_drawing_dxf",
+          discipline: "architecture",
+          format: "dxf",
+          classification: "For Review",
+          status: "issued",
+          version: 1,
+          folder_name: "05_Design_Drawings",
+          filename: "A_101_dwg11_v1.dxf",
+          relative_path: "05_Design_Drawings/A_101_dwg11_v1.dxf",
+          download_url: "/api/deliverables/del-dxf-11/download",
+          created_at: "2026-11-21T10:00:00Z",
+          updated_at: "2026-11-21T10:00:00Z",
+        },
+      ],
+      created_at: "2026-11-21T10:00:00Z",
+      updated_at: "2026-11-21T10:00:00Z",
+    };
+
+    const htmlAr = renderToStaticMarkup(<ParametricDrawingView lang="ar" initialDrawing={sampleDrawing} />);
+    expect(htmlAr).toContain("الرسم الهندسي البارامتري");
+    expect(htmlAr).toContain("الاستقبال والانتظار");
+    expect(htmlAr).toContain("24.00");
+    expect(htmlAr).toContain("/api/deliverables/del-dxf-11/download");
+
+    const htmlEn = renderToStaticMarkup(<ParametricDrawingView lang="en" initialDrawing={sampleDrawing} />);
+    expect(htmlEn).toContain("Parametric CAD Engine");
+    expect(htmlEn).toContain("Door Schedule (Model-Matched)");
+    expect(htmlEn).toContain("$INSUNITS=4");
+
+    const appDrawHtml = renderToStaticMarkup(<App initialLang="ar" initialTab="drawings" />);
+    expect(appDrawHtml).toContain("الرسم الهندسي (CAD)");
+
+    const delivHtml = renderToStaticMarkup(<DeliverablesView lang="en" />);
+    expect(delivHtml).toContain("05_Design_Drawings");
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(sampleModel), { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            requires_owner_confirmation: true,
+            message: "Review draft",
+            plan_model: sampleModel,
+            tokens_used: 320,
+          }),
+          { status: 200 }
+        )
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify(sampleDrawing), { status: 201 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ drawings: [sampleDrawing], total: 1, classification: "For Review" }), { status: 200 })
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify(sampleDrawing), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const preset = await getClinicPresetModel();
+    expect(preset.units).toBe("mm");
+    const suggested = await suggestParametricModel("proj-11", { brief: "Small clinic" });
+    expect(suggested.requires_owner_confirmation).toBe(true);
+    const created = await generateParametricDrawing("proj-11", {
+      drawing_no: "A-101",
+      title: "Clinic Plan",
+      scale_denominator: 100,
+      paper_size: "A3",
+      classification: "For Review",
+      ai_suggested: false,
+      owner_confirmed_model: true,
+      plan_model: sampleModel,
+    });
+    expect(created.round_trip_passed).toBe(true);
+    const listed = await listProjectParametricDrawings("proj-11");
+    expect(listed.total).toBe(1);
+    const detail = await getParametricDrawingDetail("dwg-11");
+    expect(detail.id).toBe("dwg-11");
   });
 });

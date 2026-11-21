@@ -524,3 +524,53 @@ export function exportBoqDeliverables(
     }
   );
 }
+
+export function getClinicPresetModel(): Promise<import("./types").ParametricPlanModel> {
+  return requestJson<import("./types").ParametricPlanModel>(
+    "/api/parametric-drawings/clinic-preset"
+  );
+}
+
+export function suggestParametricModel(
+  projectId: string,
+  payload: { brief: string; complexity?: "fast" | "deep" }
+): Promise<import("./types").ParametricModelSuggestOut> {
+  return requestJson<import("./types").ParametricModelSuggestOut>(
+    `/api/projects/${encodeURIComponent(projectId)}/parametric-drawings/suggest-model`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }
+  );
+}
+
+export function generateParametricDrawing(
+  projectId: string,
+  payload: import("./types").ParametricDrawingGenerateRequest
+): Promise<import("./types").ParametricDrawingDetailOut> {
+  return requestJson<import("./types").ParametricDrawingDetailOut>(
+    `/api/projects/${encodeURIComponent(projectId)}/parametric-drawings`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }
+  );
+}
+
+export function listProjectParametricDrawings(
+  projectId: string
+): Promise<import("./types").ParametricDrawingListResponse> {
+  return requestJson<import("./types").ParametricDrawingListResponse>(
+    `/api/projects/${encodeURIComponent(projectId)}/parametric-drawings`
+  );
+}
+
+export function getParametricDrawingDetail(
+  drawingId: string
+): Promise<import("./types").ParametricDrawingDetailOut> {
+  return requestJson<import("./types").ParametricDrawingDetailOut>(
+    `/api/parametric-drawings/${encodeURIComponent(drawingId)}`
+  );
+}

@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api.boq import router as boq_router
+from app.api.drawings import router as drawings_router
 from app.api.extraction import router as extraction_router
 from app.api.files import router as files_router
 from app.api.health import router as health_router
@@ -123,6 +124,7 @@ def create_app(
     application.include_router(research_router, prefix="/api")
     application.include_router(reports_router, prefix="/api")
     application.include_router(boq_router, prefix="/api")
+    application.include_router(drawings_router, prefix="/api")
     application.include_router(settings_router, prefix="/api")
     return application
 
