@@ -764,6 +764,7 @@ export interface DeliverableOut {
   id: string;
   project_id: string;
   report_id?: string | null;
+  boq_id?: string | null;
   task_id?: string | null;
   file_id?: string | null;
   title: string;
@@ -854,4 +855,167 @@ export interface ReviewReportGenerateRequest {
   change_note?: string;
   use_ai?: boolean;
   complexity?: TaskComplexity;
+}
+
+export type BoqVerificationStatus =
+  | "Extracted-Verified"
+  | "Extracted-Needs-Check"
+  | "Manual";
+
+export type BoqRateSourceKind = "owner_input" | "dated_research";
+
+export type BoqCheckType =
+  | "duplicate_item"
+  | "missing_item"
+  | "unit_consistency"
+  | "arithmetic_total"
+  | "unverified_unit"
+  | "rate_provenance";
+
+export interface BoqCheckIssue {
+  issue_id: string;
+  check_type: BoqCheckType;
+  severity: "high" | "medium" | "info";
+  item_id?: string | null;
+  item_no?: string | null;
+  message: string;
+  recommended_action: string;
+}
+
+export interface BoqFlaggedItem {
+  item_id: string;
+  item_no: string;
+  description: string;
+  unit: string;
+  quantity: number;
+  verification_status: BoqVerificationStatus;
+  reason: string;
+}
+
+export interface BoqChecksSummaryOut {
+  total_items: number;
+  verified_items_count: number;
+  needs_check_items_count: number;
+  manual_items_count: number;
+  priced_items_count: number;
+  unpriced_items_count: number;
+  verified_priced_subtotal: number;
+  needs_check_priced_subtotal: number;
+  grand_total: number;
+  issues_count: number;
+  high_issues_count: number;
+  issues: BoqCheckIssue[];
+  flagged_item_ids: string[];
+  flagged_items: BoqFlaggedItem[];
+}
+
+export interface BoqItemOut {
+  id: string;
+  boq_sheet_id: string;
+  row_order: number;
+  item_no: string;
+  description: string;
+  unit: string;
+  quantity: number;
+  unit_rate?: number | null;
+  total?: number | null;
+  reported_total?: number | null;
+  technical_reference?: string | null;
+  drawing_reference?: string | null;
+  remarks?: string | null;
+  verification_status: BoqVerificationStatus;
+  rate_source_kind?: BoqRateSourceKind | null;
+  rate_source_ref?: string | null;
+  rate_source_date?: string | null;
+  source_file_id?: string | null;
+  source_extraction_id?: string | null;
+  discipline?: string | null;
+  layer_or_category?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BoqSheetSummaryOut {
+  id: string;
+  project_id: string;
+  project_code: string;
+  project_name: string;
+  task_id?: string | null;
+  title: string;
+  language: ReportLanguage | string;
+  currency: string;
+  classification: ProjectClassification | string;
+  revision: string;
+  version: number;
+  export_version: number;
+  source_scope: string;
+  status: string;
+  summary?: string | null;
+  items_count: number;
+  grand_total: number;
+  issues_count: number;
+  high_issues_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BoqDetailOut extends BoqSheetSummaryOut {
+  checks: BoqChecksSummaryOut;
+  items: BoqItemOut[];
+  deliverables: DeliverableOut[];
+  source_metadata: Record<string, unknown>;
+}
+
+export interface BoqListResponse {
+  sheets: BoqSheetSummaryOut[];
+  total: number;
+  classification: ProjectClassification | string;
+}
+
+export interface BoqExportOut {
+  boq: BoqDetailOut;
+  xlsx_deliverable: DeliverableOut;
+  csv_deliverable: DeliverableOut;
+}
+
+export interface BoqSheetCreateRequest {
+  title?: string | null;
+  language?: ReportLanguage;
+  currency?: string;
+  classification?: ProjectClassification;
+  file_ids?: string[];
+  include_dxf_ifc?: boolean;
+  include_boq_imports?: boolean;
+  task_id?: string | null;
+}
+
+export interface BoqItemCreateRequest {
+  item_no?: string;
+  description: string;
+  unit?: string;
+  quantity: number;
+  unit_rate?: number | null;
+  technical_reference?: string | null;
+  drawing_reference?: string | null;
+  remarks?: string | null;
+  verification_status?: BoqVerificationStatus;
+  rate_source_kind?: BoqRateSourceKind | null;
+  rate_source_ref?: string | null;
+  rate_source_date?: string | null;
+}
+
+export interface BoqItemUpdateRequest {
+  item_no?: string | null;
+  description?: string | null;
+  unit?: string | null;
+  quantity?: number | null;
+  unit_rate?: number | null;
+  clear_rate?: boolean;
+  technical_reference?: string | null;
+  drawing_reference?: string | null;
+  remarks?: string | null;
+  verification_status?: BoqVerificationStatus | null;
+  rate_source_kind?: BoqRateSourceKind | null;
+  rate_source_ref?: string | null;
+  rate_source_date?: string | null;
 }

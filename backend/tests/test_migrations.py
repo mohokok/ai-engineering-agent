@@ -29,6 +29,8 @@ EXPECTED_TABLES = {
     "task_steps",
     "deliverables",
     "review_reports",
+    "boq_sheets",
+    "boq_items",
     "research_runs",
     "research_sources",
     "issues",

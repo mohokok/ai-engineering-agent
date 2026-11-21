@@ -144,6 +144,7 @@ class DeliverableOut(BaseModel):
     id: str
     project_id: str
     report_id: str | None = None
+    boq_id: str | None = None
     task_id: str | None = None
     file_id: str | None = None
     title: str

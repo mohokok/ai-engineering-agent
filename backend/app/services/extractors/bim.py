@@ -242,6 +242,8 @@ def extract_ifc(
                     "tag": tag,
                     "storey": storey_name,
                     "area": area_val,
+                    "area_source": area_source,
+                    "quantities": qtos or None,
                     "attributes": dims,
                 }
             )

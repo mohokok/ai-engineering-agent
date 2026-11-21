@@ -1,4 +1,10 @@
 import type {
+  BoqDetailOut,
+  BoqExportOut,
+  BoqItemCreateRequest,
+  BoqItemUpdateRequest,
+  BoqListResponse,
+  BoqSheetCreateRequest,
   CadUnitChoice,
   ConnectionTestOut,
   DeliverableListResponse,
@@ -7,6 +13,7 @@ import type {
   FileExtractionDetailOut,
   FileExtractionListResponse,
   HealthPayload,
+  ProjectClassification,
   ProjectCreateInput,
   ProjectDetail,
   ProjectFileListResponse,
@@ -403,4 +410,117 @@ export function listDeliverables(options?: {
 
 export function getDeliverableDownloadUrl(deliverableId: string): string {
   return `/api/deliverables/${encodeURIComponent(deliverableId)}/download`;
+}
+
+export function createBoqSheet(
+  projectId: string,
+  payload: BoqSheetCreateRequest
+): Promise<BoqDetailOut> {
+  return requestJson<BoqDetailOut>(
+    `/api/projects/${encodeURIComponent(projectId)}/boq-sheets`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }
+  );
+}
+
+export function listProjectBoqSheets(projectId: string): Promise<BoqListResponse> {
+  return requestJson<BoqListResponse>(
+    `/api/projects/${encodeURIComponent(projectId)}/boq-sheets`
+  );
+}
+
+export function getBoqDetail(boqId: string): Promise<BoqDetailOut> {
+  return requestJson<BoqDetailOut>(`/api/boq-sheets/${encodeURIComponent(boqId)}`);
+}
+
+export function updateBoqSheet(
+  boqId: string,
+  payload: {
+    title?: string;
+    currency?: string;
+    classification?: ProjectClassification;
+    language?: "ar" | "en";
+  }
+): Promise<BoqDetailOut> {
+  return requestJson<BoqDetailOut>(`/api/boq-sheets/${encodeURIComponent(boqId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function importExtractionsIntoBoq(
+  boqId: string,
+  payload: {
+    file_ids?: string[];
+    include_dxf_ifc?: boolean;
+    include_boq_imports?: boolean;
+    replace_extracted?: boolean;
+  }
+): Promise<BoqDetailOut> {
+  return requestJson<BoqDetailOut>(
+    `/api/boq-sheets/${encodeURIComponent(boqId)}/import-extractions`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }
+  );
+}
+
+export function addBoqItem(
+  boqId: string,
+  payload: BoqItemCreateRequest
+): Promise<BoqDetailOut> {
+  return requestJson<BoqDetailOut>(`/api/boq-sheets/${encodeURIComponent(boqId)}/items`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateBoqItem(
+  boqId: string,
+  itemId: string,
+  payload: BoqItemUpdateRequest
+): Promise<BoqDetailOut> {
+  return requestJson<BoqDetailOut>(
+    `/api/boq-sheets/${encodeURIComponent(boqId)}/items/${encodeURIComponent(itemId)}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }
+  );
+}
+
+export function deleteBoqItem(boqId: string, itemId: string): Promise<BoqDetailOut> {
+  return requestJson<BoqDetailOut>(
+    `/api/boq-sheets/${encodeURIComponent(boqId)}/items/${encodeURIComponent(itemId)}`,
+    { method: "DELETE" }
+  );
+}
+
+export function rerunBoqChecks(boqId: string): Promise<BoqDetailOut> {
+  return requestJson<BoqDetailOut>(
+    `/api/boq-sheets/${encodeURIComponent(boqId)}/checks`,
+    { method: "POST" }
+  );
+}
+
+export function exportBoqDeliverables(
+  boqId: string,
+  payload?: { language?: "ar" | "en"; include_checks_sheet?: boolean }
+): Promise<BoqExportOut> {
+  return requestJson<BoqExportOut>(
+    `/api/boq-sheets/${encodeURIComponent(boqId)}/export`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload ?? {}),
+    }
+  );
 }

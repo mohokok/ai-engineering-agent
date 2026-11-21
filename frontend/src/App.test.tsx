@@ -2,11 +2,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { App } from "./App";
 import {
+  addBoqItem,
   confirmExtractionDrawingUnit,
+  createBoqSheet,
   createProject,
   createTask,
   deleteProviderApiKey,
   enhanceReviewReportAi,
+  exportBoqDeliverables,
   extractProjectFile,
   generateReviewReport,
   getDeliverableDownloadUrl,
@@ -20,25 +23,31 @@ import {
   getTaskDetail,
   listDeliverables,
   listFileExtractions,
+  listProjectBoqSheets,
   listProjectFiles,
   listProjects,
   listResearchRuns,
   listTasks,
   refreshProviderModels,
+  rerunBoqChecks,
   runControlledResearch,
   saveProviderApiKey,
   summarizeDrawingVision,
   testProviderConnection,
+  updateBoqItem,
+  updateBoqSheet,
   updateProviderSettings,
   uploadProjectFiles,
 } from "./api";
 import { AssignmentsView } from "./components/AssignmentsView";
+import { BoqView } from "./components/BoqView";
 import { DeliverablesView } from "./components/DeliverablesView";
 import { ProjectFilesPanel } from "./components/ProjectFilesPanel";
 import { ProjectWorkspaceView } from "./components/ProjectWorkspaceView";
 import { ProviderSettingsView } from "./components/ProviderSettingsView";
 import { ResearchView } from "./components/ResearchView";
 import type {
+  BoqDetailOut,
   DeliverableOut,
   ExtractionCapabilitiesOut,
   FileExtractionDetailOut,
@@ -1736,5 +1745,230 @@ describe("App Step 09 Review Reports & Deliverables UI (RTL/LTR)", () => {
     expect(delivs.total).toBe(2);
     const enhanced = await enhanceReviewReportAi("rep-09", "fast");
     expect(enhanced.id).toBe("rep-09");
+  });
+});
+
+describe("App Step 10 BOQ & quantity UI", () => {
+  it("renders Arabic RTL & English LTR BOQ tables, verification badges, LYD currency, checks, flagged items, 06_BOQ exports, and API calls", async () => {
+    const sampleDelivs: DeliverableOut[] = [
+      {
+        id: "del-boq-xlsx",
+        project_id: "proj-10",
+        boq_id: "boq-10",
+        title: "BOQ Schedule (v1 XLSX — LYD)",
+        deliverable_type: "boq_schedule",
+        discipline: "quantity_surveying",
+        format: "xlsx",
+        classification: "Preliminary",
+        status: "issued",
+        version: 1,
+        folder_name: "06_BOQ",
+        filename: "boq_clinic_v1.xlsx",
+        relative_path: "06_BOQ/boq_clinic_v1.xlsx",
+        mime_type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        size_bytes: 7200,
+        sha256: "b".repeat(64),
+        download_url: "/api/deliverables/del-boq-xlsx/download",
+        created_at: "2026-11-21T10:00:00Z",
+        updated_at: "2026-11-21T10:00:00Z",
+      },
+      {
+        id: "del-boq-csv",
+        project_id: "proj-10",
+        boq_id: "boq-10",
+        title: "BOQ Schedule (v1 CSV — LYD)",
+        deliverable_type: "boq_schedule",
+        discipline: "quantity_surveying",
+        format: "csv",
+        classification: "Preliminary",
+        status: "issued",
+        version: 1,
+        folder_name: "06_BOQ",
+        filename: "boq_clinic_v1.csv",
+        relative_path: "06_BOQ/boq_clinic_v1.csv",
+        mime_type: "text/csv",
+        size_bytes: 1200,
+        sha256: "c".repeat(64),
+        download_url: "/api/deliverables/del-boq-csv/download",
+        created_at: "2026-11-21T10:00:00Z",
+        updated_at: "2026-11-21T10:00:00Z",
+      },
+    ];
+
+    const sampleBoq: BoqDetailOut = {
+      id: "boq-10",
+      project_id: "proj-10",
+      project_code: "BOQ-10",
+      project_name: "Clinic BOQ",
+      title: "مقايسة العيادة — Rev 01",
+      language: "ar",
+      currency: "LYD",
+      classification: "For Review",
+      revision: "Rev 01",
+      version: 1,
+      export_version: 1,
+      source_scope: "extracted",
+      status: "exported",
+      items_count: 3,
+      grand_total: 3600,
+      issues_count: 1,
+      high_issues_count: 1,
+      created_at: "2026-11-21T10:00:00Z",
+      updated_at: "2026-11-21T10:00:00Z",
+      checks: {
+        total_items: 3,
+        verified_items_count: 1,
+        needs_check_items_count: 1,
+        manual_items_count: 1,
+        priced_items_count: 1,
+        unpriced_items_count: 2,
+        verified_priced_subtotal: 3600,
+        needs_check_priced_subtotal: 0,
+        grand_total: 3600,
+        issues_count: 1,
+        high_issues_count: 1,
+        issues: [
+          {
+            issue_id: "CHK-001",
+            check_type: "unverified_unit",
+            severity: "high",
+            item_id: "item-2",
+            item_no: "CAD-A-02",
+            message: "Unconfirmed unit on CAD-A-02 requires /confirm-unit.",
+            recommended_action: "Confirm drawing unit before pricing.",
+          },
+        ],
+        flagged_item_ids: ["item-2"],
+        flagged_items: [
+          {
+            item_id: "item-2",
+            item_no: "CAD-A-02",
+            description: "Unconfirmed CAD contour area",
+            unit: "unconfirmed (in sq)",
+            quantity: 60,
+            verification_status: "Extracted-Needs-Check",
+            reason: "Tagged Extracted-Needs-Check — human review required",
+          },
+        ],
+      },
+      items: [
+        {
+          id: "item-1",
+          boq_sheet_id: "boq-10",
+          row_order: 1,
+          item_no: "CAD-A-01",
+          description: "Geometric area — layer A-AREA",
+          unit: "m2",
+          quantity: 24,
+          unit_rate: 150,
+          total: 3600,
+          technical_reference: "DXF deterministic area sum",
+          drawing_reference: "plan.dxf | layer:A-AREA | LWPOLYLINE",
+          remarks: "Verified owner unit",
+          verification_status: "Extracted-Verified",
+          rate_source_kind: "owner_input",
+          rate_source_ref: "Owner schedule 2026-11-20",
+          rate_source_date: "2026-11-20",
+          created_at: "2026-11-21T10:00:00Z",
+          updated_at: "2026-11-21T10:00:00Z",
+        },
+        {
+          id: "item-2",
+          boq_sheet_id: "boq-10",
+          row_order: 2,
+          item_no: "CAD-A-02",
+          description: "Unconfirmed CAD contour area",
+          unit: "unconfirmed (in sq)",
+          quantity: 60,
+          unit_rate: null,
+          total: null,
+          drawing_reference: "doubtful.dxf | layer:A-AREA",
+          remarks: "BLOCKED METRIC CONVERSION",
+          verification_status: "Extracted-Needs-Check",
+          created_at: "2026-11-21T10:00:00Z",
+          updated_at: "2026-11-21T10:00:00Z",
+        },
+        {
+          id: "item-3",
+          boq_sheet_id: "boq-10",
+          row_order: 3,
+          item_no: "MAN-01",
+          description: "Emergency lighting fixture",
+          unit: "nos",
+          quantity: 8,
+          unit_rate: null,
+          total: null,
+          verification_status: "Manual",
+          created_at: "2026-11-21T10:00:00Z",
+          updated_at: "2026-11-21T10:00:00Z",
+        },
+      ],
+      deliverables: sampleDelivs,
+      source_metadata: {},
+    };
+
+    const htmlAr = renderToStaticMarkup(<BoqView lang="ar" initialBoq={sampleBoq} />);
+    expect(htmlAr).toContain("مقايسة العيادة");
+    expect(htmlAr).toContain("LYD");
+    expect(htmlAr).toContain("Extracted-Verified");
+    expect(htmlAr).toContain("Extracted-Needs-Check");
+    expect(htmlAr).toContain("Manual");
+    expect(htmlAr).toContain("CHK-001");
+    expect(htmlAr).toContain("06_BOQ/boq_clinic_v1.xlsx");
+    expect(htmlAr).toContain("/api/deliverables/del-boq-xlsx/download");
+
+    const htmlEn = renderToStaticMarkup(<BoqView lang="en" initialBoq={sampleBoq} />);
+    expect(htmlEn).toContain("Build BOQ (DXF / IFC / XLSX / PDF)");
+    expect(htmlEn).toContain("Items Flagged for Human Verification");
+    expect(htmlEn).toContain("Export XLSX (Live Formulas) + CSV to 06_BOQ");
+    expect(htmlEn).toContain("Unsourced or undated research unit rates and unconfirmed CAD-unit pricing are blocked.");
+
+    const appBoqHtml = renderToStaticMarkup(<App initialLang="ar" initialTab="boq" />);
+    expect(appBoqHtml).toContain("جداول الكميات (BOQ)");
+    expect(appBoqHtml).toContain("LYD");
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(sampleBoq), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ sheets: [sampleBoq], total: 1, classification: "For Review" }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(sampleBoq), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(sampleBoq), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(sampleBoq), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(sampleBoq), { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            boq: sampleBoq,
+            xlsx_deliverable: sampleDelivs[0],
+            csv_deliverable: sampleDelivs[1],
+          }),
+          { status: 201 }
+        )
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const createdBoq = await createBoqSheet("proj-10", { currency: "LYD", language: "ar" });
+    expect(createdBoq.currency).toBe("LYD");
+    const listed = await listProjectBoqSheets("proj-10");
+    expect(listed.total).toBe(1);
+    const updatedCurr = await updateBoqSheet("boq-10", { currency: "USD" });
+    expect(updatedCurr.id).toBe("boq-10");
+    const added = await addBoqItem("boq-10", {
+      item_no: "M-02",
+      description: "Test manual line",
+      unit: "nos",
+      quantity: 2,
+    });
+    expect(added.id).toBe("boq-10");
+    const priced = await updateBoqItem("boq-10", "item-3", {
+      unit_rate: 75,
+      rate_source_kind: "owner_input",
+      rate_source_ref: "Owner input",
+    });
+    expect(priced.id).toBe("boq-10");
+    const checked = await rerunBoqChecks("boq-10");
+    expect(checked.checks.issues_count).toBe(1);
+    const exported = await exportBoqDeliverables("boq-10", { language: "en" });
+    expect(exported.xlsx_deliverable.folder_name).toBe("06_BOQ");
   });
 });

@@ -7,7 +7,9 @@ from sqlalchemy import (
     JSON,
     BigInteger,
     Boolean,
+    CheckConstraint,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     String,
@@ -63,6 +65,9 @@ class Project(Base):
         back_populates="project", cascade="all, delete-orphan"
     )
     review_reports: Mapped[list["ReviewReport"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
+    boq_sheets: Mapped[list["BoqSheet"]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )
     issues: Mapped[list["Issue"]] = relationship(
@@ -225,6 +230,9 @@ class Deliverable(Base):
     report_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("review_reports.id", ondelete="SET NULL"), index=True, nullable=True
     )
+    boq_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("boq_sheets.id", ondelete="SET NULL"), index=True, nullable=True
+    )
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     deliverable_type: Mapped[str] = mapped_column(String(64), nullable=False)
     discipline: Mapped[str] = mapped_column(
@@ -252,6 +260,104 @@ class Deliverable(Base):
 
     project: Mapped["Project"] = relationship(back_populates="deliverables")
     review_report: Mapped["ReviewReport | None"] = relationship(back_populates="deliverables")
+    boq_sheet: Mapped["BoqSheet | None"] = relationship(back_populates="deliverables")
+
+
+class BoqSheet(Base):
+    """Structured Step 10 Bill of Quantities sheet with configurable currency and versioned exports."""
+
+    __tablename__ = "boq_sheets"
+    __table_args__ = (classification_check_constraint(),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    project_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("projects.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    task_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("tasks.id", ondelete="SET NULL"), index=True, nullable=True
+    )
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    language: Mapped[str] = mapped_column(String(16), default="ar", nullable=False)
+    currency: Mapped[str] = mapped_column(String(16), default="LYD", nullable=False)
+    classification: Mapped[str] = mapped_column(
+        String(32), default="Preliminary", nullable=False
+    )
+    revision: Mapped[str] = mapped_column(String(32), default="Rev 01", nullable=False)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    export_version: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    source_scope: Mapped[str] = mapped_column(String(32), default="mixed", nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="draft", nullable=False)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    checks_summary_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    source_metadata_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, index=True, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+    project: Mapped["Project"] = relationship(back_populates="boq_sheets")
+    items: Mapped[list["BoqItem"]] = relationship(
+        back_populates="boq_sheet",
+        cascade="all, delete-orphan",
+        order_by="BoqItem.row_order",
+    )
+    deliverables: Mapped[list["Deliverable"]] = relationship(back_populates="boq_sheet")
+
+
+class BoqItem(Base):
+    """Individual Step 10 Bill of Quantities line item with quantity verification tag and sourced rate metadata."""
+
+    __tablename__ = "boq_items"
+    __table_args__ = (
+        CheckConstraint(
+            "verification_status IN ('Extracted-Verified', 'Extracted-Needs-Check', 'Manual')",
+            name="ck_boq_items_verification_status_valid",
+        ),
+        CheckConstraint(
+            "rate_source_kind IS NULL OR rate_source_kind IN ('owner_input', 'dated_research')",
+            name="ck_boq_items_rate_source_kind_valid",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    boq_sheet_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("boq_sheets.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    row_order: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    item_no: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    unit: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    quantity: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    unit_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    total: Mapped[float | None] = mapped_column(Float, nullable=True)
+    reported_total: Mapped[float | None] = mapped_column(Float, nullable=True)
+    technical_reference: Mapped[str | None] = mapped_column(Text, nullable=True)
+    drawing_reference: Mapped[str | None] = mapped_column(Text, nullable=True)
+    remarks: Mapped[str | None] = mapped_column(Text, nullable=True)
+    verification_status: Mapped[str] = mapped_column(
+        String(32), default="Extracted-Needs-Check", nullable=False
+    )
+    rate_source_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    rate_source_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    rate_source_date: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_file_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("files.id", ondelete="SET NULL"), nullable=True
+    )
+    source_extraction_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("file_extractions.id", ondelete="SET NULL"), nullable=True
+    )
+    discipline: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    layer_or_category: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+    boq_sheet: Mapped["BoqSheet"] = relationship(back_populates="items")
 
 
 class ReviewReport(Base):

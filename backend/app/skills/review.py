@@ -38,7 +38,9 @@ from app.services.extraction import STEP07_EXTRACTABLE_EXTENSIONS, extract_proje
 from app.services.extractors.cad import (
     CAD_UNIT_SCALE_MAP,
     classify_cad_area_bearing_layer,
+    clean_cad_unit_label as _clean_unit_label,
     compute_layer_area_groups,
+    resolve_cad_unit_context as _resolve_cad_unit_context,
 )
 from app.services.extractors.pdf_and_image import assess_native_pdf_text_reliability
 from app.services.files import FileRecordNotFoundError
@@ -137,84 +139,10 @@ class _CadFileComparisonEntry:
     candidate_calculated_items: list[CategorizedStatement]
 
 
-def _clean_unit_label(val: Any, *, is_ar: bool = False) -> str:
-    if val is None:
-        return "غير محدد" if is_ar else "unspecified unit"
-    text = str(val).strip()
-    if text.lower() in {"", "none", "null", "unknown", "n/a"}:
-        return "غير محدد" if is_ar else "unspecified unit"
-    return text
-
-
 def _normalize_cad_stem(filename: str) -> str:
     stem = Path(filename).stem.lower()
     stem = re.sub(r"(?:[_\-\s]+(?:dxf|dwg|converted|oda|export|v\d+))+$", "", stem)
     return re.sub(r"[^a-z0-9\u0600-\u06FF]+", "", stem)
-
-
-def _resolve_cad_unit_context(
-    payload: dict[str, Any],
-    cad_summary: dict[str, Any],
-    *,
-    is_ar: bool,
-) -> dict[str, Any]:
-    insunits_raw = cad_summary.get("insunits_code")
-    insunits_code = int(insunits_raw) if isinstance(insunits_raw, (int, float)) else None
-    raw_declared = _clean_unit_label(
-        cad_summary.get("declared_unit") or cad_summary.get("units"),
-        is_ar=is_ar,
-    )
-    confirmed_raw = payload.get("owner_confirmed_unit") or cad_summary.get("owner_confirmed_unit")
-    confirmed_clean = (
-        None
-        if confirmed_raw is None or str(confirmed_raw).strip().lower() in {"", "none", "null", "unknown"}
-        else str(confirmed_raw).strip()
-    )
-
-    if confirmed_clean == "unitless":
-        is_doubtful = True
-        active_unit = "unitless"
-    elif confirmed_clean is not None:
-        is_doubtful = False
-        active_unit = _clean_unit_label(confirmed_clean, is_ar=is_ar)
-    else:
-        raw_doubtful = (
-            payload.get("units_doubtful")
-            if "units_doubtful" in payload
-            else cad_summary.get("units_doubtful")
-        )
-        # Never trust area_m2 from legacy extractions without unit flags or missing/unitless headers.
-        inferred_unitless = (
-            insunits_code == 0
-            or raw_declared in {"unitless", "unspecified unit", "غير محدد"}
-            or (raw_declared.startswith("insunits_") and raw_declared not in CAD_UNIT_SCALE_MAP)
-        )
-        is_doubtful = bool(raw_doubtful) if raw_doubtful is not None else True
-        if inferred_unitless:
-            is_doubtful = True
-        active_unit = (
-            raw_declared
-            if raw_declared not in {"unspecified unit", "غير محدد"}
-            else _clean_unit_label(payload.get("cad_units"), is_ar=is_ar)
-        )
-
-    if confirmed_clean and confirmed_clean != "unitless":
-        basis_display = (
-            f"{active_unit} (owner-confirmed; raw header $INSUNITS={insunits_code if insunits_code is not None else 'N/A'} {raw_declared})"
-        )
-    elif insunits_code is not None:
-        basis_display = f"{active_unit} ($INSUNITS={insunits_code})"
-    else:
-        basis_display = active_unit
-
-    return {
-        "active_unit": active_unit,
-        "raw_declared": raw_declared,
-        "insunits_code": insunits_code,
-        "confirmed": confirmed_clean,
-        "is_doubtful": is_doubtful,
-        "basis_display": basis_display,
-    }
 
 
 def _extract_pdf_register_metrics(
