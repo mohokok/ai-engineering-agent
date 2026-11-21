@@ -133,6 +133,8 @@ def _to_task_summary(
         prompt=task.prompt,
         task_type=task.task_type,
         status=task.status,
+        verification_status=task.verification_status,
+        last_qa_review_id=task.last_qa_review_id,
         classification=task.classification,
         complexity=task.complexity,
         provider_name=task.provider_name,

@@ -551,6 +551,7 @@ export function AssignmentsView({
                 {statusDisplayLabel(selectedTask.status, lang)}
               </span>
               <span className="badge">{selectedTask.classification}</span>
+              <span className="badge">{selectedTask.verification_status ?? "unverified"}</span>
               {understanding &&
                 understanding.suggested_classification !== selectedTask.classification && (
                   <span className="badge badge-warn">

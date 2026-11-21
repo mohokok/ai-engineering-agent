@@ -76,6 +76,9 @@ class Project(Base):
     issues: Mapped[list["Issue"]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )
+    qa_reviews: Mapped[list["QaReview"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
     calculations: Mapped[list["Calculation"]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )
@@ -148,7 +151,13 @@ class Task(Base):
     """Autonomous engineering assignment belonging to a project."""
 
     __tablename__ = "tasks"
-    __table_args__ = (classification_check_constraint(),)
+    __table_args__ = (
+        classification_check_constraint(),
+        CheckConstraint(
+            "verification_status IN ('unverified', 'qa_passed', 'qa_failed', 'verified')",
+            name="ck_tasks_verification_status_valid",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
     project_id: Mapped[str] = mapped_column(
@@ -158,6 +167,8 @@ class Task(Base):
     prompt: Mapped[str] = mapped_column(Text, nullable=False)
     task_type: Mapped[str] = mapped_column(String(64), default="general", nullable=False)
     status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False)
+    verification_status: Mapped[str] = mapped_column(String(32), default="unverified", nullable=False)
+    last_qa_review_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     classification: Mapped[str] = mapped_column(
         String(32), default="Preliminary", nullable=False
     )
@@ -528,6 +539,37 @@ class ResearchSource(Base):
     research_run: Mapped["ResearchRun | None"] = relationship(back_populates="sources")
 
 
+class QaReview(Base):
+    """Independent Step 12 QA agent execution summary (isolated from producer reasoning)."""
+
+    __tablename__ = "qa_reviews"
+    __table_args__ = (classification_check_constraint(),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    project_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("projects.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    task_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("tasks.id", ondelete="SET NULL"), index=True, nullable=True
+    )
+    classification: Mapped[str] = mapped_column(
+        String(32), default="Preliminary", nullable=False
+    )
+    status: Mapped[str] = mapped_column(String(32), default="issues_found", nullable=False)
+    producer_reasoning_excluded: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    checks_summary_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    qa_context_snapshot_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    issues_opened_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    open_issues_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    tokens_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, index=True, nullable=False
+    )
+
+    project: Mapped["Project"] = relationship(back_populates="qa_reviews")
+    issues: Mapped[list["Issue"]] = relationship(back_populates="qa_review")
+
+
 class Issue(Base):
     """Quality assurance issue register item associated with a project review."""
 
@@ -544,14 +586,20 @@ class Issue(Base):
     deliverable_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("deliverables.id", ondelete="SET NULL"), nullable=True
     )
+    qa_review_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("qa_reviews.id", ondelete="SET NULL"), index=True, nullable=True
+    )
     issue_number: Mapped[str] = mapped_column(String(64), nullable=False)
     title: Mapped[str | None] = mapped_column(String(255), nullable=True)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     discipline: Mapped[str] = mapped_column(String(64), nullable=False)
     severity: Mapped[str] = mapped_column(String(32), default="medium", nullable=False)
+    check_category: Mapped[str] = mapped_column(String(64), default="general", nullable=False)
     reference: Mapped[str | None] = mapped_column(String(512), nullable=True)
     recommended_action: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="open", nullable=False)
+    closure_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
     )
@@ -560,6 +608,7 @@ class Issue(Base):
     )
 
     project: Mapped["Project"] = relationship(back_populates="issues")
+    qa_review: Mapped["QaReview | None"] = relationship(back_populates="issues")
 
 
 class Calculation(Base):

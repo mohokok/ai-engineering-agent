@@ -6,10 +6,11 @@ import { DeliverablesView } from "./components/DeliverablesView";
 import { ParametricDrawingView } from "./components/ParametricDrawingView";
 import { ProjectWorkspaceView } from "./components/ProjectWorkspaceView";
 import { ProviderSettingsView } from "./components/ProviderSettingsView";
+import { QaIssuesView } from "./components/QaIssuesView";
 import { ResearchView } from "./components/ResearchView";
 import type { HealthPayload, Lang } from "./types";
 
-type ActiveTab = "projects" | "assignments" | "research" | "deliverables" | "boq" | "drawings" | "settings";
+type ActiveTab = "projects" | "assignments" | "research" | "deliverables" | "boq" | "drawings" | "qa" | "settings";
 
 const COPY: Record<
   Lang,
@@ -29,12 +30,13 @@ const COPY: Record<
     deliverablesTab: string;
     boqTab: string;
     drawingsTab: string;
+    qaTab: string;
     settingsTab: string;
   }
 > = {
   ar: {
     title: "الوكيل الهندسي الاستشاري المحلي",
-    subtitle: "الخطوة 10 — وحدة جداول الكميات وحصر الكميات الحتمي (DXF / IFC / XLSX / PDF)",
+    subtitle: "الخطوة 12 — الرسم البارامتري + جداول الكميات + وكيل الجودة المستقل وسجل القضايا (QA)",
     classificationLabel: "التصنيف: أولي (Preliminary)",
     toggleLang: "Switch to English (LTR)",
     refreshHealth: "تحديث فحص الخادم",
@@ -48,11 +50,12 @@ const COPY: Record<
     deliverablesTab: "التقارير والمخرجات",
     boqTab: "جداول الكميات (BOQ)",
     drawingsTab: "الرسم الهندسي (CAD)",
+    qaTab: "الجودة وسجل القضايا (QA)",
     settingsTab: "إعدادات Gemini والمزودين",
   },
   en: {
     title: "Local AI Engineering Consultancy Agent",
-    subtitle: "Step 10 — Bill of Quantities & Deterministic Quantity Module (DXF / IFC / XLSX / PDF)",
+    subtitle: "Step 12 — Parametric CAD, Deterministic BOQ, Independent QA Agent & Issue Register",
     classificationLabel: "Classification: Preliminary",
     toggleLang: "التبديل إلى العربية (RTL)",
     refreshHealth: "Refresh Health Check",
@@ -66,6 +69,7 @@ const COPY: Record<
     deliverablesTab: "Deliverables & Reports",
     boqTab: "BOQ & Quantities",
     drawingsTab: "Parametric CAD",
+    qaTab: "QA & Issue Register",
     settingsTab: "AI Provider Settings",
   },
 };
@@ -205,6 +209,13 @@ export function App({
           </button>
           <button
             type="button"
+            className={`btn ${activeTab === "qa" ? "" : "btn-secondary"}`}
+            onClick={() => setActiveTab("qa")}
+          >
+            {text.qaTab}
+          </button>
+          <button
+            type="button"
             className={`btn ${activeTab === "settings" ? "" : "btn-secondary"}`}
             onClick={() => setActiveTab("settings")}
           >
@@ -224,6 +235,8 @@ export function App({
           <BoqView lang={lang} />
         ) : activeTab === "drawings" ? (
           <ParametricDrawingView lang={lang} />
+        ) : activeTab === "qa" ? (
+          <QaIssuesView lang={lang} />
         ) : (
           <ProviderSettingsView lang={lang} />
         )}

@@ -1,0 +1,1438 @@
+"""Step 12 independent QA Agent: isolated context builder (zero producer reasoning) and deterministic cross-deliverable verifiers."""
+
+from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+import json
+from pathlib import Path
+import re
+from typing import Any
+
+from openpyxl import load_workbook
+from sqlalchemy import select
+from sqlalchemy.orm import Session, selectinload
+
+from app.core.config import Settings
+from app.db.models import (
+    BoqSheet,
+    Deliverable,
+    FileExtraction,
+    ParametricDrawing,
+    Project,
+    ProjectFile,
+    ResearchSource,
+    ReviewReport,
+    Task,
+)
+from app.schemas.drawings import ParametricPlanModel
+from app.schemas.qa import IssueCategory, IssueSeverity, QaCheckMetricOut, QaContextIsolationReport
+from app.services.parametric_cad import build_schedules_from_model, compute_room_metrics, sha256_file
+from app.services.workspace import resolve_project_file_path
+
+PRODUCER_REASONING_EXCLUDED_FIELDS: tuple[str, ...] = (
+    "Task.plan_summary",
+    "Task.result_summary",
+    "Task.structured_output_json",
+    "TaskStep.notes",
+    "TaskStep.output_payload.understanding",
+    "ReviewReport.ai_reasoning",
+)
+
+_COUNT_UNIT_TOKENS = frozenset({"nos", "no", "no.", "pcs", "pc", "each", "ea", "unit", "units", "nr"})
+_AREA_UNIT_TOKENS = frozenset({"m2", "m²", "sqm", "sq m", "sq_m"})
+_VOLUME_UNIT_TOKENS = frozenset({"m3", "m³", "cum"})
+_LENGTH_METRIC_TOKENS = frozenset({"m", "lm", "l.m", "rm"})
+_SUBMETRIC_OR_IMPERIAL_TOKENS = frozenset({"cm", "mm", "in", "ft", "yd", "sq_in", "sq_ft", "sq in", "sq ft"})
+
+_AREA_DESC_CUES = ("floor", "tiling", "tile", "paint", "plaster", "screed", "waterproofing", "finish", "slab", "ceiling", "area", "بلاط", "دهان", "تشطيب", "أرضيات", "مساحة")
+_COUNT_DESC_CUES = ("door", "window", "luminaire", "socket", "breaker", "fan", "pump", "valve", "wc", "sink", "fixture", "باب", "أبواب", "نافذة", "نوافذ", "مضخة")
+_DOOR_CUES = ("door", "doors", "باب", "أبواب")
+_WINDOW_CUES = ("window", "windows", "نافذة", "نوافذ", "شباك", "شبابيك")
+_FLOOR_TOTAL_CUES = ("total floor", "floor finish", "all rooms floor", "building floor", "ground floor", "مساحة الغرف", "تشطيب الأرضيات")
+_URL_RE = re.compile(r"(?:https?://|project-file://)[^\s,;\"')>\]]+", re.IGNORECASE)
+_STD_CODE_CITATION_RE = re.compile(r"\b(?:EXT|RES|SRC|CAD|IFC)-\d+\b", re.IGNORECASE)
+_DRAWING_SHEET_REF_RE = re.compile(r"\b(?:[A-Z]{1,3}-\d{2,4}|DWG-[A-Z0-9_-]+)\b")
+
+
+@dataclass(frozen=True)
+class QaCandidateFinding:
+    """Deterministic defect discovered by the independent QA evaluator."""
+
+    check_category: IssueCategory
+    discipline: str
+    severity: IssueSeverity
+    title: str
+    description: str
+    reference: str
+    corrective_action: str
+    deliverable_id: str | None = None
+    task_id: str | None = None
+
+
+@dataclass
+class QaContextData:
+    """Strictly isolated QA evidence snapshot containing raw deliverables and provenance logs only (zero producer reasoning)."""
+
+    project_id: str
+    project_code: str
+    project_name: str
+    task_id: str | None
+    expected_task_deliverables: list[str]
+    deliverables: list[dict[str, Any]] = field(default_factory=list)
+    boq_sheets: list[dict[str, Any]] = field(default_factory=list)
+    drawings: list[dict[str, Any]] = field(default_factory=list)
+    review_reports: list[dict[str, Any]] = field(default_factory=list)
+    extractions: list[dict[str, Any]] = field(default_factory=list)
+    project_files: list[dict[str, Any]] = field(default_factory=list)
+    reviewed_research_urls: set[str] = field(default_factory=set)
+    unreviewed_research_urls: set[str] = field(default_factory=set)
+    all_research_sources: list[dict[str, Any]] = field(default_factory=list)
+
+
+def build_isolated_qa_context(
+    db: Session,
+    project: Project,
+    *,
+    task: Task | None = None,
+) -> QaContextData:
+    """Assemble an independent QA inspection bundle explicitly omitting producer plans, summaries, notes, and LLM chain-of-thought."""
+    expected_delivs: list[str] = []
+    if task is not None and isinstance(task.structured_output_json, dict):
+        # Take ONLY expected deliverables labels; never read producer restated_assignment, assumptions, plan_summary, result_summary, or TaskStep.notes.
+        expected_delivs = [
+            str(x).strip()
+            for x in (task.structured_output_json.get("expected_deliverables") or [])
+            if str(x).strip()
+        ]
+
+    ctx = QaContextData(
+        project_id=project.id,
+        project_code=project.code,
+        project_name=project.name,
+        task_id=task.id if task is not None else None,
+        expected_task_deliverables=expected_delivs,
+    )
+
+    deliverable_rows = db.scalars(
+        select(Deliverable)
+        .where(Deliverable.project_id == project.id)
+        .order_by(Deliverable.created_at.desc())
+    ).all()
+    for d in deliverable_rows:
+        if task is not None and d.task_id and d.task_id != task.id:
+            continue
+        ctx.deliverables.append(
+            {
+                "id": d.id,
+                "task_id": d.task_id,
+                "report_id": d.report_id,
+                "boq_id": d.boq_id,
+                "drawing_id": d.drawing_id,
+                "title": d.title,
+                "deliverable_type": d.deliverable_type,
+                "discipline": d.discipline,
+                "format": d.format,
+                "classification": d.classification,
+                "status": d.status,
+                "version": d.version,
+                "folder_name": d.folder_name,
+                "filename": d.filename,
+                "relative_path": d.relative_path,
+                "sha256": d.sha256,
+            }
+        )
+
+    boq_rows = db.scalars(
+        select(BoqSheet)
+        .options(selectinload(BoqSheet.items))
+        .where(BoqSheet.project_id == project.id)
+        .order_by(BoqSheet.created_at.desc())
+    ).all()
+    for b in boq_rows:
+        if task is not None and b.task_id and b.task_id != task.id:
+            continue
+        ctx.boq_sheets.append(
+            {
+                "id": b.id,
+                "task_id": b.task_id,
+                "title": b.title,
+                "currency": b.currency,
+                "revision": b.revision,
+                "status": b.status,
+                "export_version": b.export_version,
+                "items": [
+                    {
+                        "id": it.id,
+                        "row_order": it.row_order,
+                        "item_no": it.item_no,
+                        "description": it.description,
+                        "unit": it.unit,
+                        "quantity": it.quantity,
+                        "unit_rate": it.unit_rate,
+                        "total": it.total,
+                        "reported_total": it.reported_total,
+                        "technical_reference": it.technical_reference,
+                        "drawing_reference": it.drawing_reference,
+                        "verification_status": it.verification_status,
+                        "rate_source_kind": it.rate_source_kind,
+                        "rate_source_ref": it.rate_source_ref,
+                        "rate_source_date": it.rate_source_date,
+                        "discipline": it.discipline,
+                        "layer_or_category": it.layer_or_category,
+                        "source_file_id": it.source_file_id,
+                    }
+                    for it in b.items
+                ],
+            }
+        )
+
+    dwg_rows = db.scalars(
+        select(ParametricDrawing)
+        .where(ParametricDrawing.project_id == project.id)
+        .order_by(ParametricDrawing.created_at.desc())
+    ).all()
+    for dr in dwg_rows:
+        if task is not None and dr.task_id and dr.task_id != task.id:
+            continue
+        ctx.drawings.append(
+            {
+                "id": dr.id,
+                "task_id": dr.task_id,
+                "drawing_no": dr.drawing_no,
+                "title": dr.title,
+                "units": dr.units,
+                "scale_denominator": dr.scale_denominator,
+                "revision": dr.revision,
+                "round_trip_passed": dr.round_trip_passed,
+                "model_json": dr.model_json if isinstance(dr.model_json, dict) else {},
+                "computed_metrics_json": (
+                    dr.computed_metrics_json if isinstance(dr.computed_metrics_json, dict) else {}
+                ),
+            }
+        )
+
+    report_rows = db.scalars(
+        select(ReviewReport)
+        .where(ReviewReport.project_id == project.id)
+        .order_by(ReviewReport.created_at.desc())
+    ).all()
+    for rep in report_rows:
+        if task is not None and rep.task_id and rep.task_id != task.id:
+            continue
+        raw_payload = rep.structured_payload_json if isinstance(rep.structured_payload_json, dict) else {}
+        # Deliberately omit rep.summary & narrative AI prose; inspect ONLY objective findings, facts, calculations, and source_registry.
+        ctx.review_reports.append(
+            {
+                "id": rep.id,
+                "task_id": rep.task_id,
+                "title": rep.title,
+                "discipline": rep.discipline,
+                "revision": rep.revision,
+                "document_register": list(raw_payload.get("document_register") or []),
+                "findings": list(raw_payload.get("findings") or []),
+                "verified_facts": list(raw_payload.get("verified_facts") or []),
+                "calculated_items": list(raw_payload.get("calculated_items") or []),
+                "source_registry": list(raw_payload.get("source_registry") or []),
+            }
+        )
+
+    files = db.scalars(select(ProjectFile).where(ProjectFile.project_id == project.id)).all()
+    file_name_by_id = {f.id: f.original_filename for f in files}
+    for f in files:
+        ctx.project_files.append(
+            {
+                "id": f.id,
+                "original_filename": f.original_filename,
+                "current_version": f.current_version,
+                "extension": f.extension,
+            }
+        )
+
+    exts = db.scalars(
+        select(FileExtraction)
+        .where(FileExtraction.project_id == project.id)
+        .order_by(FileExtraction.created_at.desc())
+    ).all()
+    seen_ext_file_ids: set[str] = set()
+    for ext in exts:
+        if ext.file_id in seen_ext_file_ids:
+            continue
+        seen_ext_file_ids.add(ext.file_id)
+        pjson = ext.payload_json if isinstance(ext.payload_json, dict) else {}
+        ctx.extractions.append(
+            {
+                "id": ext.id,
+                "file_id": ext.file_id,
+                "filename": file_name_by_id.get(ext.file_id) or pjson.get("source_file") or "",
+                "file_type": pjson.get("file_type"),
+                "status": ext.status,
+                "unit_context": pjson.get("unit_context") if isinstance(pjson.get("unit_context"), dict) else {},
+                "counts": ext.counts_json if isinstance(ext.counts_json, dict) else {},
+                "drawing_inventory": (
+                    pjson.get("drawing_inventory") if isinstance(pjson.get("drawing_inventory"), dict) else {}
+                ),
+            }
+        )
+
+    r_sources = db.scalars(
+        select(ResearchSource).where(ResearchSource.project_id == project.id)
+    ).all()
+    for rs in r_sources:
+        ctx.all_research_sources.append(
+            {
+                "id": rs.id,
+                "url": rs.url,
+                "source_name": rs.source_name,
+                "reviewed": bool(rs.reviewed),
+                "access_status": rs.access_status,
+                "reliability_assessment": rs.reliability_assessment,
+            }
+        )
+        if rs.reviewed and rs.access_status in ("accessible", "owner_provided"):
+            ctx.reviewed_research_urls.add(rs.url)
+        else:
+            ctx.unreviewed_research_urls.add(rs.url)
+
+    return ctx
+
+
+def count_inspected_artefacts(ctx: QaContextData) -> int:
+    """Return total concrete deliverables, BOQ sheets, drawings, and reports available for QA inspection."""
+    return (
+        len(ctx.boq_sheets)
+        + len(ctx.drawings)
+        + len(ctx.review_reports)
+        + len(ctx.deliverables)
+    )
+
+
+def _expected_deliverable_covered(exp: str, ctx: QaContextData) -> bool:
+    """Return True when a non-BOQ/drawing/report expected deliverable matches at least one inspected artefact."""
+    haystacks = [
+        f"{d.get('title', '')} {d.get('deliverable_type', '')} {d.get('filename', '')} {d.get('folder_name', '')}".lower()
+        for d in ctx.deliverables
+    ]
+    haystacks.extend(f"{b.get('title', '')} boq bill of quantities".lower() for b in ctx.boq_sheets)
+    haystacks.extend(f"{dr.get('title', '')} {dr.get('drawing_no', '')} drawing plan cad".lower() for dr in ctx.drawings)
+    haystacks.extend(f"{rp.get('title', '')} {rp.get('discipline', '')} report review".lower() for rp in ctx.review_reports)
+    if not haystacks:
+        return False
+
+    tokens = re.findall(r"[\w\u0600-\u06FF]{3,}", exp.lower())
+    stop = {"and", "the", "for", "with", "from", "into"}
+    generic = {"sheet", "document", "schedule", "list", "draft", "output", "file", "deliverable", "memo", "package"}
+    informative = [t for t in tokens if t not in stop]
+    specific = [t for t in informative if t not in generic]
+    target_tokens = specific or informative
+    if not target_tokens:
+        return bool(ctx.deliverables)
+    return any(any(tok in hay for tok in target_tokens) for hay in haystacks)
+
+
+def build_qa_context_isolation_report(ctx: QaContextData) -> QaContextIsolationReport:
+    """Build serializable QA context audit showing exact inspected artifacts and zero producer reasoning exposure."""
+    return QaContextIsolationReport(
+        producer_reasoning_excluded=True,
+        excluded_fields=list(PRODUCER_REASONING_EXCLUDED_FIELDS),
+        inspected_boq_ids=[b["id"] for b in ctx.boq_sheets],
+        inspected_drawing_ids=[d["id"] for d in ctx.drawings],
+        inspected_report_ids=[r["id"] for r in ctx.review_reports],
+        inspected_deliverable_ids=[d["id"] for d in ctx.deliverables],
+        inspected_extraction_ids=[e["id"] for e in ctx.extractions],
+        inspected_research_source_count=len(ctx.all_research_sources),
+        expected_task_deliverables=list(ctx.expected_task_deliverables),
+    )
+
+
+def serialize_isolated_qa_prompt_context(ctx: QaContextData) -> str:
+    """Serialize isolated QA inspection payload as standalone JSON without any producer reasoning."""
+    payload = {
+        "project_code": ctx.project_code,
+        "project_name": ctx.project_name,
+        "task_id": ctx.task_id,
+        "expected_task_deliverables": ctx.expected_task_deliverables,
+        "boq_sheets": [
+            {
+                "id": b["id"],
+                "title": b["title"],
+                "currency": b["currency"],
+                "items_count": len(b["items"]),
+                "items": b["items"],
+            }
+            for b in ctx.boq_sheets
+        ],
+        "drawings": [
+            {
+                "id": d["id"],
+                "drawing_no": d["drawing_no"],
+                "units": d["units"],
+                "rooms": (d["computed_metrics_json"] or {}).get("rooms", []),
+                "total_area_m2": (d["computed_metrics_json"] or {}).get("total_area_m2"),
+                "door_schedule": (d["computed_metrics_json"] or {}).get("door_schedule", []),
+                "window_schedule": (d["computed_metrics_json"] or {}).get("window_schedule", []),
+            }
+            for d in ctx.drawings
+        ],
+        "deliverables": ctx.deliverables,
+        "reviewed_research_urls": sorted(ctx.reviewed_research_urls),
+    }
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def _to_decimal(val: Any) -> Decimal | None:
+    if val is None or val == "":
+        return None
+    try:
+        return Decimal(str(val))
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def _round4(val: Decimal) -> Decimal:
+    return val.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+
+
+def _classify_unit_family(unit: str) -> str:
+    norm = " ".join((unit or "").strip().lower().split())
+    if not norm:
+        return "missing"
+    if any(tok in norm for tok in ("unconfirmed", "doubtful", "unknown", "unitless", "??")):
+        return "unconfirmed"
+    if norm in _COUNT_UNIT_TOKENS:
+        return "count"
+    if norm in _AREA_UNIT_TOKENS:
+        return "area_metric"
+    if norm in _VOLUME_UNIT_TOKENS:
+        return "volume_metric"
+    if norm in _LENGTH_METRIC_TOKENS:
+        return "length_metric"
+    if norm in _SUBMETRIC_OR_IMPERIAL_TOKENS or norm.startswith("unconfirmed "):
+        return "non_standard_or_mixed"
+    return "other"
+
+
+def _check_arithmetic(
+    ctx: QaContextData,
+    settings: Settings,
+    workspace_slug: str,
+) -> tuple[QaCheckMetricOut, list[QaCandidateFinding]]:
+    checked = 0
+    findings: list[QaCandidateFinding] = []
+    deliv_by_boq = {d["boq_id"]: d["id"] for d in ctx.deliverables if d.get("boq_id")}
+
+    for boq in ctx.boq_sheets:
+        boq_deliv_id = deliv_by_boq.get(boq["id"])
+        for it in boq["items"]:
+            checked += 1
+            qty = _to_decimal(it.get("quantity"))
+            rate = _to_decimal(it.get("unit_rate"))
+            stored_total = _to_decimal(it.get("total"))
+            reported_total = _to_decimal(it.get("reported_total"))
+            ref = f"BOQ {boq['title']} / Item {it.get('item_no') or it.get('row_order')}"
+
+            if qty is not None and qty < 0:
+                findings.append(
+                    QaCandidateFinding(
+                        check_category="arithmetic",
+                        discipline=it.get("discipline") or "quantity_surveying",
+                        severity="high",
+                        title="Negative quantity in BOQ",
+                        description=f"BOQ item '{it.get('item_no')}' has negative quantity ({qty}).",
+                        reference=ref,
+                        corrective_action="Correct negative BOQ quantity to a verified non-negative measurement.",
+                        deliverable_id=boq_deliv_id,
+                        task_id=boq.get("task_id"),
+                    )
+                )
+            if rate is not None and rate < 0:
+                findings.append(
+                    QaCandidateFinding(
+                        check_category="arithmetic",
+                        discipline=it.get("discipline") or "quantity_surveying",
+                        severity="high",
+                        title="Negative unit rate in BOQ",
+                        description=f"BOQ item '{it.get('item_no')}' has negative unit rate ({rate}).",
+                        reference=ref,
+                        corrective_action="Correct unit rate to a positive sourced rate.",
+                        deliverable_id=boq_deliv_id,
+                        task_id=boq.get("task_id"),
+                    )
+                )
+
+            if qty is not None and rate is not None:
+                expected = _round4(qty * rate)
+                if stored_total is None or abs(stored_total - expected) > Decimal("0.01"):
+                    findings.append(
+                        QaCandidateFinding(
+                            check_category="arithmetic",
+                            discipline=it.get("discipline") or "quantity_surveying",
+                            severity="high",
+                            title="BOQ line total arithmetic mismatch",
+                            description=(
+                                f"Arithmetic mismatch on BOQ item '{it.get('item_no')}' ({it.get('description', '')[:80]}): "
+                                f"recomputed {qty} * {rate} = {expected} {boq['currency']}, stored total = {stored_total}."
+                            ),
+                            reference=ref,
+                            corrective_action=f"Recompute and set item total strictly to {expected} {boq['currency']}.",
+                            deliverable_id=boq_deliv_id,
+                            task_id=boq.get("task_id"),
+                        )
+                    )
+                if reported_total is not None and abs(reported_total - expected) > Decimal("0.01"):
+                    findings.append(
+                        QaCandidateFinding(
+                            check_category="arithmetic",
+                            discipline=it.get("discipline") or "quantity_surveying",
+                            severity="high",
+                            title="Imported BOQ reported total mismatch",
+                            description=(
+                                f"Imported BOQ item '{it.get('item_no')}' reported_total={reported_total} disagrees with "
+                                f"code-recomputed {qty} * {rate} = {expected}."
+                            ),
+                            reference=ref,
+                            corrective_action="Reconcile imported spreadsheet/PDF arithmetic against quantity x rate.",
+                            deliverable_id=boq_deliv_id,
+                            task_id=boq.get("task_id"),
+                        )
+                    )
+            elif rate is None and stored_total is not None and abs(stored_total) > Decimal("0.01"):
+                findings.append(
+                    QaCandidateFinding(
+                        check_category="arithmetic",
+                        discipline=it.get("discipline") or "quantity_surveying",
+                        severity="high",
+                        title="Total present without unit rate",
+                        description=(
+                            f"BOQ item '{it.get('item_no')}' stores non-zero total ({stored_total}) while unit_rate is None."
+                        ),
+                        reference=ref,
+                        corrective_action="Remove fabricated total or supply an attributable unit rate.",
+                        deliverable_id=boq_deliv_id,
+                        task_id=boq.get("task_id"),
+                    )
+                )
+
+    # Check exported XLSX files on disk verify formulas vs hardcoded static totals
+    for d in ctx.deliverables:
+        if str(d.get("format") or "").lower() == "xlsx":
+            checked += 1
+            rel_xlsx = d.get("relative_path")
+            try:
+                if not rel_xlsx:
+                    raise FileNotFoundError("Deliverable has no workspace relative_path for XLSX inspection.")
+                fpath = resolve_project_file_path(settings.workspaces_dir, workspace_slug, rel_xlsx)
+                if not fpath.is_file():
+                    raise FileNotFoundError(f"Exported XLSX '{rel_xlsx}' does not exist on disk.")
+                wb = load_workbook(str(fpath), data_only=False)
+                try:
+                    ws = wb.active
+                    if ws is None:
+                        raise ValueError(f"Exported XLSX '{rel_xlsx}' has no active worksheet.")
+                    for row_idx in range(6, ws.max_row + 1):
+                        qty_cell = ws.cell(row=row_idx, column=4).value
+                        rate_cell = ws.cell(row=row_idx, column=5).value
+                        tot_cell = ws.cell(row=row_idx, column=6).value
+                        item_no_cell = ws.cell(row=row_idx, column=1).value
+                        if item_no_cell and qty_cell is not None and rate_cell is not None:
+                            if not (isinstance(tot_cell, str) and tot_cell.startswith("=")):
+                                q_d = _to_decimal(qty_cell)
+                                r_d = _to_decimal(rate_cell)
+                                t_d = _to_decimal(tot_cell)
+                                if q_d is not None and r_d is not None and t_d is not None:
+                                    exp = _round4(q_d * r_d)
+                                    if abs(t_d - exp) > Decimal("0.01"):
+                                        findings.append(
+                                            QaCandidateFinding(
+                                                check_category="arithmetic",
+                                                discipline="quantity_surveying",
+                                                severity="high",
+                                                title="Exported XLSX hardcoded total mismatch",
+                                                description=(
+                                                    f"XLSX row {row_idx} ({item_no_cell}) contains non-formula total {t_d} "
+                                                    f"instead of expected {exp}."
+                                                ),
+                                                reference=str(rel_xlsx),
+                                                corrective_action="Re-export BOQ XLSX with live Excel formulas.",
+                                                deliverable_id=d["id"],
+                                                task_id=d.get("task_id"),
+                                            )
+                                        )
+                finally:
+                    wb.close()
+            except Exception as exc:
+                findings.append(
+                    QaCandidateFinding(
+                        check_category="integrity",
+                        discipline=d.get("discipline") or "quantity_surveying",
+                        severity="high",
+                        title="Exported XLSX unreadable or missing",
+                        description=(
+                            f"Exported XLSX '{rel_xlsx or d.get('title')}' failed workbook read during arithmetic QA "
+                            f"({type(exc).__name__}: {exc})."
+                        ),
+                        reference=str(rel_xlsx or f"Deliverable {d['id'][:8]}"),
+                        corrective_action="Restore or re-export a readable valid XLSX workbook into 06_BOQ.",
+                        deliverable_id=d["id"],
+                        task_id=d.get("task_id"),
+                    )
+                )
+
+    # Recompute parametric drawing Shoelace areas strictly from model_json coordinates
+    deliv_by_dwg = {d["drawing_id"]: d["id"] for d in ctx.deliverables if d.get("drawing_id")}
+    for dwg in ctx.drawings:
+        checked += 1
+        dwg_deliv_id = deliv_by_dwg.get(dwg["id"])
+        try:
+            plan = ParametricPlanModel.model_validate(dwg["model_json"])
+            recomputed_rooms = compute_room_metrics(plan.rooms)
+            expected_total = round(sum(r.area_m2 for r in recomputed_rooms), 4)
+            stored_total = float((dwg["computed_metrics_json"] or {}).get("total_area_m2") or 0.0)
+            if abs(expected_total - stored_total) > 0.01:
+                findings.append(
+                    QaCandidateFinding(
+                        check_category="arithmetic",
+                        discipline="architecture",
+                        severity="high",
+                        title="Parametric drawing room area total mismatch",
+                        description=(
+                            f"Drawing {dwg['drawing_no']} stores total_area_m2={stored_total:.2f}, "
+                            f"whereas independent Shoelace recomputation yields {expected_total:.2f} m2."
+                        ),
+                        reference=f"Drawing {dwg['drawing_no']} ({dwg['id'][:8]})",
+                        corrective_action="Regenerate parametric drawing metrics cleanly from coordinates.",
+                        deliverable_id=dwg_deliv_id,
+                        task_id=dwg.get("task_id"),
+                    )
+                )
+        except Exception as exc:
+            findings.append(
+                QaCandidateFinding(
+                    check_category="arithmetic",
+                    discipline="architecture",
+                    severity="high",
+                    title="Invalid parametric drawing coordinate model",
+                    description=f"Drawing {dwg['drawing_no']} coordinate model failed QA geometry check: {exc}",
+                    reference=f"Drawing {dwg['drawing_no']}",
+                    corrective_action="Fix room/wall geometry JSON and regenerate DXF + PDF.",
+                    deliverable_id=dwg_deliv_id,
+                    task_id=dwg.get("task_id"),
+                )
+            )
+
+    failed_cnt = len(findings)
+    return (
+        QaCheckMetricOut(
+            category="arithmetic",
+            checked_count=checked,
+            failed_count=failed_cnt,
+            passed=(failed_cnt == 0),
+            details=f"Recomputed {checked} BOQ/XLSX/drawing arithmetic target(s); found {failed_cnt} issue(s).",
+        ),
+        findings,
+    )
+
+
+def _check_units(ctx: QaContextData) -> tuple[QaCheckMetricOut, list[QaCandidateFinding]]:
+    checked = 0
+    findings: list[QaCandidateFinding] = []
+    deliv_by_boq = {d["boq_id"]: d["id"] for d in ctx.deliverables if d.get("boq_id")}
+
+    for boq in ctx.boq_sheets:
+        boq_deliv_id = deliv_by_boq.get(boq["id"])
+        length_families: set[str] = set()
+        for it in boq["items"]:
+            checked += 1
+            unit = str(it.get("unit") or "").strip()
+            qty = float(it.get("quantity") or 0.0)
+            desc_lower = str(it.get("description") or "").lower()
+            ref = f"BOQ {boq['title']} / Item {it.get('item_no') or it.get('row_order')}"
+            fam = _classify_unit_family(unit)
+
+            if fam == "missing" and abs(qty) > 0:
+                findings.append(
+                    QaCandidateFinding(
+                        check_category="unit",
+                        discipline=it.get("discipline") or "quantity_surveying",
+                        severity="high",
+                        title="Missing measurement unit on BOQ item",
+                        description=f"BOQ item '{it.get('item_no')}' has quantity {qty} with blank unit.",
+                        reference=ref,
+                        corrective_action="Assign verified unit (m2, m, nos, m3, etc.) from source document.",
+                        deliverable_id=boq_deliv_id,
+                        task_id=boq.get("task_id"),
+                    )
+                )
+            elif fam == "unconfirmed":
+                findings.append(
+                    QaCandidateFinding(
+                        check_category="unit",
+                        discipline=it.get("discipline") or "quantity_surveying",
+                        severity="high",
+                        title="Unconfirmed CAD drawing unit propagated into BOQ",
+                        description=f"BOQ item '{it.get('item_no')}' uses unconfirmed/doubtful unit '{unit}'.",
+                        reference=ref,
+                        corrective_action="Confirm drawing units via /api/extractions/{id}/confirm-unit and re-import BOQ.",
+                        deliverable_id=boq_deliv_id,
+                        task_id=boq.get("task_id"),
+                    )
+                )
+
+            if fam in ("length_metric", "non_standard_or_mixed"):
+                length_families.add("metric" if fam == "length_metric" else unit.lower())
+
+            # Detect clearly wrong unit for item category (e.g. door quantified in m2/m3 or flooring in nos/kg)
+            if any(c in desc_lower for c in _COUNT_DESC_CUES) and fam in ("area_metric", "volume_metric"):
+                findings.append(
+                    QaCandidateFinding(
+                        check_category="unit",
+                        discipline=it.get("discipline") or "quantity_surveying",
+                        severity="high",
+                        title="Incompatible unit for countable fixture/opening",
+                        description=(
+                            f"BOQ item '{it.get('item_no')}' ('{it.get('description', '')[:70]}') uses '{unit}' "
+                            "instead of a count unit such as 'nos'."
+                        ),
+                        reference=ref,
+                        corrective_action="Change unit to 'nos' and verify quantity against opening schedule.",
+                        deliverable_id=boq_deliv_id,
+                        task_id=boq.get("task_id"),
+                    )
+                )
+            elif any(c in desc_lower for c in _AREA_DESC_CUES) and fam in ("count",):
+                findings.append(
+                    QaCandidateFinding(
+                        check_category="unit",
+                        discipline=it.get("discipline") or "quantity_surveying",
+                        severity="high",
+                        title="Incompatible count unit on surface/finish item",
+                        description=(
+                            f"BOQ item '{it.get('item_no')}' ('{it.get('description', '')[:70]}') uses count unit '{unit}' "
+                            "on a surface-area description."
+                        ),
+                        reference=ref,
+                        corrective_action="Verify unit as 'm2' and recompute net area.",
+                        deliverable_id=boq_deliv_id,
+                        task_id=boq.get("task_id"),
+                    )
+                )
+
+        if len(length_families) > 1 or any(lf != "metric" for lf in length_families):
+            findings.append(
+                QaCandidateFinding(
+                    check_category="unit",
+                    discipline="quantity_surveying",
+                    severity="high",
+                    title="Mixed or non-standard linear/submetric units in BOQ",
+                    description=(
+                        f"BOQ sheet '{boq['title']}' mixes or uses non-metric linear/area units: "
+                        f"{', '.join(sorted(length_families))}."
+                    ),
+                    reference=f"BOQ {boq['title']}",
+                    corrective_action="Standardize BOQ quantities strictly to consistent metric 'm' / 'm2'.",
+                    deliverable_id=boq_deliv_id,
+                    task_id=boq.get("task_id"),
+                )
+            )
+
+    for ext in ctx.extractions:
+        if ext.get("file_type") in {"dxf", "dwg"}:
+            checked += 1
+            uc = ext.get("unit_context") or {}
+            if uc.get("is_doubtful") and not uc.get("owner_confirmed_unit"):
+                findings.append(
+                    QaCandidateFinding(
+                        check_category="unit",
+                        discipline="cad_bim",
+                        severity="high",
+                        title="CAD drawing unit unconfirmed",
+                        description=f"CAD file '{ext.get('filename')}' has doubtful/unconfirmed units ({uc.get('declared_label', 'unknown')}).",
+                        reference=f"File {ext.get('filename')}",
+                        corrective_action="Owner must explicitly confirm drawing units before relying on metric quantities.",
+                        task_id=ctx.task_id,
+                    )
+                )
+
+    for dwg in ctx.drawings:
+        checked += 1
+        if str(dwg.get("units") or "").lower() != "mm":
+            findings.append(
+                QaCandidateFinding(
+                    check_category="unit",
+                    discipline="architecture",
+                    severity="high",
+                    title="Parametric drawing not in millimetres",
+                    description=f"Drawing {dwg['drawing_no']} uses '{dwg.get('units')}' instead of strict 'mm' ($INSUNITS=4).",
+                    reference=f"Drawing {dwg['drawing_no']}",
+                    corrective_action="Enforce millimetres (mm) on parametric drawing coordinates.",
+                    task_id=dwg.get("task_id"),
+                )
+            )
+
+    failed_cnt = len(findings)
+    return (
+        QaCheckMetricOut(
+            category="unit",
+            checked_count=checked,
+            failed_count=failed_cnt,
+            passed=(failed_cnt == 0),
+            details=f"Checked {checked} BOQ items/drawings/CAD units; found {failed_cnt} unit issue(s).",
+        ),
+        findings,
+    )
+
+
+def _check_references(ctx: QaContextData) -> tuple[QaCheckMetricOut, list[QaCandidateFinding]]:
+    checked = 0
+    findings: list[QaCandidateFinding] = []
+    deliv_by_boq = {d["boq_id"]: d["id"] for d in ctx.deliverables if d.get("boq_id")}
+    deliv_by_rep = {
+        d["report_id"]: d["id"]
+        for d in ctx.deliverables
+        if d.get("report_id") and d.get("folder_name") == "10_Final_Deliverables"
+    }
+
+    valid_filenames = {str(f["original_filename"]).strip().lower() for f in ctx.project_files if f.get("original_filename")}
+    valid_file_ids = {str(f["id"]) for f in ctx.project_files}
+    valid_drawing_nos = {str(d["drawing_no"]).strip().upper() for d in ctx.drawings if d.get("drawing_no")}
+    for ext in ctx.extractions:
+        if ext.get("filename"):
+            valid_filenames.add(str(ext["filename"]).strip().lower())
+
+    def _url_is_reviewed(candidate_url: str) -> bool:
+        if candidate_url in ctx.reviewed_research_urls:
+            return True
+        if candidate_url.startswith("project-file://"):
+            rest = candidate_url[len("project-file://") :].split("/", 1)[0]
+            return rest in valid_file_ids or candidate_url in ctx.reviewed_research_urls
+        return False
+
+    # 1. Check ReviewReports source_ref_ids & URL citations against Source Log & FileExtractions
+    for rep in ctx.review_reports:
+        rep_deliv_id = deliv_by_rep.get(rep["id"])
+        src_reg = {
+            str(entry.get("ref_id")): entry
+            for entry in (rep.get("source_registry") or [])
+            if isinstance(entry, dict) and entry.get("ref_id")
+        }
+
+        for ref_id, entry in src_reg.items():
+            checked += 1
+            src_url = str(entry.get("url") or "").strip()
+            src_file = str(entry.get("source_file") or "").strip().lower()
+            if src_url:
+                if not _url_is_reviewed(src_url):
+                    findings.append(
+                        QaCandidateFinding(
+                            check_category="reference",
+                            discipline=rep.get("discipline") or "multidisciplinary",
+                            severity="critical",
+                            title="Report source_registry cites unreviewed or nonexistent URL",
+                            description=(
+                                f"Review Report '{rep['title']}' entry '{ref_id}' points to URL '{src_url}' "
+                                "which is absent from reviewed project Research Sources."
+                            ),
+                            reference=f"Report {rep['revision']} / {ref_id}",
+                            corrective_action="Replace with a reviewed source URL/file or mark finding unverified.",
+                            deliverable_id=rep_deliv_id,
+                            task_id=rep.get("task_id"),
+                        )
+                    )
+            elif ref_id.upper().startswith("EXT-") and src_file and src_file not in valid_filenames:
+                findings.append(
+                    QaCandidateFinding(
+                        check_category="reference",
+                        discipline=rep.get("discipline") or "multidisciplinary",
+                        severity="high",
+                        title="Report references missing project file",
+                        description=f"Review Report '{rep['title']}' source '{ref_id}' names unknown file '{entry.get('source_file')}'.",
+                        reference=f"Report {rep['revision']} / {ref_id}",
+                        corrective_action="Verify uploaded file and re-run extraction + report.",
+                        deliverable_id=rep_deliv_id,
+                        task_id=rep.get("task_id"),
+                    )
+                )
+
+        for coll_name in ("findings", "verified_facts", "calculated_items"):
+            for item in rep.get(coll_name) or []:
+                if not isinstance(item, dict):
+                    continue
+                for rid in item.get("source_ref_ids") or []:
+                    checked += 1
+                    if str(rid) not in src_reg:
+                        findings.append(
+                            QaCandidateFinding(
+                                check_category="reference",
+                                discipline=item.get("discipline") or rep.get("discipline") or "multidisciplinary",
+                                severity="critical",
+                                title="Fake/orphan source reference ID in Review Report",
+                                description=(
+                                    f"Review Report '{rep['title']}' ({coll_name}) cites unknown reference ID '{rid}' "
+                                    "which does not exist in source_registry or source logs."
+                                ),
+                                reference=f"Report {rep['revision']} / {rid}",
+                                corrective_action="Remove fabricated citation or bind claim to an actual verified source ID.",
+                                deliverable_id=rep_deliv_id,
+                                task_id=rep.get("task_id"),
+                            )
+                        )
+
+    # 2. Check BOQ rate_source_ref, technical_reference, and drawing_reference against actual sources/drawings
+    for boq in ctx.boq_sheets:
+        boq_deliv_id = deliv_by_boq.get(boq["id"])
+        for it in boq["items"]:
+            checked += 1
+            item_ref_label = f"BOQ {boq['title']} / Item {it.get('item_no') or it.get('row_order')}"
+            rate_kind = it.get("rate_source_kind")
+            rate_ref = str(it.get("rate_source_ref") or "").strip()
+
+            if rate_kind == "dated_research":
+                if not rate_ref or not _url_is_reviewed(rate_ref):
+                    findings.append(
+                        QaCandidateFinding(
+                            check_category="reference",
+                            discipline=it.get("discipline") or "quantity_surveying",
+                            severity="high",
+                            title="BOQ research rate references fake or unreviewed source",
+                            description=(
+                                f"BOQ item '{it.get('item_no')}' dated_research rate cites '{rate_ref or 'None'}', "
+                                "which is not a reviewed ResearchSource in the source log."
+                            ),
+                            reference=item_ref_label,
+                            corrective_action="Link rate_source_ref to a reviewed ResearchSource URL or convert to owner_input.",
+                            deliverable_id=boq_deliv_id,
+                            task_id=boq.get("task_id"),
+                        )
+                    )
+
+            for field_name in ("technical_reference", "drawing_reference"):
+                val = str(it.get(field_name) or "").strip()
+                if not val:
+                    continue
+                for url_match in _URL_RE.findall(val):
+                    checked += 1
+                    if not _url_is_reviewed(url_match):
+                        findings.append(
+                            QaCandidateFinding(
+                                check_category="reference",
+                                discipline=it.get("discipline") or "quantity_surveying",
+                                severity="high",
+                                title="Fake or unreviewed URL cited in BOQ",
+                                description=(
+                                    f"BOQ item '{it.get('item_no')}' {field_name} cites '{url_match}', "
+                                    "which does not exist as a reviewed source in ResearchSource logs."
+                                ),
+                                reference=item_ref_label,
+                                corrective_action="Verify URL via Research tab or replace with an actual project source.",
+                                deliverable_id=boq_deliv_id,
+                                task_id=boq.get("task_id"),
+                            )
+                        )
+                if field_name == "drawing_reference":
+                    val_lower = val.lower()
+                    for m_sheet in _DRAWING_SHEET_REF_RE.findall(val.upper()):
+                        checked += 1
+                        if m_sheet not in valid_drawing_nos and not any(m_sheet.lower() in fn for fn in valid_filenames):
+                            findings.append(
+                                QaCandidateFinding(
+                                    check_category="reference",
+                                    discipline=it.get("discipline") or "quantity_surveying",
+                                    severity="high",
+                                    title="BOQ references nonexistent drawing number",
+                                    description=(
+                                        f"BOQ item '{it.get('item_no')}' cites drawing reference '{m_sheet}' ({val}), "
+                                        "which matches no project parametric drawing or uploaded file."
+                                    ),
+                                    reference=item_ref_label,
+                                    corrective_action="Update drawing_reference to match an issued drawing sheet or upload the missing sheet.",
+                                    deliverable_id=boq_deliv_id,
+                                    task_id=boq.get("task_id"),
+                                )
+                            )
+                    if "source_file_id" in it and it.get("source_file_id") and it["source_file_id"] not in valid_file_ids:
+                        findings.append(
+                            QaCandidateFinding(
+                                check_category="reference",
+                                discipline="quantity_surveying",
+                                severity="high",
+                                title="Missing source_file_id on BOQ item",
+                                description=f"BOQ item '{it.get('item_no')}' references missing project file ID '{it['source_file_id']}'.",
+                                reference=item_ref_label,
+                                corrective_action="Re-import BOQ from active project files.",
+                                deliverable_id=boq_deliv_id,
+                                task_id=boq.get("task_id"),
+                            )
+                        )
+                    if "fake" in val_lower or "nonexistent" in val_lower or "unknown_ref" in val_lower:
+                        findings.append(
+                            QaCandidateFinding(
+                                check_category="reference",
+                                discipline="quantity_surveying",
+                                severity="high",
+                                title="Unverified/placeholder drawing reference in BOQ",
+                                description=f"BOQ item '{it.get('item_no')}' carries suspicious unverified reference '{val}'.",
+                                reference=item_ref_label,
+                                corrective_action="Replace placeholder reference with an authoritative file/drawing link.",
+                                deliverable_id=boq_deliv_id,
+                                task_id=boq.get("task_id"),
+                            )
+                        )
+
+    failed_cnt = len(findings)
+    return (
+        QaCheckMetricOut(
+            category="reference",
+            checked_count=checked,
+            failed_count=failed_cnt,
+            passed=(failed_cnt == 0),
+            details=f"Verified {checked} report/BOQ source & drawing references against project logs; found {failed_cnt} issue(s).",
+        ),
+        findings,
+    )
+
+
+def _check_cross_deliverable_consistency(ctx: QaContextData) -> tuple[QaCheckMetricOut, list[QaCandidateFinding]]:
+    checked = 0
+    findings: list[QaCandidateFinding] = []
+    deliv_by_dwg = {d["drawing_id"]: d["id"] for d in ctx.deliverables if d.get("drawing_id")}
+    deliv_by_boq = {d["boq_id"]: d["id"] for d in ctx.deliverables if d.get("boq_id")}
+
+    all_boq_items = [
+        (boq, deliv_by_boq.get(boq["id"]), it)
+        for boq in ctx.boq_sheets
+        for it in boq["items"]
+    ]
+
+    for dwg in ctx.drawings:
+        checked += 1
+        dwg_no = str(dwg.get("drawing_no") or "")
+        dwg_deliv_id = deliv_by_dwg.get(dwg["id"])
+        metrics = dwg.get("computed_metrics_json") or {}
+        door_sched = metrics.get("door_schedule") or []
+        win_sched = metrics.get("window_schedule") or []
+
+        # 1. Internal drawing model vs schedule consistency
+        try:
+            plan = ParametricPlanModel.model_validate(dwg["model_json"])
+            expected_ds, expected_ws = build_schedules_from_model(plan)
+            sched_door_total = sum(int(r.get("count") or 0) for r in door_sched)
+            sched_win_total = sum(int(r.get("count") or 0) for r in win_sched)
+            if sched_door_total != len(plan.doors):
+                findings.append(
+                    QaCandidateFinding(
+                        check_category="schedule_consistency",
+                        discipline="architecture",
+                        severity="high",
+                        title="Drawing door schedule vs model count mismatch",
+                        description=(
+                            f"Drawing {dwg_no} door_schedule sums to {sched_door_total} door(s), "
+                            f"but plan_model.doors defines {len(plan.doors)} door(s)."
+                        ),
+                        reference=f"Drawing {dwg_no}",
+                        corrective_action="Regenerate drawing schedules cleanly from plan_model.",
+                        deliverable_id=dwg_deliv_id,
+                        task_id=dwg.get("task_id"),
+                    )
+                )
+            if sched_win_total != len(plan.windows):
+                findings.append(
+                    QaCandidateFinding(
+                        check_category="schedule_consistency",
+                        discipline="architecture",
+                        severity="high",
+                        title="Drawing window schedule vs model count mismatch",
+                        description=(
+                            f"Drawing {dwg_no} window_schedule sums to {sched_win_total} window(s), "
+                            f"but plan_model.windows defines {len(plan.windows)} window(s)."
+                        ),
+                        reference=f"Drawing {dwg_no}",
+                        corrective_action="Regenerate drawing schedules cleanly from plan_model.",
+                        deliverable_id=dwg_deliv_id,
+                        task_id=dwg.get("task_id"),
+                    )
+                )
+        except Exception:
+            sched_door_total = sum(int(r.get("count") or 0) for r in door_sched)
+            sched_win_total = sum(int(r.get("count") or 0) for r in win_sched)
+
+        if not dwg.get("round_trip_passed"):
+            findings.append(
+                QaCandidateFinding(
+                    check_category="schedule_consistency",
+                    discipline="architecture",
+                    severity="high",
+                    title="Parametric DXF round-trip verification failed",
+                    description=f"Drawing {dwg_no} failed internal DXF read-back round-trip consistency check.",
+                    reference=f"Drawing {dwg_no}",
+                    corrective_action="Inspect DXF round-trip mismatches and regenerate drawing.",
+                    deliverable_id=dwg_deliv_id,
+                    task_id=dwg.get("task_id"),
+                )
+            )
+
+        # 2. Cross-check ParametricDrawing schedules against Project BOQ sheets!
+        if all_boq_items:
+            checked += 1
+            for boq in ctx.boq_sheets:
+                boq_deliv_id = deliv_by_boq.get(boq["id"])
+                door_boq_items = [
+                    it
+                    for it in boq["items"]
+                    if any(k in str(it.get("description") or "").lower() for k in _DOOR_CUES)
+                    and _classify_unit_family(str(it.get("unit") or "")) == "count"
+                    and (not str(it.get("drawing_reference") or "").strip() or dwg_no.upper() in str(it.get("drawing_reference") or "").upper())
+                ]
+                if door_boq_items:
+                    boq_doors = sum(float(it.get("quantity") or 0.0) for it in door_boq_items)
+                    if abs(boq_doors - sched_door_total) > 0.01:
+                        findings.append(
+                            QaCandidateFinding(
+                                check_category="schedule_consistency",
+                                discipline="coordination",
+                                severity="high",
+                                title="Door schedule vs BOQ quantity mismatch",
+                                description=(
+                                    f"Schedule mismatch: Drawing {dwg_no} Door Schedule specifies {sched_door_total} door(s), "
+                                    f"whereas BOQ '{boq['title']}' quantifies {boq_doors:g} door(s)."
+                                ),
+                                reference=f"Drawing {dwg_no} <-> BOQ {boq['title']}",
+                                corrective_action=f"Reconcile BOQ door quantities to match Drawing {dwg_no} Door Schedule ({sched_door_total} nos) or revise drawing.",
+                                deliverable_id=boq_deliv_id or dwg_deliv_id,
+                                task_id=boq.get("task_id") or dwg.get("task_id"),
+                            )
+                        )
+
+                win_boq_items = [
+                    it
+                    for it in boq["items"]
+                    if any(k in str(it.get("description") or "").lower() for k in _WINDOW_CUES)
+                    and _classify_unit_family(str(it.get("unit") or "")) == "count"
+                    and (not str(it.get("drawing_reference") or "").strip() or dwg_no.upper() in str(it.get("drawing_reference") or "").upper())
+                ]
+                if win_boq_items:
+                    boq_wins = sum(float(it.get("quantity") or 0.0) for it in win_boq_items)
+                    if abs(boq_wins - sched_win_total) > 0.01:
+                        findings.append(
+                            QaCandidateFinding(
+                                check_category="schedule_consistency",
+                                discipline="coordination",
+                                severity="high",
+                                title="Window schedule vs BOQ quantity mismatch",
+                                description=(
+                                    f"Schedule mismatch: Drawing {dwg_no} Window Schedule specifies {sched_win_total} window(s), "
+                                    f"whereas BOQ '{boq['title']}' quantifies {boq_wins:g} window(s)."
+                                ),
+                                reference=f"Drawing {dwg_no} <-> BOQ {boq['title']}",
+                                corrective_action=f"Reconcile BOQ window quantities to match Drawing {dwg_no} Window Schedule ({sched_win_total} nos).",
+                                deliverable_id=boq_deliv_id or dwg_deliv_id,
+                                task_id=boq.get("task_id") or dwg.get("task_id"),
+                            )
+                        )
+
+                # Whole-plan floor finishes BOQ area check vs Drawing total_area_m2
+                dwg_total_area = float(metrics.get("total_area_m2") or 0.0)
+                whole_floor_items = [
+                    it
+                    for it in boq["items"]
+                    if any(k in str(it.get("description") or "").lower() for k in _FLOOR_TOTAL_CUES)
+                    and _classify_unit_family(str(it.get("unit") or "")) == "area_metric"
+                    and dwg_no.upper() in str(it.get("drawing_reference") or "").upper()
+                ]
+                if whole_floor_items and dwg_total_area > 0:
+                    boq_floor_area = sum(float(it.get("quantity") or 0.0) for it in whole_floor_items)
+                    if abs(boq_floor_area - dwg_total_area) > max(0.5, dwg_total_area * 0.02):
+                        findings.append(
+                            QaCandidateFinding(
+                                check_category="schedule_consistency",
+                                discipline="coordination",
+                                severity="high",
+                                title="Drawing net floor area vs BOQ floor finish area mismatch",
+                                description=(
+                                    f"Schedule/area mismatch: Drawing {dwg_no} computed net room area is {dwg_total_area:.2f} m2, "
+                                    f"whereas BOQ '{boq['title']}' total floor finish quantity is {boq_floor_area:.2f} m2."
+                                ),
+                                reference=f"Drawing {dwg_no} <-> BOQ {boq['title']}",
+                                corrective_action=f"Align BOQ floor area takeoff with Drawing {dwg_no} computed area ({dwg_total_area:.2f} m2).",
+                                deliverable_id=boq_deliv_id or dwg_deliv_id,
+                                task_id=boq.get("task_id") or dwg.get("task_id"),
+                            )
+                        )
+
+    failed_cnt = len(findings)
+    return (
+        QaCheckMetricOut(
+            category="schedule_consistency",
+            checked_count=checked,
+            failed_count=failed_cnt,
+            passed=(failed_cnt == 0),
+            details=f"Evaluated {checked} drawing/BOQ/schedule consistency cross-check(s); found {failed_cnt} issue(s).",
+        ),
+        findings,
+    )
+
+
+def _check_missing_deliverables_and_integrity(
+    ctx: QaContextData,
+    settings: Settings,
+    workspace_slug: str,
+) -> tuple[QaCheckMetricOut, list[QaCandidateFinding]]:
+    checked = 0
+    findings: list[QaCandidateFinding] = []
+
+    # 1. Check every registered Deliverable exists on disk and SHA-256 matches
+    delivs_by_dwg: dict[str, set[str]] = {}
+    delivs_by_report: dict[str, set[str]] = {}
+    delivs_by_boq: dict[str, set[str]] = {}
+
+    for d in ctx.deliverables:
+        checked += 1
+        rel = d.get("relative_path")
+        if d.get("drawing_id"):
+            delivs_by_dwg.setdefault(d["drawing_id"], set()).add(str(d.get("format") or "").lower())
+        if d.get("report_id"):
+            delivs_by_report.setdefault(d["report_id"], set()).add(f"{d.get('folder_name')}:{d.get('format')}")
+        if d.get("boq_id"):
+            delivs_by_boq.setdefault(d["boq_id"], set()).add(str(d.get("format") or "").lower())
+
+        if not rel:
+            findings.append(
+                QaCandidateFinding(
+                    check_category="missing_deliverable",
+                    discipline=d.get("discipline") or "multidisciplinary",
+                    severity="critical",
+                    title="Deliverable missing relative file path",
+                    description=f"Deliverable '{d['title']}' has no on-disk relative path registered.",
+                    reference=f"Deliverable {d['id'][:8]}",
+                    corrective_action="Regenerate deliverable so file is written cleanly to project workspace.",
+                    deliverable_id=d["id"],
+                    task_id=d.get("task_id"),
+                )
+            )
+            continue
+
+        disk_path = resolve_project_file_path(settings.workspaces_dir, workspace_slug, rel)
+        if not disk_path.is_file():
+            findings.append(
+                QaCandidateFinding(
+                    check_category="missing_deliverable",
+                    discipline=d.get("discipline") or "multidisciplinary",
+                    severity="critical",
+                    title="Deliverable file missing from workspace disk",
+                    description=f"Registered deliverable file '{rel}' is missing on disk.",
+                    reference=str(rel),
+                    corrective_action="Regenerate or restore deliverable file and verify SHA-256.",
+                    deliverable_id=d["id"],
+                    task_id=d.get("task_id"),
+                )
+            )
+        elif d.get("sha256"):
+            actual_sha = sha256_file(disk_path)
+            if actual_sha != d["sha256"]:
+                findings.append(
+                    QaCandidateFinding(
+                        check_category="integrity",
+                        discipline=d.get("discipline") or "multidisciplinary",
+                        severity="critical",
+                        title="Deliverable SHA-256 integrity mismatch",
+                        description=(
+                            f"Deliverable '{rel}' SHA-256 ({actual_sha[:12]}) disagrees with registered "
+                            f"checksum ({str(d['sha256'])[:12]})."
+                        ),
+                        reference=str(rel),
+                        corrective_action="Quarantine modified artifact and regenerate clean versioned deliverable.",
+                        deliverable_id=d["id"],
+                        task_id=d.get("task_id"),
+                    )
+                )
+
+    # 2. Required paired deliverables (DXF + PDF for drawings; XLSX + CSV for exported BOQs; DOCX + PDF for reports)
+    for dwg in ctx.drawings:
+        checked += 1
+        fmts = delivs_by_dwg.get(dwg["id"], set())
+        if not {"dxf", "pdf"}.issubset(fmts):
+            missing = sorted({"dxf", "pdf"} - fmts)
+            findings.append(
+                QaCandidateFinding(
+                    check_category="missing_deliverable",
+                    discipline="architecture",
+                    severity="high",
+                    title="Parametric drawing package incomplete",
+                    description=f"Drawing {dwg['drawing_no']} is missing {', '.join(missing).upper()} deliverable file(s) in 05_Design_Drawings.",
+                    reference=f"Drawing {dwg['drawing_no']}",
+                    corrective_action="Re-export complete DXF + true-scale PDF package.",
+                    task_id=dwg.get("task_id"),
+                )
+            )
+
+    for rep in ctx.review_reports:
+        checked += 1
+        keys = delivs_by_report.get(rep["id"], set())
+        needed = {"08_Reports:docx", "08_Reports:pdf", "10_Final_Deliverables:docx", "10_Final_Deliverables:pdf"}
+        missing = sorted(needed - keys)
+        if missing:
+            findings.append(
+                QaCandidateFinding(
+                    check_category="missing_deliverable",
+                    discipline=rep.get("discipline") or "multidisciplinary",
+                    severity="high",
+                    title="Review report deliverable files incomplete",
+                    description=f"Review Report '{rep['title']}' is missing output(s): {', '.join(missing)}.",
+                    reference=f"Report {rep['revision']}",
+                    corrective_action="Regenerate DOCX + PDF into 08_Reports and 10_Final_Deliverables.",
+                    task_id=rep.get("task_id"),
+                )
+            )
+
+    for boq in ctx.boq_sheets:
+        if int(boq.get("export_version") or 0) > 0:
+            checked += 1
+            fmts = delivs_by_boq.get(boq["id"], set())
+            missing = sorted({"xlsx", "csv"} - fmts)
+            if missing:
+                findings.append(
+                    QaCandidateFinding(
+                        check_category="missing_deliverable",
+                        discipline="quantity_surveying",
+                        severity="high",
+                        title="Exported BOQ deliverables incomplete",
+                        description=f"BOQ '{boq['title']}' is missing {', '.join(missing).upper()} export file(s) in 06_BOQ.",
+                        reference=f"BOQ {boq['title']}",
+                        corrective_action="Re-export BOQ XLSX + CSV package into 06_BOQ.",
+                        task_id=boq.get("task_id"),
+                    )
+                )
+
+    # 3. Task expected deliverables coverage check (without reading producer reasoning)
+    if ctx.task_id and ctx.expected_task_deliverables:
+        has_boq = bool(ctx.boq_sheets) or any(d.get("folder_name") == "06_BOQ" for d in ctx.deliverables)
+        has_drawing = bool(ctx.drawings) or any(d.get("folder_name") == "05_Design_Drawings" for d in ctx.deliverables)
+        has_report = bool(ctx.review_reports) or any(
+            d.get("folder_name") in {"08_Reports", "10_Final_Deliverables"} for d in ctx.deliverables
+        )
+        for exp in ctx.expected_task_deliverables:
+            checked += 1
+            low = exp.lower()
+            if any(k in low for k in ("boq", "bill of quantities", "quantity", "كميات")):
+                if not has_boq:
+                    findings.append(
+                        QaCandidateFinding(
+                            check_category="missing_deliverable",
+                            discipline="quantity_surveying",
+                            severity="high",
+                            title="Missing expected BOQ deliverable for task",
+                            description=f"Task expects deliverable '{exp}', but no BOQ sheet or 06_BOQ deliverable is linked.",
+                            reference=f"Task {ctx.task_id[:8]} / {exp}",
+                            corrective_action="Generate and link BOQ deliverable for this task before verification.",
+                            task_id=ctx.task_id,
+                        )
+                    )
+            elif any(k in low for k in ("drawing", "plan", "dxf", "cad", "مخطط", "لوحة")):
+                if not has_drawing:
+                    findings.append(
+                        QaCandidateFinding(
+                            check_category="missing_deliverable",
+                            discipline="architecture",
+                            severity="high",
+                            title="Missing expected CAD drawing deliverable for task",
+                            description=f"Task expects deliverable '{exp}', but no Parametric CAD drawing or 05_Design_Drawings deliverable is linked.",
+                            reference=f"Task {ctx.task_id[:8]} / {exp}",
+                            corrective_action="Generate and link DXF + true-scale PDF drawing package for this task.",
+                            task_id=ctx.task_id,
+                        )
+                    )
+            elif any(k in low for k in ("report", "review", "تقرير", "مراجعة")):
+                if not has_report:
+                    findings.append(
+                        QaCandidateFinding(
+                            check_category="missing_deliverable",
+                            discipline="multidisciplinary",
+                            severity="high",
+                            title="Missing expected review report deliverable for task",
+                            description=f"Task expects deliverable '{exp}', but no Review Report deliverable in 08_Reports/10_Final_Deliverables is linked.",
+                            reference=f"Task {ctx.task_id[:8]} / {exp}",
+                            corrective_action="Generate DOCX + PDF Review Report for this task before verification.",
+                            task_id=ctx.task_id,
+                        )
+                    )
+            elif not _expected_deliverable_covered(exp, ctx):
+                findings.append(
+                    QaCandidateFinding(
+                        check_category="missing_deliverable",
+                        discipline="multidisciplinary",
+                        severity="high",
+                        title="Missing expected deliverable for task",
+                        description=f"Task expects deliverable '{exp}', but no matching deliverable is linked.",
+                        reference=f"Task {ctx.task_id[:8]} / {exp}",
+                        corrective_action=f"Produce and link '{exp}' deliverable for this task before verification.",
+                        task_id=ctx.task_id,
+                    )
+                )
+
+    # Also catch zero-deliverable QA run on a task so an empty task never falsely passes verification
+    if ctx.task_id and not (ctx.deliverables or ctx.boq_sheets or ctx.drawings or ctx.review_reports):
+        checked += 1
+        findings.append(
+            QaCandidateFinding(
+                check_category="missing_deliverable",
+                discipline="multidisciplinary",
+                severity="high",
+                title="No deliverables produced for task",
+                description="Task has no linked deliverables, BOQs, drawings, or reports for QA inspection.",
+                reference=f"Task {ctx.task_id[:8]}",
+                corrective_action="Produce required engineering deliverables before submitting task for QA verification.",
+                task_id=ctx.task_id,
+            )
+        )
+
+    failed_cnt = len(findings)
+    return (
+        QaCheckMetricOut(
+            category="missing_deliverable",
+            checked_count=checked,
+            failed_count=failed_cnt,
+            passed=(failed_cnt == 0),
+            details=f"Verified {checked} deliverable disk/checksum/completeness expectation(s); found {failed_cnt} issue(s).",
+        ),
+        findings,
+    )
+
+
+def evaluate_independent_qa(
+    ctx: QaContextData,
+    *,
+    settings: Settings,
+    workspace_slug: str,
+    check_arithmetic: bool = True,
+    check_units: bool = True,
+    check_references: bool = True,
+    check_consistency: bool = True,
+    check_missing_deliverables: bool = True,
+) -> tuple[list[QaCheckMetricOut], list[QaCandidateFinding]]:
+    """Run all requested independent deterministic QA checks (0 AI tokens)."""
+    metrics: list[QaCheckMetricOut] = []
+    all_findings: list[QaCandidateFinding] = []
+
+    if check_arithmetic:
+        m, f = _check_arithmetic(ctx, settings, workspace_slug)
+        metrics.append(m)
+        all_findings.extend(f)
+
+    if check_units:
+        m, f = _check_units(ctx)
+        metrics.append(m)
+        all_findings.extend(f)
+
+    if check_references:
+        m, f = _check_references(ctx)
+        metrics.append(m)
+        all_findings.extend(f)
+
+    if check_consistency:
+        m, f = _check_cross_deliverable_consistency(ctx)
+        metrics.append(m)
+        all_findings.extend(f)
+
+    if check_missing_deliverables:
+        m, f = _check_missing_deliverables_and_integrity(ctx, settings, workspace_slug)
+        metrics.append(m)
+        all_findings.extend(f)
+
+    return metrics, all_findings

@@ -574,3 +574,93 @@ export function getParametricDrawingDetail(
     `/api/parametric-drawings/${encodeURIComponent(drawingId)}`
   );
 }
+
+export function runProjectQaReview(
+  projectId: string,
+  payload?: { task_id?: string | null; classification?: import("./types").ProjectClassification }
+): Promise<import("./types").QaReviewDetailOut> {
+  return requestJson<import("./types").QaReviewDetailOut>(
+    `/api/projects/${encodeURIComponent(projectId)}/qa-reviews`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload ?? {}),
+    }
+  );
+}
+
+export function listProjectQaReviews(
+  projectId: string
+): Promise<import("./types").QaReviewListResponse> {
+  return requestJson<import("./types").QaReviewListResponse>(
+    `/api/projects/${encodeURIComponent(projectId)}/qa-reviews`
+  );
+}
+
+export function verifyTaskWithQa(
+  taskId: string,
+  payload?: { qa_review_id?: string | null; verifier_note?: string | null }
+): Promise<import("./types").TaskVerifyOut> {
+  return requestJson<import("./types").TaskVerifyOut>(
+    `/api/tasks/${encodeURIComponent(taskId)}/verify`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload ?? {}),
+    }
+  );
+}
+
+export function listProjectIssues(
+  projectId: string,
+  params?: { status?: string; severity?: string; task_id?: string }
+): Promise<import("./types").IssueListResponse> {
+  const qs = new URLSearchParams();
+  if (params?.status) qs.set("status", params.status);
+  if (params?.severity) qs.set("severity", params.severity);
+  if (params?.task_id) qs.set("task_id", params.task_id);
+  const queryStr = qs.toString();
+  return requestJson<import("./types").IssueListResponse>(
+    `/api/projects/${encodeURIComponent(projectId)}/issues${queryStr ? `?${queryStr}` : ""}`
+  );
+}
+
+export function createManualIssue(
+  projectId: string,
+  payload: {
+    task_id?: string | null;
+    description: string;
+    discipline: string;
+    severity: import("./types").IssueSeverity;
+    reference?: string | null;
+    corrective_action: string;
+  }
+): Promise<import("./types").IssueOut> {
+  return requestJson<import("./types").IssueOut>(
+    `/api/projects/${encodeURIComponent(projectId)}/issues`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }
+  );
+}
+
+export function updateQaIssue(
+  issueId: string,
+  payload: {
+    status?: import("./types").IssueStatus;
+    severity?: import("./types").IssueSeverity;
+    corrective_action?: string;
+    closure_note?: string;
+  }
+): Promise<import("./types").IssueOut> {
+  return requestJson<import("./types").IssueOut>(
+    `/api/issues/${encodeURIComponent(issueId)}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }
+  );
+}
