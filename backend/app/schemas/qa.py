@@ -116,6 +116,7 @@ class QaContextIsolationReport(BaseModel):
     inspected_boq_ids: list[str] = Field(default_factory=list)
     inspected_drawing_ids: list[str] = Field(default_factory=list)
     inspected_report_ids: list[str] = Field(default_factory=list)
+    inspected_calculation_ids: list[str] = Field(default_factory=list)
     inspected_deliverable_ids: list[str] = Field(default_factory=list)
     inspected_extraction_ids: list[str] = Field(default_factory=list)
     inspected_research_source_count: int = 0

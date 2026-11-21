@@ -664,3 +664,83 @@ export function updateQaIssue(
     }
   );
 }
+
+export function listCalculationPresets(): Promise<import("./types").CalculationPresetListResponse> {
+  return requestJson<import("./types").CalculationPresetListResponse>("/api/calculations/presets");
+}
+
+export function listProjectCalculations(
+  projectId: string
+): Promise<import("./types").CalculationListResponse> {
+  return requestJson<import("./types").CalculationListResponse>(
+    `/api/projects/${encodeURIComponent(projectId)}/calculations`
+  );
+}
+
+export function getCalculationDetail(
+  calculationId: string
+): Promise<import("./types").CalculationDetailOut> {
+  return requestJson<import("./types").CalculationDetailOut>(
+    `/api/calculations/${encodeURIComponent(calculationId)}`
+  );
+}
+
+export function createCalculation(
+  projectId: string,
+  payload: {
+    task_id?: string | null;
+    title: string;
+    calculation_type: import("./types").CalculationType;
+    language?: import("./types").ReportLanguage;
+    classification?: ProjectClassification;
+    revision?: string;
+    inputs: Record<string, unknown>;
+    assumptions_override?: string[];
+    references: import("./types").CalculationReferenceIn[];
+  }
+): Promise<import("./types").CalculationDetailOut> {
+  return requestJson<import("./types").CalculationDetailOut>(
+    `/api/projects/${encodeURIComponent(projectId)}/calculations`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }
+  );
+}
+
+export function updateCalculation(
+  calculationId: string,
+  payload: {
+    title?: string;
+    language?: import("./types").ReportLanguage;
+    classification?: ProjectClassification;
+    revision?: string;
+    inputs?: Record<string, unknown>;
+    assumptions_override?: string[];
+    references?: import("./types").CalculationReferenceIn[];
+  }
+): Promise<import("./types").CalculationDetailOut> {
+  return requestJson<import("./types").CalculationDetailOut>(
+    `/api/calculations/${encodeURIComponent(calculationId)}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }
+  );
+}
+
+export function exportCalculationDeliverables(
+  calculationId: string,
+  payload?: { language?: import("./types").ReportLanguage }
+): Promise<import("./types").CalculationExportOut> {
+  return requestJson<import("./types").CalculationExportOut>(
+    `/api/calculations/${encodeURIComponent(calculationId)}/export`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload ?? {}),
+    }
+  );
+}

@@ -61,7 +61,21 @@ def test_alembic_upgrade_and_downgrade_round_trip(tmp_path: Path) -> None:
             "attached_file_ids_json",
             "structured_output_json",
             "token_usage_json",
+            "verification_status",
+            "last_qa_review_id",
         }.issubset(task_columns)
+        calc_columns = {col["name"] for col in inspector.get_columns("calculations")}
+        assert {
+            "references_json",
+            "revision",
+            "version",
+            "export_version",
+            "language",
+            "acceptance_passed",
+            "tokens_used",
+        }.issubset(calc_columns)
+        deliv_columns = {col["name"] for col in inspector.get_columns("deliverables")}
+        assert "calculation_id" in deliv_columns
 
         with engine.connect() as conn:
             fk_enabled = conn.execute(text("PRAGMA foreign_keys")).scalar()

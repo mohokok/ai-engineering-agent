@@ -139,13 +139,14 @@ class ReviewAiSynthesizeRequest(BaseModel):
 
 
 class DeliverableOut(BaseModel):
-    """Serialized persisted deliverable file stored under 05_Design_Drawings, 06_BOQ, 08_Reports, or 10_Final_Deliverables."""
+    """Serialized persisted deliverable file stored under 04_Engineering_Calculations, 05_Design_Drawings, 06_BOQ, 08_Reports, or 10_Final_Deliverables."""
 
     id: str
     project_id: str
     report_id: str | None = None
     boq_id: str | None = None
     drawing_id: str | None = None
+    calculation_id: str | None = None
     task_id: str | None = None
     file_id: str | None = None
     title: str

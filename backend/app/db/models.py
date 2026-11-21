@@ -250,6 +250,9 @@ class Deliverable(Base):
     drawing_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("parametric_drawings.id", ondelete="SET NULL"), index=True, nullable=True
     )
+    calculation_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("calculations.id", ondelete="SET NULL"), index=True, nullable=True
+    )
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     deliverable_type: Mapped[str] = mapped_column(String(64), nullable=False)
     discipline: Mapped[str] = mapped_column(
@@ -279,6 +282,7 @@ class Deliverable(Base):
     review_report: Mapped["ReviewReport | None"] = relationship(back_populates="deliverables")
     boq_sheet: Mapped["BoqSheet | None"] = relationship(back_populates="deliverables")
     parametric_drawing: Mapped["ParametricDrawing | None"] = relationship(back_populates="deliverables")
+    calculation: Mapped["Calculation | None"] = relationship(back_populates="deliverables")
 
 
 class ParametricDrawing(Base):
@@ -635,6 +639,13 @@ class Calculation(Base):
     results_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     acceptance_criteria: Mapped[str | None] = mapped_column(Text, nullable=True)
     references_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    references_json: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, nullable=True)
+    revision: Mapped[str] = mapped_column(String(32), default="Rev 01", nullable=False)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    export_version: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    language: Mapped[str] = mapped_column(String(16), default="ar", nullable=False)
+    acceptance_passed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    tokens_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     classification: Mapped[str] = mapped_column(
         String(32), default="Preliminary", nullable=False
     )
@@ -647,6 +658,7 @@ class Calculation(Base):
     )
 
     project: Mapped["Project"] = relationship(back_populates="calculations")
+    deliverables: Mapped[list["Deliverable"]] = relationship(back_populates="calculation")
 
 
 class FileExtraction(Base):
