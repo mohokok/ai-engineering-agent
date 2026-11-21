@@ -34,6 +34,7 @@ EXPECTED_TABLES = {
     "parametric_drawings",
     "research_runs",
     "research_sources",
+    "qa_reviews",
     "issues",
     "calculations",
     "settings",

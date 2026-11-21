@@ -161,6 +161,8 @@ class TaskSummaryOut(BaseModel):
     prompt: str
     task_type: str
     status: str
+    verification_status: str = "unverified"
+    last_qa_review_id: str | None = None
     classification: ProjectClassification | str
     complexity: str | None = None
     provider_name: str | None = None

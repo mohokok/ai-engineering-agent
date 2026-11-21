@@ -5,6 +5,7 @@ import {
   addBoqItem,
   confirmExtractionDrawingUnit,
   createBoqSheet,
+  createManualIssue,
   createProject,
   createTask,
   deleteProviderApiKey,
@@ -15,8 +16,13 @@ import {
   generateReviewReport,
   getClinicPresetModel,
   getParametricDrawingDetail,
+  listProjectIssues,
   listProjectParametricDrawings,
+  listProjectQaReviews,
+  runProjectQaReview,
   suggestParametricModel,
+  updateQaIssue,
+  verifyTaskWithQa,
   getDeliverableDownloadUrl,
   getExtractionCapabilities,
   getExtractionDetail,
@@ -48,6 +54,7 @@ import { AssignmentsView } from "./components/AssignmentsView";
 import { BoqView } from "./components/BoqView";
 import { DeliverablesView } from "./components/DeliverablesView";
 import { ParametricDrawingView } from "./components/ParametricDrawingView";
+import { QaIssuesView } from "./components/QaIssuesView";
 import { ProjectFilesPanel } from "./components/ProjectFilesPanel";
 import { ProjectWorkspaceView } from "./components/ProjectWorkspaceView";
 import { ProviderSettingsView } from "./components/ProviderSettingsView";
@@ -2230,5 +2237,154 @@ describe("App Step 10 BOQ & quantity UI", () => {
     expect(listed.total).toBe(1);
     const detail = await getParametricDrawingDetail("dwg-11");
     expect(detail.id).toBe("dwg-11");
+  });
+
+  it("renders Step 12 QA & Issue Register view and exercises QA API wrappers", async () => {
+    const sampleIssue = {
+      id: "iss-1",
+      project_id: "proj-12",
+      task_id: "task-12",
+      deliverable_id: null,
+      qa_review_id: "qa-1",
+      issue_number: "ISS-001",
+      title: "BOQ Arithmetic Mismatch",
+      description: "BOQ-A101 total does not equal quantity * unit_rate",
+      discipline: "architecture",
+      severity: "high",
+      check_category: "arithmetic",
+      reference: "BOQ Sheet #1 / BOQ-A101",
+      corrective_action: "Recompute line total as 4.00 * 500.00 = 2000.00.",
+      recommended_action: "Recompute line total as 4.00 * 500.00 = 2000.00.",
+      status: "open",
+      closure_note: null,
+      closed_at: null,
+      created_at: "2026-11-21T10:00:00Z",
+      updated_at: "2026-11-21T10:00:00Z",
+    };
+    const closedIssue = {
+      ...sampleIssue,
+      id: "iss-2",
+      issue_number: "ISS-002",
+      status: "closed",
+      closure_note: "Fixed BOQ-A101 formula and re-exported",
+      closed_at: "2026-11-21T11:00:00Z",
+    };
+    const sampleReview = {
+      id: "qa-1",
+      project_id: "proj-12",
+      project_code: "PRJ-012",
+      project_name: "Synthetic QA Project",
+      task_id: "task-12",
+      task_verification_status: "qa_failed",
+      classification: "For Review",
+      status: "failed",
+      producer_reasoning_excluded: true,
+      qa_context_summary: {
+        producer_reasoning_excluded: true,
+        excluded_fields: ["Task.plan_summary", "Task.result_summary", "TaskStep.notes"],
+        inspected_boq_ids: ["boq-1"],
+        inspected_drawing_ids: ["dwg-1"],
+        inspected_report_ids: ["rep-1"],
+        inspected_deliverable_ids: ["del-1"],
+        inspected_extraction_ids: ["ext-1"],
+        inspected_research_source_count: 1,
+        expected_task_deliverables: ["07_BOQ_and_Quantities/boq.xlsx"],
+      },
+      checks: [
+        {
+          category: "arithmetic" as const,
+          checked_count: 3,
+          failed_count: 1,
+          passed: false,
+          details: "1 arithmetic mismatch detected.",
+        },
+        {
+          category: "reference" as const,
+          checked_count: 2,
+          failed_count: 0,
+          passed: true,
+          details: "All cited references resolve to verified sources.",
+        },
+      ],
+      issues_opened_count: 1,
+      open_issues_count: 1,
+      tokens_used: 0,
+      issues: [sampleIssue],
+      created_at: "2026-11-21T10:00:00Z",
+    };
+
+    const appQaArHtml = renderToStaticMarkup(<App initialLang="ar" initialTab="qa" />);
+    expect(appQaArHtml).toContain("الجودة وسجل القضايا (QA)");
+    expect(appQaArHtml).toContain("وكيل مراجعة الجودة المستقل");
+
+    const appQaEnHtml = renderToStaticMarkup(<App initialLang="en" initialTab="qa" />);
+    expect(appQaEnHtml).toContain("QA &amp; Issue Register");
+
+    const qaHtmlAr = renderToStaticMarkup(
+      <QaIssuesView lang="ar" initialReview={sampleReview} initialIssues={[sampleIssue, closedIssue]} />
+    );
+    expect(qaHtmlAr).toContain("ISS-001");
+    expect(qaHtmlAr).toContain("BOQ-A101 total does not equal quantity * unit_rate");
+    expect(qaHtmlAr).toContain("Fixed BOQ-A101 formula and re-exported");
+    expect(qaHtmlAr).toContain("عزل سياق الجودة المستقل مُفعَّل");
+
+    const qaHtmlEn = renderToStaticMarkup(
+      <QaIssuesView lang="en" initialReview={sampleReview} initialIssues={[sampleIssue, closedIssue]} />
+    );
+    expect(qaHtmlEn).toContain("Independent QA Isolation Verified");
+    expect(qaHtmlEn).toContain("Task.plan_summary");
+    expect(qaHtmlEn).toContain("ISS-001");
+    expect(qaHtmlEn).toContain("architecture");
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(sampleReview), { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ reviews: [sampleReview], total: 1 }), { status: 200 })
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ issues: [sampleIssue], total: 1, open_count: 1, closed_count: 0 }),
+          { status: 200 }
+        )
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify(sampleIssue), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(closedIssue), { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            task_id: "task-12",
+            verification_status: "verified",
+            qa_review_id: "qa-2",
+            open_issues_count: 0,
+            message: "Task independently verified with zero open issues.",
+          }),
+          { status: 200 }
+        )
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const ran = await runProjectQaReview("proj-12", { task_id: "task-12" });
+    expect(ran.producer_reasoning_excluded).toBe(true);
+    expect(ran.tokens_used).toBe(0);
+    const revs = await listProjectQaReviews("proj-12");
+    expect(revs.total).toBe(1);
+    const issList = await listProjectIssues("proj-12", { status: "open" });
+    expect(issList.open_count).toBe(1);
+    const created = await createManualIssue("proj-12", {
+      description: "Check stair tread dimension",
+      discipline: "architecture",
+      severity: "medium",
+      reference: "Sheet A-101",
+      corrective_action: "Add 280mm dimension string",
+    });
+    expect(created.issue_number).toBe("ISS-001");
+    const closed = await updateQaIssue("iss-1", {
+      status: "closed",
+      closure_note: "Resolved",
+    });
+    expect(closed.status).toBe("closed");
+    const verified = await verifyTaskWithQa("task-12", { verifier_note: "All clear" });
+    expect(verified.verification_status).toBe("verified");
   });
 });

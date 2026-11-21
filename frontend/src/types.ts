@@ -314,6 +314,8 @@ export interface TaskSummaryOut {
   prompt: string;
   task_type: string;
   status: string;
+  verification_status?: string;
+  last_qa_review_id?: string | null;
   classification: ProjectClassification | string;
   complexity: string | null;
   provider_name: string | null;
@@ -1198,4 +1200,97 @@ export interface ParametricDrawingListResponse {
   drawings: ParametricDrawingDetailOut[];
   total: number;
   classification: ProjectClassification | string;
+}
+
+export type IssueSeverity = "critical" | "high" | "medium" | "low" | "info";
+export type IssueStatus = "open" | "in_review" | "closed";
+export type IssueCategory =
+  | "arithmetic"
+  | "unit"
+  | "reference"
+  | "schedule_consistency"
+  | "missing_deliverable"
+  | "integrity"
+  | "manual"
+  | "general";
+
+export interface QaCheckMetricOut {
+  category: IssueCategory;
+  checked_count: number;
+  failed_count: number;
+  passed: boolean;
+  details: string;
+}
+
+export interface QaContextIsolationReport {
+  producer_reasoning_excluded: boolean;
+  excluded_fields: string[];
+  inspected_boq_ids: string[];
+  inspected_drawing_ids: string[];
+  inspected_report_ids: string[];
+  inspected_deliverable_ids: string[];
+  inspected_extraction_ids: string[];
+  inspected_research_source_count: number;
+  expected_task_deliverables: string[];
+}
+
+export interface IssueOut {
+  id: string;
+  project_id: string;
+  task_id?: string | null;
+  deliverable_id?: string | null;
+  qa_review_id?: string | null;
+  issue_number: string;
+  title?: string | null;
+  description: string;
+  discipline: string;
+  severity: IssueSeverity | string;
+  check_category: IssueCategory | string;
+  reference?: string | null;
+  corrective_action?: string | null;
+  recommended_action?: string | null;
+  status: IssueStatus | string;
+  closure_note?: string | null;
+  closed_at?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface IssueListResponse {
+  issues: IssueOut[];
+  total: number;
+  open_count: number;
+  closed_count: number;
+}
+
+export interface QaReviewDetailOut {
+  id: string;
+  project_id: string;
+  project_code: string;
+  project_name: string;
+  task_id?: string | null;
+  task_verification_status?: string | null;
+  classification: ProjectClassification | string;
+  status: string;
+  producer_reasoning_excluded: boolean;
+  qa_context_summary: QaContextIsolationReport;
+  checks: QaCheckMetricOut[];
+  issues_opened_count: number;
+  open_issues_count: number;
+  tokens_used: number;
+  issues: IssueOut[];
+  created_at: string;
+}
+
+export interface QaReviewListResponse {
+  reviews: QaReviewDetailOut[];
+  total: number;
+}
+
+export interface TaskVerifyOut {
+  task_id: string;
+  verification_status: string;
+  qa_review_id: string;
+  open_issues_count: number;
+  message: string;
 }
