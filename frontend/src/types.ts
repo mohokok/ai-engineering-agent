@@ -768,6 +768,7 @@ export interface DeliverableOut {
   project_id: string;
   report_id?: string | null;
   boq_id?: string | null;
+  drawing_id?: string | null;
   task_id?: string | null;
   file_id?: string | null;
   title: string;
@@ -1021,4 +1022,180 @@ export interface BoqItemUpdateRequest {
   rate_source_kind?: BoqRateSourceKind | null;
   rate_source_ref?: string | null;
   rate_source_date?: string | null;
+}
+
+export type PaperSizeChoice = "A3" | "A4" | "A2" | "A1";
+
+export interface RoomSpec {
+  room_id: string;
+  name_ar: string;
+  name_en: string;
+  x_mm?: number | null;
+  y_mm?: number | null;
+  width_mm?: number | null;
+  height_mm?: number | null;
+  polygon_mm?: [number, number][] | null;
+  floor_finish?: string;
+  wall_finish?: string;
+  ceiling_finish?: string;
+  skirting?: string;
+}
+
+export interface WallSpec {
+  wall_id: string;
+  start_mm: [number, number];
+  end_mm: [number, number];
+  thickness_mm?: number;
+  wall_type?: "exterior" | "interior";
+}
+
+export interface DoorSpec {
+  door_id: string;
+  mark: string;
+  position_mm: [number, number];
+  width_mm: number;
+  height_mm?: number;
+  angle_deg?: number;
+  swing?: "left" | "right";
+  swing_side?: "in" | "out";
+  material?: string;
+  fire_rating?: string;
+  hardware?: string;
+  room_ref?: string;
+}
+
+export interface WindowSpec {
+  window_id: string;
+  mark: string;
+  position_mm: [number, number];
+  width_mm: number;
+  height_mm?: number;
+  sill_mm?: number;
+  angle_deg?: number;
+  glazing?: string;
+  room_ref?: string;
+}
+
+export interface ParametricPlanModel {
+  units: "mm";
+  north_angle_deg: number;
+  rooms: RoomSpec[];
+  walls: WallSpec[];
+  doors: DoorSpec[];
+  windows: WindowSpec[];
+}
+
+export interface ComputedRoomMetric {
+  room_id: string;
+  name_ar: string;
+  name_en: string;
+  polygon_mm: [number, number][];
+  area_mm2: number;
+  area_m2: number;
+  perimeter_mm: number;
+  perimeter_m: number;
+  centroid_mm: [number, number];
+  floor_finish: string;
+  wall_finish: string;
+  ceiling_finish: string;
+  skirting: string;
+}
+
+export interface DoorScheduleRow {
+  mark: string;
+  width_mm: number;
+  height_mm: number;
+  swing: string;
+  material: string;
+  fire_rating: string;
+  hardware: string;
+  count: number;
+  door_ids: string[];
+  room_refs: string[];
+}
+
+export interface WindowScheduleRow {
+  mark: string;
+  width_mm: number;
+  height_mm: number;
+  sill_mm: number;
+  glazing: string;
+  count: number;
+  window_ids: string[];
+  room_refs: string[];
+}
+
+export interface RoundTripCheckOut {
+  passed: boolean;
+  insunits_code: number;
+  units: string;
+  units_doubtful: boolean;
+  ttf_font_styles: string[];
+  uses_shx_font: boolean;
+  expected_room_count: number;
+  extracted_area_contour_count: number;
+  expected_total_area_m2: number;
+  extracted_total_area_m2: number;
+  area_diff_m2: number;
+  expected_doors_count: number;
+  extracted_doors_count: number;
+  expected_windows_count: number;
+  extracted_windows_count: number;
+  mismatches: string[];
+}
+
+export interface ParametricDrawingGenerateRequest {
+  task_id?: string | null;
+  drawing_no: string;
+  title: string;
+  scale_denominator: number;
+  paper_size: PaperSizeChoice;
+  classification: ProjectClassification;
+  notes?: string | null;
+  ai_suggested: boolean;
+  owner_confirmed_model: boolean;
+  plan_model: ParametricPlanModel;
+}
+
+export interface ParametricModelSuggestOut {
+  requires_owner_confirmation: boolean;
+  message: string;
+  plan_model: ParametricPlanModel;
+  tokens_used: number;
+}
+
+export interface ParametricDrawingDetailOut {
+  id: string;
+  project_id: string;
+  project_code: string;
+  project_name: string;
+  task_id?: string | null;
+  drawing_no: string;
+  title: string;
+  scale_denominator: number;
+  scale_label: string;
+  paper_size: string;
+  units: string;
+  classification: ProjectClassification | string;
+  revision: string;
+  version: number;
+  status: string;
+  notes?: string | null;
+  round_trip_passed: boolean;
+  ai_suggested: boolean;
+  plan_model: ParametricPlanModel;
+  rooms_computed: ComputedRoomMetric[];
+  total_area_m2: number;
+  door_schedule: DoorScheduleRow[];
+  window_schedule: WindowScheduleRow[];
+  round_trip_check: RoundTripCheckOut;
+  deliverables: DeliverableOut[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ParametricDrawingListResponse {
+  drawings: ParametricDrawingDetailOut[];
+  total: number;
+  classification: ProjectClassification | string;
 }

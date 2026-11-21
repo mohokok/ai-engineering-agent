@@ -70,6 +70,9 @@ class Project(Base):
     boq_sheets: Mapped[list["BoqSheet"]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )
+    parametric_drawings: Mapped[list["ParametricDrawing"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
     issues: Mapped[list["Issue"]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )
@@ -233,6 +236,9 @@ class Deliverable(Base):
     boq_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("boq_sheets.id", ondelete="SET NULL"), index=True, nullable=True
     )
+    drawing_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("parametric_drawings.id", ondelete="SET NULL"), index=True, nullable=True
+    )
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     deliverable_type: Mapped[str] = mapped_column(String(64), nullable=False)
     discipline: Mapped[str] = mapped_column(
@@ -261,6 +267,48 @@ class Deliverable(Base):
     project: Mapped["Project"] = relationship(back_populates="deliverables")
     review_report: Mapped["ReviewReport | None"] = relationship(back_populates="deliverables")
     boq_sheet: Mapped["BoqSheet | None"] = relationship(back_populates="deliverables")
+    parametric_drawing: Mapped["ParametricDrawing | None"] = relationship(back_populates="deliverables")
+
+
+class ParametricDrawing(Base):
+    """Step 11 deterministic parametric floor plan drawing persisted with DXF/PDF deliverables and round-trip audit."""
+
+    __tablename__ = "parametric_drawings"
+    __table_args__ = (classification_check_constraint(),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    project_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("projects.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    task_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("tasks.id", ondelete="SET NULL"), index=True, nullable=True
+    )
+    drawing_no: Mapped[str] = mapped_column(String(64), default="A-101", nullable=False)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    scale_denominator: Mapped[int] = mapped_column(Integer, default=100, nullable=False)
+    paper_size: Mapped[str] = mapped_column(String(16), default="A3", nullable=False)
+    units: Mapped[str] = mapped_column(String(16), default="mm", nullable=False)
+    classification: Mapped[str] = mapped_column(
+        String(32), default="Preliminary", nullable=False
+    )
+    revision: Mapped[str] = mapped_column(String(32), default="Rev 01", nullable=False)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="generated", nullable=False)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    model_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    computed_metrics_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    round_trip_passed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    ai_suggested: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    token_usage_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, index=True, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+    project: Mapped["Project"] = relationship(back_populates="parametric_drawings")
+    deliverables: Mapped[list["Deliverable"]] = relationship(back_populates="parametric_drawing")
 
 
 class BoqSheet(Base):

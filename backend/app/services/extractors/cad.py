@@ -367,6 +367,27 @@ def compute_layer_length_groups(
     return groups
 
 
+def recover_dxf_block_insert_groups(dxf_path: Path) -> list[dict[str, Any]]:
+    """Read-only recovery of ModelSpace INSERT counts grouped by (block_name, real INSERT entity layer)."""
+    doc = ezdxf.readfile(str(dxf_path))
+    header_codepage = str(doc.header.get("$DWGCODEPAGE", "") or "")
+    counts_map: dict[tuple[str, str], int] = {}
+    for ent in doc.modelspace():
+        if ent.dxftype() != "INSERT":
+            continue
+        raw_blk = str(getattr(ent.dxf, "name", "") or "")
+        b_name, _, _ = _decode_cad_text(raw_blk, header_codepage=header_codepage)
+        if not b_name or b_name.startswith("*"):
+            continue
+        raw_layer = str(getattr(ent.dxf, "layer", "0") or "0")
+        ent_layer, _, _ = _decode_cad_text(raw_layer, header_codepage=header_codepage)
+        counts_map[(b_name, ent_layer)] = counts_map.get((b_name, ent_layer), 0) + 1
+    return [
+        {"layer": lname, "block_name": bname, "count": cnt}
+        for (bname, lname), cnt in sorted(counts_map.items())
+    ]
+
+
 def _to_legacy_8bit_bytes(segment: str) -> bytes | None:
     """Convert Latin-1 / CP1252-decoded legacy ANSI chars back into raw 8-bit bytes if possible."""
     out = bytearray()
@@ -1773,7 +1794,10 @@ def extract_dxf(
     )
     block_insert_groups = [
         {"layer": lname, "block_name": bname, "count": cnt}
-        for (lname, bname), cnt in sorted(layer_block_counts_map.items())
+        for (lname, bname), cnt in sorted(
+            layer_block_counts_map.items(),
+            key=lambda kv: (kv[0][1], kv[0][0]),
+        )
     ]
     payload.counts.layers = len(layer_inventory)
     payload.counts.blocks = len(block_inventory)

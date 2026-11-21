@@ -49,6 +49,7 @@ def generate_boq_xlsx(
     items: list[dict[str, Any]],
     checks: BoqChecksSummaryOut,
     include_checks_sheet: bool = True,
+    omission_note: str | None = None,
 ) -> None:
     """Generate a versioned BOQ XLSX workbook with live row, status-subtotal, and grand-total Excel formulas."""
     if out_path.exists():
@@ -91,6 +92,11 @@ def generate_boq_xlsx(
     ws["A3"] = notice_text
     ws["A3"].font = note_font
     ws.merge_cells("A3:K3")
+
+    if omission_note:
+        ws["A4"] = omission_note
+        ws["A4"].font = note_font
+        ws.merge_cells("A4:K4")
 
     headers = (
         [

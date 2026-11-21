@@ -200,19 +200,22 @@ def test_step10_dxf_ifc_quantities_respect_confirmed_unit_and_never_silent_conve
         area_after = next(it for it in dxf_after if it["discipline"] == "cad_area")
         assert area_after["unit"] == "m2"
         assert area_after["quantity"] == pytest.approx(60.0, rel=1e-4)
-        assert area_after["verification_status"] == "Extracted-Verified"
+        # Honesty rule (a): geometric contour sums stay Extracted-Needs-Check until owner explicitly verifies!
+        assert area_after["verification_status"] == "Extracted-Needs-Check"
 
         line_after = next(it for it in dxf_after if it["discipline"] == "cad_length" and "LINE" in it["drawing_reference"])
         arc_after = next(it for it in dxf_after if it["discipline"] == "cad_length" and "ARC" in it["drawing_reference"])
         assert line_after["unit"] == "m" and line_after["quantity"] == pytest.approx(12.0, rel=1e-4)
         assert arc_after["unit"] == "m" and arc_after["quantity"] == pytest.approx(math.pi, rel=1e-3)
-        assert line_after["verification_status"] == "Extracted-Verified"
-        assert arc_after["verification_status"] == "Extracted-Verified"
+        assert line_after["verification_status"] == "Extracted-Needs-Check"
+        assert arc_after["verification_status"] == "Extracted-Needs-Check"
 
         blk_after = next(it for it in dxf_after if it["discipline"] == "cad_count")
         assert blk_after["unit"] == "nos"
         assert blk_after["quantity"] == 4.0
         assert blk_after["verification_status"] == "Extracted-Verified"
+        assert blk_after["layer_or_category"] == "A-WALL"
+        assert "layer:A-WALL | block:DOOR_SINGLE" in blk_after["drawing_reference"]
 
 
 def test_step10_unsourced_rates_blocked_sourced_accepted_configurable_currency_and_xlsx_live_formulas(tmp_path: Path) -> None:
@@ -481,3 +484,116 @@ def test_step10_import_xlsx_and_pdf_boqs_and_seeded_checks_duplicates_missing_un
     assert any("IfcDoor" in iss["message"] for iss in issues if iss["check_type"] == "missing_item")
     assert any("stored total (12345.0)" in iss["message"] for iss in issues if iss["check_type"] == "arithmetic_total")
     assert len(rechecked["checks"]["flagged_items"]) >= 3
+
+
+def test_step10_honesty_fixes_geometric_needs_check_real_block_layer_and_n_of_m(tmp_path: Path) -> None:
+    """Verify BOQ honesty fixes: (a) geometric contour sums default Extracted-Needs-Check until owner marks Verified; (b) block inserts group by (block_name, real layer), never 'ModelSpace', and show 'N of M' omission note."""
+    from app.db.models import FileExtraction
+
+    doc = ezdxf.new("R2018")
+    doc.header["$INSUNITS"] = 6  # meters
+    for lyr in ("A-AREA", "FURNITURE", "SITE-TREES", "SITE-LIGHTS", "A-DOOR"):
+        doc.layers.add(lyr)
+
+    # Blocks: one Arabic tree inserted on two real layers, one door on A-DOOR, plus an UNUSED block (0 inserts) -> triggers N of M omission!
+    blk_tree = doc.blocks.new(name="شجرة ملونة")
+    blk_tree.add_circle((0, 0), radius=0.5)
+    blk_door = doc.blocks.new(name="DOOR_D1")
+    blk_door.add_line((0, 0), (0.9, 0))
+    blk_unused = doc.blocks.new(name="UNUSED_DEF")
+    blk_unused.add_line((0, 0), (1.0, 0))
+
+    msp = doc.modelspace()
+    # Area-bearing layer A-AREA (20 m2) + non-area layer FURNITURE (15 m2, omitted!)
+    msp.add_lwpolyline([(0, 0), (5, 0), (5, 4), (0, 4)], close=True, dxfattribs={"layer": "A-AREA"})
+    msp.add_lwpolyline([(10, 0), (15, 0), (15, 3), (10, 3)], close=True, dxfattribs={"layer": "FURNITURE"})
+    # Insert 'شجرة ملونة' twice on SITE-TREES and once on SITE-LIGHTS -> MUST produce two distinct rows with real layers!
+    msp.add_blockref("شجرة ملونة", (1, 1), dxfattribs={"layer": "SITE-TREES"})
+    msp.add_blockref("شجرة ملونة", (3, 1), dxfattribs={"layer": "SITE-TREES"})
+    msp.add_blockref("شجرة ملونة", (5, 1), dxfattribs={"layer": "SITE-LIGHTS"})
+    msp.add_blockref("DOOR_D1", (2, 2), dxfattribs={"layer": "A-DOOR"})
+
+    buf = io.StringIO()
+    doc.write(buf)
+    dxf_bytes = buf.getvalue().encode("utf-8")
+
+    settings = _test_settings(tmp_path)
+    app = create_app(settings)
+    with TestClient(app) as client:
+        proj = client.post("/api/projects", json={"name": "Honesty Tree Layers", "code": "HON-10"}).json()
+        pid = proj["id"]
+        slug = proj["workspace_slug"]
+        up = client.post(
+            f"/api/projects/{pid}/files",
+            files=[("files", ("site_plan.dxf", dxf_bytes, "application/dxf"))],
+        ).json()
+        fid = up["items"][0]["file"]["id"]
+        ext = client.post(f"/api/files/{fid}/extract", json={}).json()
+
+        # 1. Build BOQ on fresh extraction
+        boq = client.post(
+            f"/api/projects/{pid}/boq-sheets",
+            json={"language": "en", "file_ids": [fid]},
+        ).json()
+
+        # Check (a): Geometric contour area defaults to Extracted-Needs-Check (NOT Extracted-Verified), while block counts ARE Extracted-Verified!
+        area_row = next(it for it in boq["items"] if it["discipline"] == "cad_area")
+        assert area_row["verification_status"] == "Extracted-Needs-Check"
+        assert "not net building area" in (area_row["remarks"] or "")
+        assert area_row["id"] in boq["checks"]["flagged_item_ids"]
+
+        # Owner can explicitly promote area row to Extracted-Verified
+        promoted = client.patch(
+            f"/api/boq-sheets/{boq['id']}/items/{area_row['id']}",
+            json={"verification_status": "Extracted-Verified"},
+        ).json()
+        area_promoted = next(it for it in promoted["items"] if it["id"] == area_row["id"])
+        assert area_promoted["verification_status"] == "Extracted-Verified"
+        assert area_row["id"] not in promoted["checks"]["flagged_item_ids"]
+
+        # Check (b): Block counts MUST group by (block_name, real layer) and NEVER print 'ModelSpace' as a layer!
+        cnt_rows = [it for it in boq["items"] if it["discipline"] == "cad_count"]
+        assert not any(it["layer_or_category"] == "ModelSpace" or "layer:ModelSpace" in (it["drawing_reference"] or "") for it in cnt_rows)
+        tree_rows = {it["layer_or_category"]: it for it in cnt_rows if "شجرة ملونة" in it["description"]}
+        assert set(tree_rows.keys()) == {"SITE-TREES", "SITE-LIGHTS"}
+        assert tree_rows["SITE-TREES"]["quantity"] == 2.0
+        assert tree_rows["SITE-TREES"]["verification_status"] == "Extracted-Verified"
+        assert tree_rows["SITE-LIGHTS"]["quantity"] == 1.0
+        assert tree_rows["SITE-LIGHTS"]["verification_status"] == "Extracted-Verified"
+
+        # Check (b) N of M omission note (4 included: 1 area + 3 block groups, 6 total: +1 non-area FURNITURE +1 unused block UNUSED_DEF -> "4 of 6")
+        om_sum = boq["source_metadata"]["omission_summary"]
+        assert om_sum["included_count"] == 4
+        assert om_sum["total_count"] == 6
+        assert om_sum["omitted_count"] == 2
+        assert "4 of 6" in om_sum["note"]
+        assert any("4 of 6" in iss["message"] for iss in boq["checks"]["issues"])
+
+        # Export XLSX and verify "4 of 6" note is embedded in sheet header
+        exp = client.post(f"/api/boq-sheets/{boq['id']}/export", json={"language": "en"}).json()
+        xp = resolve_project_file_path(settings.workspaces_dir, slug, exp["xlsx_deliverable"]["relative_path"])
+        wb = load_workbook(xp, data_only=False)
+        assert "4 of 6" in str(wb.active["A4"].value)
+        wb.close()
+
+    # 2. Simulate legacy Step-07 extraction row lacking block_insert_groups in JSON -> MUST recover real INSERT layers from read-only DXF on disk!
+    with app.state.session_factory() as db:
+        ext_row = db.get(FileExtraction, ext["id"])
+        assert ext_row is not None
+        p_mut = dict(ext_row.payload_json)
+        inv_mut = dict(p_mut["drawing_inventory"])
+        inv_mut.pop("block_insert_groups", None)
+        p_mut["drawing_inventory"] = inv_mut
+        ext_row.payload_json = p_mut
+        db.commit()
+
+    with TestClient(app) as client:
+        boq_legacy = client.post(
+            f"/api/projects/{pid}/boq-sheets",
+            json={"language": "en", "file_ids": [fid]},
+        ).json()
+        legacy_cnts = [it for it in boq_legacy["items"] if it["discipline"] == "cad_count"]
+        assert not any(it["layer_or_category"] == "ModelSpace" for it in legacy_cnts)
+        legacy_trees = {it["layer_or_category"]: it["quantity"] for it in legacy_cnts if "شجرة ملونة" in it["description"]}
+        assert legacy_trees == {"SITE-TREES": 2.0, "SITE-LIGHTS": 1.0}
+

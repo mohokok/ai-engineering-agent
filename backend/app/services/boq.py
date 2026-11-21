@@ -43,6 +43,7 @@ from app.services.extractors.cad import (
     CAD_UNIT_SCALE_MAP,
     compute_layer_area_groups,
     compute_layer_length_groups,
+    recover_dxf_block_insert_groups,
     resolve_cad_unit_context,
 )
 from app.services.extractors.pdf_and_image import assess_native_pdf_text_reliability
@@ -409,13 +410,17 @@ def _extract_quantities_from_cad_and_bim(
     pf: ProjectFile,
     ext: FileExtraction,
     *,
+    settings: Settings,
+    project: Project,
     is_ar: bool,
-) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, str]], int, list[str]]:
     """Build deterministic BOQ quantities (areas, lengths, counts) from DXF/DWG or IFC extractions."""
     payload = ext.payload_json if isinstance(ext.payload_json, dict) else {}
     inv = payload.get("drawing_inventory") if isinstance(payload.get("drawing_inventory"), dict) else {}
     rows: list[dict[str, Any]] = []
     expected_coverage: list[dict[str, str]] = []
+    total_candidates = 0
+    omitted_notes: list[str] = []
 
     if inv.get("kind") == "cad_dxf":
         unit_ctx = resolve_cad_unit_context(payload, inv, is_ar=is_ar)
@@ -434,16 +439,21 @@ def _extract_quantities_from_cad_and_bim(
             )
 
         area_idx = 0
+        non_area_omitted = 0
         for grp in area_groups:
-            if not isinstance(grp, dict) or not grp.get("area_bearing"):
+            if not isinstance(grp, dict):
+                continue
+            native_sum = float(grp.get("area_native_sum") or 0.0)
+            if native_sum <= 0:
+                continue
+            total_candidates += 1
+            if not grp.get("area_bearing"):
+                non_area_omitted += 1
                 continue
             layer = str(grp.get("layer") or "0")
             etype = str(grp.get("entity_type") or "LWPOLYLINE")
             cnt = int(grp.get("count") or 0)
-            native_sum = float(grp.get("area_native_sum") or 0.0)
             m2_sum = grp.get("area_m2_sum")
-            if native_sum <= 0:
-                continue
             area_idx += 1
             dwg_ref = f"{pf.original_filename} | layer:{layer} | {etype}"
             expected_coverage.append(
@@ -454,6 +464,7 @@ def _extract_quantities_from_cad_and_bim(
                 }
             )
             if not cad_doubtful and m2_sum is not None:
+                # Geometric contour sums (not net building area) always default to Extracted-Needs-Check until owner verifies!
                 rows.append(
                     {
                         "item_no": f"CAD-A-{area_idx:02d}",
@@ -467,10 +478,10 @@ def _extract_quantities_from_cad_and_bim(
                         "unit_rate": None,
                         "total": None,
                         "reported_total": None,
-                        "technical_reference": f"DXF deterministic area sum ({basis_display})",
+                        "technical_reference": f"DXF geometric contour sum ({basis_display})",
                         "drawing_reference": dwg_ref,
-                        "remarks": "Geometric contour sum (not net building area; verify openings/overlaps)",
-                        "verification_status": "Extracted-Verified",
+                        "remarks": "Geometric contour sum (not net building area; verify openings/overlaps) — defaults Extracted-Needs-Check",
+                        "verification_status": "Extracted-Needs-Check",
                         "rate_source_kind": None,
                         "rate_source_ref": None,
                         "rate_source_date": None,
@@ -513,6 +524,8 @@ def _extract_quantities_from_cad_and_bim(
                         "layer_or_category": layer,
                     }
                 )
+        if non_area_omitted > 0:
+            omitted_notes.append(f"{non_area_omitted} non-area-bearing CAD contour group(s) in {pf.original_filename}")
 
         len_groups = list(inv.get("layer_length_groups") or [])
         if len_groups:
@@ -522,16 +535,21 @@ def _extract_quantities_from_cad_and_bim(
                 units_doubtful=cad_doubtful,
             )
         len_idx = 0
+        anno_len_omitted = 0
         for lgrp in len_groups:
-            if not isinstance(lgrp, dict) or lgrp.get("is_non_structural_layer"):
+            if not isinstance(lgrp, dict):
+                continue
+            native_sum = float(lgrp.get("length_native_sum") or 0.0)
+            if native_sum <= 0:
+                continue
+            total_candidates += 1
+            if lgrp.get("is_non_structural_layer"):
+                anno_len_omitted += 1
                 continue
             layer = str(lgrp.get("layer") or "0")
             etype = str(lgrp.get("entity_type") or "LINE")
             cnt = int(lgrp.get("count") or 0)
-            native_sum = float(lgrp.get("length_native_sum") or 0.0)
             m_sum = lgrp.get("length_m_sum")
-            if native_sum <= 0:
-                continue
             len_idx += 1
             dwg_ref = f"{pf.original_filename} | layer:{layer} | {etype}"
             expected_coverage.append(
@@ -542,6 +560,7 @@ def _extract_quantities_from_cad_and_bim(
                 }
             )
             if not cad_doubtful and m_sum is not None:
+                # Linear geometric sums also default to Extracted-Needs-Check; keep Extracted-Verified for block counts or owner-verified rows
                 rows.append(
                     {
                         "item_no": f"CAD-L-{len_idx:02d}",
@@ -555,10 +574,10 @@ def _extract_quantities_from_cad_and_bim(
                         "unit_rate": None,
                         "total": None,
                         "reported_total": None,
-                        "technical_reference": f"DXF deterministic linear sum ({basis_display})",
+                        "technical_reference": f"DXF linear sum ({basis_display})",
                         "drawing_reference": dwg_ref,
-                        "remarks": f"ModelSpace {etype} cumulative length across {cnt} entity(ies)",
-                        "verification_status": "Extracted-Verified",
+                        "remarks": f"ModelSpace {etype} cumulative length across {cnt} entity(ies) (defaults Extracted-Needs-Check until verified)",
+                        "verification_status": "Extracted-Needs-Check",
                         "rate_source_kind": None,
                         "rate_source_ref": None,
                         "rate_source_date": None,
@@ -600,19 +619,50 @@ def _extract_quantities_from_cad_and_bim(
                         "layer_or_category": layer,
                     }
                 )
+        if anno_len_omitted > 0:
+            omitted_notes.append(f"{anno_len_omitted} annotation/dimension linear group(s) in {pf.original_filename}")
 
         blk_groups = list(inv.get("block_insert_groups") or [])
         if not blk_groups and inv.get("blocks"):
-            blk_groups = [
-                {
-                    "layer": "ModelSpace",
-                    "block_name": str(b.get("name") or ""),
-                    "count": int(b.get("insert_count") or 0),
-                }
-                for b in (inv.get("blocks") or [])
-                if isinstance(b, dict) and int(b.get("insert_count") or 0) > 0 and not b.get("is_xref")
-            ]
-        cnt_idx = 0
+            # Recover real INSERT entity layers from read-only DXF/converted DXF on disk instead of inventing 'ModelSpace'
+            recovered_groups: list[dict[str, Any]] = []
+            try:
+                candidate_paths: list[Path] = []
+                if (pf.extension or Path(pf.original_filename).suffix).lower() == ".dxf":
+                    candidate_paths.append(
+                        resolve_project_file_path(settings.workspaces_dir, project.workspace_slug, pf.stored_relative_path)
+                    )
+                if ext.artifact_relative_path:
+                    conv_dir = (
+                        resolve_project_file_path(settings.workspaces_dir, project.workspace_slug, ext.artifact_relative_path).parent
+                        / "converted"
+                    )
+                    if conv_dir.is_dir():
+                        candidate_paths.extend(sorted(conv_dir.glob("*.dxf")))
+                for cand_dxf in candidate_paths:
+                    if cand_dxf.is_file():
+                        recovered_groups = recover_dxf_block_insert_groups(cand_dxf)
+                        if recovered_groups:
+                            break
+            except Exception:
+                recovered_groups = []
+
+            if recovered_groups:
+                blk_groups = recovered_groups
+            else:
+                blk_groups = [
+                    {
+                        "layer": "unrecorded_layer_reextract",
+                        "block_name": str(b.get("name") or ""),
+                        "count": int(b.get("insert_count") or 0),
+                        "layer_unrecorded": True,
+                    }
+                    for b in (inv.get("blocks") or [])
+                    if isinstance(b, dict) and int(b.get("insert_count") or 0) > 0 and not b.get("is_xref")
+                ]
+
+        # Group deterministically by (block_name, layer) summing counts if duplicated
+        blk_buckets: dict[tuple[str, str], dict[str, Any]] = {}
         for bgrp in blk_groups:
             if not isinstance(bgrp, dict):
                 continue
@@ -621,13 +671,43 @@ def _extract_quantities_from_cad_and_bim(
             b_layer = str(bgrp.get("layer") or "0")
             if b_cnt <= 0 or not b_name:
                 continue
+            key = (b_name, b_layer)
+            bucket = blk_buckets.setdefault(
+                key,
+                {
+                    "block_name": b_name,
+                    "layer": b_layer,
+                    "count": 0,
+                    "layer_unrecorded": bool(bgrp.get("layer_unrecorded")),
+                },
+            )
+            bucket["count"] += b_cnt
+
+        all_defined_blocks = [
+            b for b in (inv.get("blocks") or []) if isinstance(b, dict)
+        ]
+        zero_or_xref_blocks = sum(
+            1
+            for b in all_defined_blocks
+            if int(b.get("insert_count") or 0) <= 0 or b.get("is_xref")
+        )
+        total_candidates += len(blk_buckets) + zero_or_xref_blocks
+        if zero_or_xref_blocks > 0:
+            omitted_notes.append(
+                f"{zero_or_xref_blocks} unused/xref CAD block definition(s) in {pf.original_filename}"
+            )
+
+        cnt_idx = 0
+        for (b_name, b_layer), bucket in sorted(blk_buckets.items()):
+            b_cnt = int(bucket["count"])
+            layer_unrecorded = bool(bucket["layer_unrecorded"])
             cnt_idx += 1
             dwg_ref = f"{pf.original_filename} | layer:{b_layer} | block:{b_name}"
             expected_coverage.append(
                 {
                     "key": f"{pf.id}:cad_blk:{b_layer}:{b_name}",
                     "drawing_reference": dwg_ref,
-                    "label": f"{pf.original_filename} block '{b_name}' count",
+                    "label": f"{pf.original_filename} block '{b_name}' on layer '{b_layer}' count",
                 }
             )
             rows.append(
@@ -643,15 +723,19 @@ def _extract_quantities_from_cad_and_bim(
                     "unit_rate": None,
                     "total": None,
                     "reported_total": None,
-                    "technical_reference": "DXF deterministic block insertion count",
+                    "technical_reference": "DXF deterministic block insertion count (block + INSERT layer)",
                     "drawing_reference": dwg_ref,
                     "remarks": (
-                        "Count extracted; parent drawing length unit is doubtful/unconfirmed (verify scale context)."
-                        if cad_doubtful
-                        else "Deterministic block insert count from CAD model"
+                        "Legacy extraction lacked INSERT entity layer — re-extract DXF to verify block layer."
+                        if layer_unrecorded
+                        else (
+                            "Count extracted; parent drawing length unit is doubtful/unconfirmed (verify scale context)."
+                            if cad_doubtful
+                            else "Deterministic INSERT block count grouped by (block name + real layer)"
+                        )
                     ),
                     "verification_status": (
-                        "Extracted-Needs-Check" if cad_doubtful else "Extracted-Verified"
+                        "Extracted-Needs-Check" if (cad_doubtful or layer_unrecorded) else "Extracted-Verified"
                     ),
                     "rate_source_kind": None,
                     "rate_source_ref": None,
@@ -883,7 +967,10 @@ def _extract_quantities_from_cad_and_bim(
                 }
             )
 
-    return rows, expected_coverage
+        bim_added = len(rows)
+        total_candidates += bim_added
+
+    return rows, expected_coverage, total_candidates, omitted_notes
 
 
 def run_boq_checks_on_sheet(
@@ -1163,6 +1250,23 @@ def run_boq_checks_on_sheet(
                     )
                 )
 
+    # 5. Surface explicit "N of M" note in checks when any extracted items/groups were omitted during selection/filtering
+    sheet_meta = sheet.source_metadata_json if isinstance(sheet.source_metadata_json, dict) else {}
+    om_sum = sheet_meta.get("omission_summary")
+    if isinstance(om_sum, dict) and int(om_sum.get("omitted_count") or 0) > 0:
+        issues.append(
+            BoqCheckIssue(
+                issue_id=next_chk_id(),
+                check_type="missing_item",
+                severity="info",
+                message=str(
+                    om_sum.get("note")
+                    or f"Included {om_sum.get('included_count')} of {om_sum.get('total_count')} extracted items/groups."
+                ),
+                recommended_action="Review omitted non-area-bearing layers, annotation lines, or unused block definitions.",
+            )
+        )
+
     flagged_list = [
         {
             "item_id": entry["item_id"],
@@ -1242,6 +1346,7 @@ def _to_deliverable_out(row: Deliverable) -> DeliverableOut:
         project_id=row.project_id,
         report_id=row.report_id,
         boq_id=row.boq_id,
+        drawing_id=row.drawing_id,
         task_id=row.task_id,
         file_id=row.file_id,
         title=row.title,
@@ -1343,6 +1448,8 @@ def _gather_rows_from_files(
     expected_cov: list[dict[str, str]] = []
     used_file_ids: list[str] = []
     skipped_notes: list[str] = []
+    total_candidates = 0
+    omission_reasons: list[str] = []
 
     for pf in resolved_files:
         ext_lower = (pf.extension or Path(pf.original_filename).suffix).lower()
@@ -1378,7 +1485,15 @@ def _gather_rows_from_files(
 
         payload = latest_ext.payload_json if isinstance(latest_ext.payload_json, dict) else {}
         if is_cad_bim:
-            cad_rows, cov = _extract_quantities_from_cad_and_bim(pf, latest_ext, is_ar=is_ar)
+            cad_rows, cov, file_total_cand, file_omitted = _extract_quantities_from_cad_and_bim(
+                pf,
+                latest_ext,
+                settings=settings,
+                project=project,
+                is_ar=is_ar,
+            )
+            total_candidates += file_total_cand
+            omission_reasons.extend(file_omitted)
             if cad_rows:
                 used_file_ids.append(pf.id)
                 collected_rows.extend(cad_rows)
@@ -1397,20 +1512,21 @@ def _gather_rows_from_files(
                     )
                     bad_nat, _ = assess_native_pdf_text_reliability(tbl_text)
                     if bad_nat:
-                        skipped_notes.append(
-                            f"Skipped unreliable native table in '{pf.original_filename}' ({item.get('page_or_sheet')})."
-                        )
+                        msg = f"Skipped unreliable native table in '{pf.original_filename}' ({item.get('page_or_sheet')})."
+                        skipped_notes.append(msg)
+                        omission_reasons.append(msg)
+                        total_candidates += 1
                         continue
-                    imported_for_file.extend(
-                        _parse_boq_rows_from_table(
-                            item["raw_values"],
-                            source_file=pf.original_filename,
-                            file_id=pf.id,
-                            extraction_id=latest_ext.id,
-                            sheet_or_page=str(item.get("page_or_sheet") or "sheet"),
-                            is_ocr=bool(item.get("extraction_method") == "ocr"),
-                        )
+                    parsed_tbl = _parse_boq_rows_from_table(
+                        item["raw_values"],
+                        source_file=pf.original_filename,
+                        file_id=pf.id,
+                        extraction_id=latest_ext.id,
+                        sheet_or_page=str(item.get("page_or_sheet") or "sheet"),
+                        is_ocr=bool(item.get("extraction_method") == "ocr"),
                     )
+                    total_candidates += len(parsed_tbl)
+                    imported_for_file.extend(parsed_tbl)
             # PDF fallback when tables lacked grid borders
             if not imported_for_file and ext_lower == ".pdf":
                 for item in ext_items:
@@ -1425,25 +1541,39 @@ def _gather_rows_from_files(
                     bad_txt, _ = assess_native_pdf_text_reliability(raw_txt)
                     if bad_txt:
                         continue
-                    imported_for_file.extend(
-                        _parse_boq_rows_from_pdf_text(
-                            raw_txt,
-                            source_file=pf.original_filename,
-                            file_id=pf.id,
-                            extraction_id=latest_ext.id,
-                            page_label=str(item.get("page_or_sheet") or "page"),
-                            is_ocr=bool(
-                                item.get("item_type") == "ocr_text"
-                                or item.get("extraction_method") == "ocr"
-                                or item.get("ocr_low_confidence")
-                            ),
-                        )
+                    parsed_pdf = _parse_boq_rows_from_pdf_text(
+                        raw_txt,
+                        source_file=pf.original_filename,
+                        file_id=pf.id,
+                        extraction_id=latest_ext.id,
+                        page_label=str(item.get("page_or_sheet") or "page"),
+                        is_ocr=bool(
+                            item.get("item_type") == "ocr_text"
+                            or item.get("extraction_method") == "ocr"
+                            or item.get("ocr_low_confidence")
+                        ),
                     )
+                    total_candidates += len(parsed_pdf)
+                    imported_for_file.extend(parsed_pdf)
             if imported_for_file:
                 used_file_ids.append(pf.id)
                 collected_rows.extend(imported_for_file)
 
-    return collected_rows, expected_cov, used_file_ids, skipped_notes
+    included_count = len(collected_rows)
+    effective_total = max(total_candidates, included_count)
+    omitted_count = max(0, effective_total - included_count)
+    omission_summary: dict[str, Any] = {
+        "included_count": included_count,
+        "total_count": effective_total,
+        "omitted_count": omitted_count,
+        "details": omission_reasons,
+        "note": (
+            f"Included {included_count} of {effective_total} extracted items/groups ({omitted_count} omitted: {'; '.join(omission_reasons)})"
+            if omitted_count > 0
+            else f"Included {included_count} of {effective_total} extracted items/groups (none omitted)"
+        ),
+    }
+    return collected_rows, expected_cov, used_file_ids, skipped_notes, omission_summary
 
 
 def create_boq_sheet(
@@ -1469,7 +1599,7 @@ def create_boq_sheet(
         else f"Bill of Quantities (BOQ) — {project.code}"
     )
 
-    extracted_rows, expected_cov, used_files, skipped_notes = _gather_rows_from_files(
+    extracted_rows, expected_cov, used_files, skipped_notes, omission_summary = _gather_rows_from_files(
         db,
         settings,
         project=project,
@@ -1495,6 +1625,7 @@ def create_boq_sheet(
             "imported_file_ids": used_files,
             "expected_coverage": expected_cov,
             "skipped_notes": skipped_notes,
+            "omission_summary": omission_summary,
         },
     )
     db.add(sheet)
@@ -1627,7 +1758,7 @@ def import_extractions_into_boq(
     if sheet is None:
         raise BoqNotFoundError(f"BOQ sheet '{boq_id}' was not found.")
 
-    extracted_rows, expected_cov, used_files, skipped_notes = _gather_rows_from_files(
+    extracted_rows, expected_cov, used_files, skipped_notes, omission_summary = _gather_rows_from_files(
         db,
         settings,
         project=sheet.project,
@@ -1669,6 +1800,7 @@ def import_extractions_into_boq(
         meta["expected_coverage"] = list(prev_cov.values())
         meta["imported_file_ids"] = list(dict.fromkeys(list(meta.get("imported_file_ids") or []) + used_files))
     meta["skipped_notes"] = skipped_notes
+    meta["omission_summary"] = omission_summary
     sheet.source_metadata_json = meta
 
     checks = run_boq_checks_on_sheet(
@@ -1817,7 +1949,7 @@ def update_boq_item(
     db.flush()
     checks = run_boq_checks_on_sheet(
         sheet,
-        list(sheet.items or []),
+        _fetch_sheet_items(db, sheet.id),
         expected_coverage=_load_expected_coverage_for_sheet(db, sheet),
     )
     _persist_checks_snapshot(sheet, checks)
@@ -1882,7 +2014,7 @@ def export_boq_deliverables(
     if sheet is None:
         raise BoqNotFoundError(f"BOQ sheet '{boq_id}' was not found.")
 
-    items = list(sheet.items or [])
+    items = _fetch_sheet_items(db, sheet.id)
     checks = run_boq_checks_on_sheet(
         sheet,
         items,
@@ -1905,6 +2037,10 @@ def export_boq_deliverables(
     if path_xlsx.exists() or path_csv.exists():
         raise FileExistsError(f"Refusing to overwrite existing BOQ export version v{next_export_ver} in 06_BOQ.")
 
+    sheet_meta = sheet.source_metadata_json if isinstance(sheet.source_metadata_json, dict) else {}
+    om_sum = sheet_meta.get("omission_summary") if isinstance(sheet_meta.get("omission_summary"), dict) else {}
+    omission_note = str(om_sum.get("note")) if om_sum.get("omitted_count") else None
+
     row_dicts = [_to_item_out(it).model_dump() for it in items]
     generate_boq_xlsx(
         path_xlsx,
@@ -1919,6 +2055,7 @@ def export_boq_deliverables(
         items=row_dicts,
         checks=checks,
         include_checks_sheet=opts.include_checks_sheet,
+        omission_note=omission_note,
     )
     generate_boq_csv(
         path_csv,

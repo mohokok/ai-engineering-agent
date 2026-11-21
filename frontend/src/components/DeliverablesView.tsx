@@ -831,6 +831,7 @@ export function DeliverablesView({
               <span>{copy.folderFilterLabel}:</span>
               <select value={folderFilter} onChange={(e) => setFolderFilter(e.target.value)}>
                 <option value="">{copy.folderAll}</option>
+                <option value="05_Design_Drawings">05_Design_Drawings</option>
                 <option value="06_BOQ">06_BOQ</option>
                 <option value="08_Reports">08_Reports</option>
                 <option value="10_Final_Deliverables">10_Final_Deliverables</option>

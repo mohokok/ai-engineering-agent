@@ -31,6 +31,7 @@ EXPECTED_TABLES = {
     "review_reports",
     "boq_sheets",
     "boq_items",
+    "parametric_drawings",
     "research_runs",
     "research_sources",
     "issues",
