@@ -1462,6 +1462,53 @@ describe("App Step 08 Controlled Internet Research UI (RTL/LTR)", () => {
     expect(htmlAr).toContain("غير مصنّف");
     expect(htmlAr).not.toContain("#99");
 
+    // Step 08B UI checks: explicit Link-to-Project owner-file hint & Last modified (HTTP) relabeling
+    expect(htmlEn).toContain("select a project to show owner-file picker");
+    expect(htmlEn).toContain("Owner-file picker appears only after a project is selected");
+    expect(htmlAr).toContain("يظهر منتقي الملفات فقط بعد اختيار المشروع");
+
+    const httpLastModOnlyDetail: ResearchRunDetailOut = {
+      ...sampleDetail,
+      sources: [
+        {
+          id: "src-http-lm",
+          research_run_id: sampleSummary.id,
+          project_id: null,
+          task_id: null,
+          source_name: "Commercial Panel Article",
+          url: "https://ecalpro.com/panel-guide",
+          publication_date: "Last modified (HTTP): Wed, 18 Nov 2026 09:00:00 GMT",
+          publication_date_kind: "http_last_modified",
+          access_date: "2026-11-21T10:00:00Z",
+          query_text: sampleSummary.query,
+          extracted_info: "Summary text",
+          reliability_rating: "unrated",
+          source_type: "generation_artifact_downgraded",
+          source_priority_tier: "unverified",
+          priority_rank: 99,
+          tier_is_provider_claim: true,
+          tier_claim_label: "URL/domain heuristic claim - unverified (unverified)",
+          access_status: "accessible",
+          reviewed: true,
+          http_status: 200,
+          failure_reason: null,
+          untrusted_neutralized: true,
+          created_at: "2026-11-21T10:00:00Z",
+        },
+      ],
+    };
+    const httpLmEnHtml = renderToStaticMarkup(
+      <ResearchView lang="en" initialRuns={[sampleSummary]} initialDetail={httpLastModOnlyDetail} />
+    );
+    expect(httpLmEnHtml).toContain("<th>Last modified (HTTP)</th>");
+    expect(httpLmEnHtml).not.toContain("<th>Published</th>");
+    expect(httpLmEnHtml).toContain("Last modified (HTTP): Wed, 18 Nov 2026 09:00:00 GMT");
+
+    const httpLmArHtml = renderToStaticMarkup(
+      <ResearchView lang="ar" initialRuns={[sampleSummary]} initialDetail={httpLastModOnlyDetail} />
+    );
+    expect(httpLmArHtml).toContain("<th>آخر تعديل (HTTP)</th>");
+
     // Verify Arabic translation of Step 06/07 status lines & Format Support Matrix
     const matrixAr = renderToStaticMarkup(
       <ProjectFilesPanel

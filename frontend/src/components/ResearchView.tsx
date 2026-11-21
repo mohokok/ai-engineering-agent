@@ -30,6 +30,8 @@ interface ResearchCopy {
   allProjectsOption: string;
   ownerFilesLabel: string;
   ownerFilesHint: string;
+  ownerFilesSelectProjectHint: string;
+  ownerFilesEmptyInProjectHint: string;
   ownerTierLabel: string;
   queryLabel: string;
   queryPlaceholder: string;
@@ -64,6 +66,7 @@ interface ResearchCopy {
   colPriority: string;
   colSourceName: string;
   colPubDate: string;
+  colLastModifiedHttp: string;
   colAccessDate: string;
   colExtracted: string;
   colRating: string;
@@ -163,10 +166,14 @@ const COPY: Record<Lang, ResearchCopy> = {
     hint: "يبحث النظام في المصادر المصرّح بها أو يفحص الروابط والملفات المرفوعة مباشرةً، ولا يعتمد على مقتطفات محركات البحث مطلقاً.",
     policyBanner:
       "أولوية الموثوقية: (1) التشريعات واللوائح الرسمية ← (2) هيئات المواصفات القياسية ← (3) المنشورات الحكومية ← (4) وثائق الشركات المصنعة ← (5) الأوراق المحكمة ← (6) المراجع الموثوقة. كافة الصفحات المجلوبة بيانات غير موثوقة وتُسجَّل المستندات المتعذرة كغير مراجَعة.",
-    projectLabel: "ربط بمشروع (اختياري)",
-    allProjectsOption: "بحث عام (بدون ربط بمشروع محدد)",
-    ownerFilesLabel: "أو إرفاق ملفات مرفوعة مسبقاً من المشروع كمصدر مُقدَّم من المالك",
+    projectLabel: "ربط بمشروع (اختر مشروعاً لإظهار منتقي ملفات المالك)",
+    allProjectsOption: "بحث عام — بدون مشروع (اختر مشروعاً لإرفاق ملفات المالك)",
+    ownerFilesLabel: "إرفاق ملفات مرفوعة مسبقاً من المشروع كمصدر مُقدَّم من المالك (اختياري)",
     ownerFilesHint: "مفيد للمستندات المحمية بـ HTTP 403/Paywall: نزّلها ثم ارفعها في «المشاريع والملفات» واخترها هنا.",
+    ownerFilesSelectProjectHint:
+      "لإرفاق ملفات مرفوعة من المالك: اختر مشروعاً من قائمة «ربط بمشروع» أعلاه — يظهر منتقي الملفات فقط بعد اختيار المشروع.",
+    ownerFilesEmptyInProjectHint:
+      "لا توجد ملفات مرفوعة في هذا المشروع بعد — ارفع الملف في «المشاريع والملفات» ليظهر هنا.",
     ownerTierLabel: "تصنيف أولوية الملفات المرفقة",
     queryLabel: "موضوع أو سؤال البحث الهندسي *",
     queryPlaceholder: "مثال: متطلبات التهوية لغرف العمليات NFPA 99 أو لائحة السلامة المهنية",
@@ -200,7 +207,8 @@ const COPY: Record<Lang, ResearchCopy> = {
     sourceLogHeading: "جدول سجل المصادر الكامل",
     colPriority: "تصنيف الأولوية",
     colSourceName: "المصدر والرابط",
-    colPubDate: "تاريخ النشر",
+    colPubDate: "تاريخ النشر / التعديل",
+    colLastModifiedHttp: "آخر تعديل (HTTP)",
     colAccessDate: "تاريخ الوصول",
     colExtracted: "المعلومات المستخلصة",
     colRating: "تقييم الموثوقية",
@@ -222,10 +230,14 @@ const COPY: Record<Lang, ResearchCopy> = {
     hint: "Executes web search and directly fetches full target pages/PDFs or reads owner-uploaded files. Search-engine snippets are discarded and never treated as evidence.",
     policyBanner:
       "Priority Order: (1) Official Regulations → (2) Standards Bodies → (3) Government → (4) Manufacturers → (5) Peer-Reviewed → (6) Reputable References. All fetched pages are isolated as untrusted data; inaccessible documents are marked UNREVIEWED.",
-    projectLabel: "Link to Project (optional)",
-    allProjectsOption: "General / Unlinked Research",
+    projectLabel: "Link to Project (select a project to show owner-file picker)",
+    allProjectsOption: "General / Unlinked Research (select a project to attach uploaded files)",
     ownerFilesLabel: "Attach Uploaded Project Files as Owner-Provided Sources (optional)",
     ownerFilesHint: "For HTTP 403/paywalled standards: download the document yourself and upload it in Projects & Files, then attach it here.",
+    ownerFilesSelectProjectHint:
+      "Owner-file picker appears only after a project is selected in \"Link to Project\" above.",
+    ownerFilesEmptyInProjectHint:
+      "No uploaded files in the selected project yet — upload files in Projects & Files to attach them here.",
     ownerTierLabel: "Priority Tier for Attached Owner Files",
     queryLabel: "Engineering Research Query *",
     queryPlaceholder: "e.g., Operating theatre ACH ventilation NFPA 99 ASHRAE 170",
@@ -259,7 +271,8 @@ const COPY: Record<Lang, ResearchCopy> = {
     sourceLogHeading: "Complete Persisted Source Log",
     colPriority: "Priority Tier",
     colSourceName: "Source Name & URL",
-    colPubDate: "Published",
+    colPubDate: "Published / Date",
+    colLastModifiedHttp: "Last modified (HTTP)",
     colAccessDate: "Accessed",
     colExtracted: "Extracted Info",
     colRating: "Reliability Rating",
@@ -531,47 +544,57 @@ export function ResearchView({
             />
           </label>
 
-          {projectFiles.length > 0 && (
-            <div className="status-box" style={{ marginTop: 0 }}>
-              <div style={{ fontWeight: 600, marginBottom: "0.35rem" }}>{copy.ownerFilesLabel}</div>
-              <p className="muted-hint" style={{ marginTop: 0, marginBottom: "0.5rem" }}>
-                {copy.ownerFilesHint}
+          <div className="status-box" style={{ marginTop: 0 }}>
+            <div style={{ fontWeight: 600, marginBottom: "0.35rem" }}>{copy.ownerFilesLabel}</div>
+            {!projectId ? (
+              <p className="muted-hint" style={{ margin: 0 }}>
+                {copy.ownerFilesSelectProjectHint}
               </p>
-              <label style={{ display: "inline-flex", gap: "0.5rem", alignItems: "center", marginBottom: "0.5rem" }}>
-                <span>{copy.ownerTierLabel}:</span>
-                <select
-                  value={ownerFileTier}
-                  onChange={(e) => setOwnerFileTier(e.target.value as SourcePriorityTier)}
-                >
-                  <option value="official_regulations">{TIER_LABELS[lang].official_regulations}</option>
-                  <option value="standards_bodies">{TIER_LABELS[lang].standards_bodies}</option>
-                  <option value="government">{TIER_LABELS[lang].government}</option>
-                  <option value="manufacturer">{TIER_LABELS[lang].manufacturer}</option>
-                  <option value="peer_reviewed">{TIER_LABELS[lang].peer_reviewed}</option>
-                  <option value="reputable">{TIER_LABELS[lang].reputable}</option>
-                </select>
-              </label>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem" }}>
-                {projectFiles.map((f) => {
-                  const checked = selectedFileIds.includes(f.id);
-                  return (
-                    <label key={f.id} style={{ display: "inline-flex", gap: "0.35rem", alignItems: "center" }}>
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={() =>
-                          setSelectedFileIds((prev) =>
-                            checked ? prev.filter((id) => id !== f.id) : [...prev, f.id]
-                          )
-                        }
-                      />
-                      <span dir="auto">{f.original_filename}</span>
-                    </label>
-                  );
-                })}
-              </div>
-            </div>
-          )}
+            ) : projectFiles.length === 0 ? (
+              <p className="muted-hint" style={{ margin: 0 }}>
+                {copy.ownerFilesEmptyInProjectHint}
+              </p>
+            ) : (
+              <>
+                <p className="muted-hint" style={{ marginTop: 0, marginBottom: "0.5rem" }}>
+                  {copy.ownerFilesHint}
+                </p>
+                <label style={{ display: "inline-flex", gap: "0.5rem", alignItems: "center", marginBottom: "0.5rem" }}>
+                  <span>{copy.ownerTierLabel}:</span>
+                  <select
+                    value={ownerFileTier}
+                    onChange={(e) => setOwnerFileTier(e.target.value as SourcePriorityTier)}
+                  >
+                    <option value="official_regulations">{TIER_LABELS[lang].official_regulations}</option>
+                    <option value="standards_bodies">{TIER_LABELS[lang].standards_bodies}</option>
+                    <option value="government">{TIER_LABELS[lang].government}</option>
+                    <option value="manufacturer">{TIER_LABELS[lang].manufacturer}</option>
+                    <option value="peer_reviewed">{TIER_LABELS[lang].peer_reviewed}</option>
+                    <option value="reputable">{TIER_LABELS[lang].reputable}</option>
+                  </select>
+                </label>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem" }}>
+                  {projectFiles.map((f) => {
+                    const checked = selectedFileIds.includes(f.id);
+                    return (
+                      <label key={f.id} style={{ display: "inline-flex", gap: "0.35rem", alignItems: "center" }}>
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() =>
+                            setSelectedFileIds((prev) =>
+                              checked ? prev.filter((id) => id !== f.id) : [...prev, f.id]
+                            )
+                          }
+                        />
+                        <span dir="auto">{f.original_filename}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+          </div>
 
           <div style={{ display: "flex", flexWrap: "wrap", gap: "1rem", alignItems: "center" }}>
             <label style={{ display: "flex", alignItems: "center", gap: "0.45rem" }}>
@@ -808,14 +831,22 @@ export function ResearchView({
             )}
 
           <h5 className="folders-title">{copy.sourceLogHeading}</h5>
-          <div className="table-wrap">
-            <table className="files-table">
-              <thead>
-                <tr>
-                  <th>{copy.colPriority}</th>
-                  <th>{copy.colSourceName}</th>
-                  <th>{copy.colPubDate}</th>
-                  <th>{copy.colAccessDate}</th>
+          {(() => {
+            const hasRealPubDate = activeRun.sources.some(
+              (src) =>
+                Boolean(src.publication_date) &&
+                src.publication_date_kind !== "http_last_modified" &&
+                !String(src.publication_date).startsWith("Last modified (HTTP):")
+            );
+            return (
+              <div className="table-wrap">
+                <table className="files-table">
+                  <thead>
+                    <tr>
+                      <th>{copy.colPriority}</th>
+                      <th>{copy.colSourceName}</th>
+                      <th>{hasRealPubDate ? copy.colPubDate : copy.colLastModifiedHttp}</th>
+                      <th>{copy.colAccessDate}</th>
                   <th>{copy.colExtracted}</th>
                   <th>{copy.colRating}</th>
                   <th>{copy.colReviewState}</th>
@@ -853,7 +884,14 @@ export function ResearchView({
                         {src.url}
                       </a>
                     </td>
-                    <td dir="ltr">{src.publication_date || "—"}</td>
+                    <td dir="ltr">
+                      {src.publication_date
+                        ? src.publication_date_kind === "http_last_modified" &&
+                          !src.publication_date.startsWith("Last modified (HTTP):")
+                          ? `Last modified (HTTP): ${src.publication_date}`
+                          : src.publication_date
+                        : "—"}
+                    </td>
                     <td dir="ltr">{formatDate(src.access_date)}</td>
                     <td dir="auto">
                       <div style={{ maxHeight: "9rem", overflowY: "auto" }}>
@@ -881,6 +919,8 @@ export function ResearchView({
               </tbody>
             </table>
           </div>
+            );
+          })()}
         </section>
       )}
     </div>
