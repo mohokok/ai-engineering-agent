@@ -599,6 +599,8 @@ export interface ResearchSynthesisPayload {
   suggested_classification: ProjectClassification | string;
 }
 
+export type PublicationDateKind = "published" | "http_last_modified" | "unknown";
+
 export interface ResearchSourceOut {
   id: string;
   research_run_id: string | null;
@@ -607,6 +609,7 @@ export interface ResearchSourceOut {
   source_name: string;
   url: string;
   publication_date: string | null;
+  publication_date_kind?: PublicationDateKind;
   access_date: string;
   query_text: string | null;
   extracted_info: string | null;

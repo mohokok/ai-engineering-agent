@@ -106,17 +106,26 @@ _REGULATION_HOST_MARKERS = (
     "legislation.gov",
     "eur-lex.europa.eu",
     "federalregister.gov",
+    "ecfr.gov",
     "law.cornell.edu",
+    "govinfo.gov",
+    "osha.gov",
 )
 _STANDARDS_HOSTS = (
     "iso.org",
     "iec.ch",
+    "webstore.iec.ch",
     "nfpa.org",
     "ashrae.org",
     "astm.org",
     "concrete.org",
     "bsigroup.com",
+    "ieee.org",
+    "standards.ieee.org",
     "cen.eu",
+    "cenelec.eu",
+    "etsi.org",
+    "din.de",
     "who.int",
     "fgiguidelines.org",
     "iccsafe.org",
@@ -126,11 +135,24 @@ _STANDARDS_HOSTS = (
     "cibse.org",
     "istructe.org",
     "eurocodes.jrc.ec.europa.eu",
+    "iaea.org",
+    "itu.int",
+    "asme.org",
+    "aami.org",
+)
+_GOVERNMENT_ALLOWLIST_HOSTS = (
+    "europa.eu",
+    "un.org",
+    "hse.gov.uk",
+    "cdc.gov",
+    "nist.gov",
+    "nih.gov",
 )
 _MANUFACTURER_HOSTS = (
     "schneider-electric.com",
     "abb.com",
     "siemens.com",
+    "eaton.com",
     "caterpillar.com",
     "grundfos.com",
     "daikin.com",
@@ -292,8 +314,46 @@ _DATE_META_NAMES = (
     "dc.date.issued",
     "date",
     "dcterms.created",
-    "last-modified",
 )
+
+HTTP_LAST_MODIFIED_PREFIX = "Last modified (HTTP):"
+UNVERIFIED_HEURISTIC_LABEL = "URL/domain heuristic claim - unverified"
+
+_CODE_FENCE_ARTIFACT_RE = re.compile(r"```[a-zA-Z0-9_-]*")
+_CLUSTERED_CITATIONS_RE = re.compile(r"(?:\[\d{1,3}\]\s*){2,}")
+_INLINE_CITATION_RE = re.compile(r"(?<!\[)\[(\d{1,3})\](?!\])")
+_REFERENCES_HEADING_RE = re.compile(
+    r"(?:^|\b)(?:references|bibliography|works\s+cited|المراجع|قائمة\s+المصادر)\b",
+    re.IGNORECASE,
+)
+_VENDOR_PRODUCT_URL_RE = re.compile(
+    r"/(?:product|products|shop|store|catalog|catalogue|brochure|switchgear|panel|distribution-board|quote|solution)s?(?:/|$)",
+    re.IGNORECASE,
+)
+_VENDOR_PRODUCT_TEXT_CUES = (
+    "request a quote",
+    "get a quote",
+    "add to cart",
+    "buy now",
+    "contact sales",
+    "inquire now",
+    "leading manufacturer",
+    "panel manufacturer",
+    "switchgear supplier",
+    "our products",
+    "product catalogue",
+    "product catalog",
+    "order now",
+)
+
+
+def _format_http_last_modified(raw_last_modified: str | None) -> str | None:
+    cleaned = " ".join((raw_last_modified or "").split()).strip()
+    if not cleaned:
+        return None
+    if cleaned.lower().startswith(HTTP_LAST_MODIFIED_PREFIX.lower()):
+        return cleaned[:64]
+    return f"{HTTP_LAST_MODIFIED_PREFIX} {cleaned}"[:64]
 
 
 @dataclass(frozen=True)
@@ -308,7 +368,7 @@ class SearchCandidate:
     source_name_hint: str | None = None
     work_type: str | None = None
     provider_name: str | None = None
-    tier_claim_label: str = "Domain/URL heuristic (provider/automated claim — unverified)"
+    tier_claim_label: str = UNVERIFIED_HEURISTIC_LABEL
 
 
 @dataclass
@@ -331,7 +391,7 @@ class FetchedSourceRecord:
     excerpt: str | None
     injection_signals: list[str]
     tier_is_provider_claim: bool = True
-    tier_claim_label: str = "Domain/URL heuristic (provider/automated claim — unverified)"
+    tier_claim_label: str = UNVERIFIED_HEURISTIC_LABEL
 
 
 def search_key_account_name(provider_id: str) -> str:
@@ -416,66 +476,91 @@ def _host_matches(host: str, domains: tuple[str, ...]) -> bool:
     return any(host == d or host.endswith(f".{d}") for d in domains)
 
 
+def _is_official_government_host(host: str) -> bool:
+    return (
+        host.endswith(".gov")
+        or ".gov." in host
+        or host.endswith(".gob.es")
+        or host.endswith(".gouv.fr")
+        or _host_matches(host, _GOVERNMENT_ALLOWLIST_HOSTS)
+    )
+
+
 def classify_source_priority(
     url: str,
     *,
     title: str = "",
     hint_tier: SourcePriorityTier | None = None,
+    allow_provider_peer_hint: bool = False,
 ) -> tuple[SourcePriorityTier, int, ReliabilityRating, str]:
-    """Classify source into the Plan's 6-tier reliability hierarchy deterministically."""
+    """Classify source strictly by explicit domain allowlists (never keyword/title heuristics)."""
+    del title  # Keyword matches in titles/URLs must never inflate tier or reliability.
     if hint_tier == "unverified":
         return "unverified", 99, "unrated", "unverified"
-    if hint_tier and hint_tier in SOURCE_PRIORITY_SPEC:
-        rank, rating, stype = SOURCE_PRIORITY_SPEC[hint_tier]
-        return hint_tier, rank, rating, stype
 
     parsed = urlparse(url)
     host = (parsed.hostname or "").lower()
-    path_lower = (parsed.path or "").lower()
-    title_lower = (title or "").lower()
 
-    if (
-        _host_matches(host, _REGULATION_HOST_MARKERS)
-        or any(tok in path_lower for tok in ("/legislation", "/statute", "/regulation", "/decree"))
-        or any(
-            tok in title_lower
-            for tok in (
-                "official gazette",
-                "building regulation",
-                "building regulations",
-                "decree",
-                "statute",
-                "اللائحة التنفيذية",
-                "قانون البناء",
-            )
-        )
-    ):
+    if _host_matches(host, _REGULATION_HOST_MARKERS):
         tier: SourcePriorityTier = "official_regulations"
-    elif _host_matches(host, _STANDARDS_HOSTS) or any(
-        tok in title_lower for tok in ("standard specification", "eurocode", "nfpa ", "ashrae ", "iso ", "iec ", "aci 318")
-    ):
+    elif host == "ieeexplore.ieee.org":
+        tier = "peer_reviewed"
+    elif _host_matches(host, _STANDARDS_HOSTS):
         tier = "standards_bodies"
-    elif (
-        host.endswith(".gov")
-        or ".gov." in host
-        or host.endswith(".gob.es")
-        or host.endswith(".gouv.fr")
-        or host.endswith(".edu")
-        or ".edu." in host
-        or _host_matches(host, ("europa.eu", "un.org"))
-    ):
+    elif _is_official_government_host(host):
         tier = "government"
-    elif _host_matches(host, _MANUFACTURER_HOSTS) or any(
-        tok in path_lower + " " + title_lower for tok in ("datasheet", "technical data sheet", "product catalogue", "catalog")
-    ):
+    elif _host_matches(host, _MANUFACTURER_HOSTS):
         tier = "manufacturer"
     elif _host_matches(host, _PEER_REVIEWED_HOSTS) or "doi.org/" in url.lower():
+        tier = "peer_reviewed"
+    elif allow_provider_peer_hint and hint_tier == "peer_reviewed":
         tier = "peer_reviewed"
     else:
         tier = "reputable"
 
     rank, rating, stype = SOURCE_PRIORITY_SPEC[tier]
     return tier, rank, rating, stype
+
+
+def detect_generation_artifacts(full_visible_text: str, clean_body_text: str) -> list[str]:
+    """Detect AI/LLM generation artifacts (markdown code fences, bare [n] citations without a reference list)."""
+    combined = f"{full_visible_text}\n{clean_body_text}".strip()
+    reasons: list[str] = []
+
+    if _CODE_FENCE_ARTIFACT_RE.search(combined):
+        reasons.append("literal markdown code fence in page content")
+
+    inline_nums = _INLINE_CITATION_RE.findall(clean_body_text)
+    has_clustered = bool(_CLUSTERED_CITATIONS_RE.search(clean_body_text))
+    if has_clustered or len(inline_nums) >= 2:
+        tail = clean_body_text[-max(400, len(clean_body_text) // 2) :]
+        has_ref_heading = bool(_REFERENCES_HEADING_RE.search(tail))
+        ref_entries = re.findall(
+            r"(?:^|\n|\s)(?:\[\d{1,3}\]|\d{1,3}\.)\s+[A-Za-z0-9\u0600-\u06FF\"(].{15,}",
+            tail,
+        )
+        # Distinguish genuine endnotes/references from bare [1][3][5] clusters inside prose
+        if not (has_ref_heading and len(ref_entries) >= 2):
+            reasons.append("bare [n] citation markers without a reference list")
+
+    return reasons
+
+
+def is_vendor_product_page(url: str, clean_body_text: str, title: str = "") -> bool:
+    """Detect commercial vendor/product pages that must remain at most low_reputable_reference."""
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if (
+        _host_matches(host, _REGULATION_HOST_MARKERS)
+        or _host_matches(host, _STANDARDS_HOSTS)
+        or _is_official_government_host(host)
+        or _host_matches(host, _PEER_REVIEWED_HOSTS)
+    ):
+        return False
+    if _VENDOR_PRODUCT_URL_RE.search(parsed.path or ""):
+        return True
+    sample_lower = f"{title}\n{clean_body_text[:2500]}".lower()
+    return any(cue in sample_lower for cue in _VENDOR_PRODUCT_TEXT_CUES)
 
 
 def _unwrap_duckduckgo_url(raw_href: str) -> str:
@@ -533,7 +618,7 @@ def _search_duckduckgo_lite(
                 priority_rank=rank,
                 source_name_hint=urlparse(target).hostname or target,
                 provider_name="duckduckgo_lite",
-                tier_claim_label="Claimed from URL/domain heuristic (unverified)",
+                tier_claim_label=f"{UNVERIFIED_HEURISTIC_LABEL} ({tier})",
             )
         )
         if len(candidates) >= max_results:
@@ -578,8 +663,13 @@ def _search_crossref(
             claimed_hint = "reputable"
         else:
             claimed_hint = "unverified"
-        tier, rank, _, _ = classify_source_priority(url, title=title, hint_tier=claimed_hint)
-        claim_label = f"Provider claim (crossref: {work_type}) — unverified until full text reviewed"
+        tier, rank, _, _ = classify_source_priority(
+            url,
+            title=title,
+            hint_tier=claimed_hint,
+            allow_provider_peer_hint=(claimed_hint == "peer_reviewed"),
+        )
+        claim_label = f"Provider claim (crossref: {work_type}) — {UNVERIFIED_HEURISTIC_LABEL}"
         candidates.append(
             SearchCandidate(
                 url=url,
@@ -651,7 +741,7 @@ def _search_with_key_provider(
                 priority_rank=rank,
                 source_name_hint=urlparse(cleaned).hostname or cleaned,
                 provider_name=provider_name,
-                tier_claim_label=f"Provider claim ({provider_name}) + URL heuristic — unverified",
+                tier_claim_label=f"{UNVERIFIED_HEURISTIC_LABEL} ({provider_name}: {tier})",
             )
         )
     return candidates
@@ -745,7 +835,7 @@ def _extract_html_metadata_and_text(
             except Exception:
                 continue
     if not pub_date and last_modified:
-        pub_date = last_modified.strip()[:64]
+        pub_date = _format_http_last_modified(last_modified)
 
     # Strip active/hidden tags and HTML comments before reading visible text
     for tag in ("script", "style", "noscript", "template", "iframe", "svg"):
@@ -835,7 +925,7 @@ def _extract_pdf_metadata_and_text(
         elif raw_date:
             pub_date = raw_date[:64]
         elif last_modified:
-            pub_date = last_modified.strip()[:64]
+            pub_date = _format_http_last_modified(last_modified)
         chunks: list[str] = []
         total_len = 0
         for pno, page in enumerate(doc, start=1):
@@ -1033,6 +1123,8 @@ def extract_query_terms(query: str) -> list[str]:
 def _term_matches_body(term: str, body_lower: str) -> bool:
     if re.search(rf"(?<!\w){re.escape(term)}(?!\w)", body_lower):
         return True
+    if any(ch.isdigit() for ch in term) and len(term) >= 3 and term in body_lower:
+        return True
     if any("\u0600" <= ch <= "\u06ff" for ch in term) and term.startswith("ال") and len(term) >= 4:
         stripped_ar = term[2:]
         if re.search(rf"(?<!\w)(?:ال)?{re.escape(stripped_ar)}", body_lower):
@@ -1126,13 +1218,16 @@ def fetch_page_evidence(
     """Fetch a single URL directly, apply content-quality & relevance gates, and classify reviewed/unreviewed."""
     allow_private = http_transport is not None
     default_tier, default_rank, _, default_stype = classify_source_priority(
-        url, title=candidate_title, hint_tier=hint_tier
+        url,
+        title=candidate_title,
+        hint_tier=hint_tier,
+        allow_provider_peer_hint=(search_provider == "crossref" and work_type in {"journal-article", "proceedings-article"}),
     )
     fallback_name = candidate_title.strip() or (urlparse(url).hostname or url)
     resolved_claim_label = tier_claim_label or (
-        f"Provider claim ({search_provider}: {work_type or default_tier}) — unverified"
+        f"Provider claim ({search_provider}: {work_type or default_tier}) — {UNVERIFIED_HEURISTIC_LABEL}"
         if search_provider
-        else f"URL/domain heuristic ({default_tier}) — unverified claim"
+        else f"{UNVERIFIED_HEURISTIC_LABEL} ({default_tier})"
     )
     base_stype = f"{search_provider}:{work_type}" if (search_provider == "crossref" and work_type) else default_stype
 
@@ -1256,7 +1351,7 @@ def fetch_page_evidence(
         elif "html" in content_type or "text/plain" in content_type or not content_type:
             if "text/plain" in content_type and not raw_bytes.lstrip().startswith(b"<"):
                 src_name = fallback_name[:512]
-                pub_date = last_mod.strip()[:64] if last_mod else pub_date_hint
+                pub_date = _format_http_last_modified(last_mod) if last_mod else pub_date_hint
                 text = " ".join(raw_bytes.decode("utf-8", errors="replace").split())[:MAX_EXTRACTED_CHARS]
                 full_visible_text = text
                 lower_raw = text.lower()
@@ -1347,7 +1442,10 @@ def fetch_page_evidence(
         )
 
     tier, rank, rating, stype = classify_source_priority(
-        final_url, title=src_name, hint_tier=hint_tier
+        final_url,
+        title=src_name,
+        hint_tier=hint_tier,
+        allow_provider_peer_hint=(search_provider == "crossref" and work_type in {"journal-article", "proceedings-article"}),
     )
     if is_pdf:
         stype = "pdf"
@@ -1374,6 +1472,34 @@ def fetch_page_evidence(
         else:
             rating = "unrated"
 
+    # Cap non-allowlisted vendor/commercial product pages at most low_reputable_reference
+    if (not is_pdf) and is_vendor_product_page(final_url, text, src_name):
+        if tier == "manufacturer" or rating in ("medium_manufacturer", "high_official_regulation", "high_standards_body", "high_government"):
+            tier = "reputable"
+            rank = 6
+            rating = "low_reputable_reference"
+        elif tier == "reputable" and rating not in ("low_reputable_reference", "unrated"):
+            rating = "low_reputable_reference"
+        if stype == "manufacturer":
+            stype = "vendor_product"
+
+    # Detect LLM/SEO generation artifacts (e.g. code fences, bare [1][3][5] without references) and downgrade
+    artifact_reasons = detect_generation_artifacts(full_visible_text, text)
+    if artifact_reasons:
+        tier = "unverified"
+        rank = 99
+        rating = "unrated"
+        stype = "generation_artifact_downgraded"
+        artifact_banner = (
+            f"[DOWNGRADED — generation artifacts detected ({'; '.join(artifact_reasons)}); "
+            f"rating=unrated] "
+        )
+        text = f"{artifact_banner}{text}"[:MAX_EXTRACTED_CHARS]
+
+    final_claim_label = resolved_claim_label
+    if UNVERIFIED_HEURISTIC_LABEL.lower() not in final_claim_label.lower():
+        final_claim_label = f"{final_claim_label} — {UNVERIFIED_HEURISTIC_LABEL}"
+
     signals = _detect_injection_signals(text)
     excerpt = text[:MAX_EXCERPT_CHARS].strip()
 
@@ -1394,5 +1520,5 @@ def fetch_page_evidence(
         excerpt=excerpt,
         injection_signals=signals,
         tier_is_provider_claim=True,
-        tier_claim_label=resolved_claim_label,
+        tier_claim_label=final_claim_label,
     )

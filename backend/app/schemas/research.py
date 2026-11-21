@@ -41,6 +41,7 @@ ReliabilityRating = Literal[
 ]
 
 AccessStatus = Literal["accessible", "owner_provided", "inaccessible", "not_relevant", "partial"]
+PublicationDateKind = Literal["published", "http_last_modified", "unknown"]
 
 
 class SearchProviderOptionOut(BaseModel):
@@ -182,6 +183,7 @@ class ResearchSourceOut(BaseModel):
     source_name: str
     url: str
     publication_date: str | None = None
+    publication_date_kind: PublicationDateKind = "unknown"
     access_date: datetime
     query_text: str | None = None
     extracted_info: str | None = None

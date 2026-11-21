@@ -28,6 +28,7 @@ from app.providers.base import (
 from app.providers.secrets import SecretStore
 from app.schemas.research import (
     OwnerProvidedSourceInput,
+    PublicationDateKind,
     ResearchCapabilitiesOut,
     ResearchRunDetailOut,
     ResearchRunRequest,
@@ -45,15 +46,21 @@ from app.services.provider_settings import (
     _summarize_usage,
     execute_provider_request,
 )
+import re
 from app.services.research_fetch import (
     FetchedSourceRecord,
+    HTTP_LAST_MODIFIED_PREFIX,
     MAX_EXCERPT_CHARS,
     MAX_EXTRACTED_CHARS,
     SOURCE_PRIORITY_SPEC,
     SearchCandidate,
+    UNVERIFIED_HEURISTIC_LABEL,
     _detect_injection_signals,
+    _term_matches_body,
+    classify_source_priority,
     extract_query_terms,
     fetch_page_evidence,
+    is_text_relevant_to_query,
     list_search_provider_options,
     search_web_candidates,
 )
@@ -100,8 +107,17 @@ def _tier_claim_provenance(row: ResearchSource) -> tuple[bool, str]:
         return False, "Owner-assigned priority tier"
     if row.source_type.startswith("crossref:"):
         work = row.source_type.split(":", 1)[1]
-        return True, f"Provider claim (crossref: {work}) — unverified metadata"
-    return True, f"URL/domain heuristic claim ({row.source_priority_tier}) — unverified"
+        return True, f"Provider claim (crossref: {work}) — {UNVERIFIED_HEURISTIC_LABEL}"
+    return True, f"{UNVERIFIED_HEURISTIC_LABEL} ({row.source_priority_tier})"
+
+
+def _publication_date_kind(publication_date: str | None) -> PublicationDateKind:
+    cleaned = (publication_date or "").strip()
+    if not cleaned:
+        return "unknown"
+    if cleaned.lower().startswith(HTTP_LAST_MODIFIED_PREFIX.lower()):
+        return "http_last_modified"
+    return "published"
 
 
 def _to_source_out(row: ResearchSource) -> ResearchSourceOut:
@@ -114,6 +130,7 @@ def _to_source_out(row: ResearchSource) -> ResearchSourceOut:
         source_name=row.source_name,
         url=row.url,
         publication_date=row.publication_date,
+        publication_date_kind=_publication_date_kind(row.publication_date),
         access_date=row.accessed_at,
         query_text=row.query_text,
         extracted_info=row.relevant_info,
@@ -441,14 +458,80 @@ def _deterministic_summary_without_ai(
     )
 
 
-def _load_owner_provided_source(
+_PAGE_LOC_RE = re.compile(r"^(?:page[:\s]*)(\d+)$", re.IGNORECASE)
+
+
+def _format_extraction_item_text(item: dict[str, Any]) -> str:
+    """Serialize text or structured table/formula cells from one FileExtraction item."""
+    if item.get("native_text_unreliable"):
+        return ""
+    if str(item.get("page_status") or "") in {"failed", "ocr_empty_or_blank"}:
+        return ""
+    parts: list[str] = []
+    txt = str(item.get("text") or "").strip()
+    if txt:
+        parts.append(txt)
+    raw_values = item.get("raw_values")
+    if isinstance(raw_values, list):
+        row_lines = [
+            " | ".join(str(cell).strip() for cell in row if cell is not None and str(cell).strip())
+            for row in raw_values
+            if isinstance(row, list)
+        ]
+        table_txt = "\n".join(line for line in row_lines if line)
+        if table_txt and table_txt not in txt:
+            loc_tag = str(item.get("location") or "").strip()
+            parts.append(f"[{loc_tag}] {table_txt}" if loc_tag else table_txt)
+    formula = str(item.get("formula") or "").strip()
+    cached = str(item.get("cached_value") or "").strip()
+    if formula or cached:
+        parts.append(f"formula={formula} value={cached}".strip())
+    return "\n".join(parts).strip()
+
+
+def _extract_centered_window(text: str, terms: list[str], max_chars: int) -> str:
+    """Return a bounded snippet centered on the densest query match when a single page is very long."""
+    if len(text) <= max_chars or not terms:
+        return text[:max_chars].strip()
+    lower = text.lower()
+    hit_positions: list[int] = []
+    for term in terms:
+        pos = lower.find(term)
+        if pos >= 0:
+            hit_positions.append(pos)
+    if not hit_positions:
+        return text[:max_chars].strip()
+    anchor = min(hit_positions)
+    start = max(0, anchor - (max_chars // 4))
+    end = min(len(text), start + max_chars)
+    if end == len(text):
+        start = max(0, end - max_chars)
+    snippet = text[start:end].strip()
+    if start > 0:
+        snippet = f"... {snippet}"
+    return snippet
+
+
+def _page_citation_suffix_and_label(loc: str) -> tuple[str, str]:
+    cleaned = loc.strip()
+    if not cleaned or cleaned == "text:body":
+        return "", ""
+    m = _PAGE_LOC_RE.match(cleaned)
+    if m:
+        pno = m.group(1)
+        return f"#page:{pno}", f"Page {pno}"
+    return f"#{cleaned}", cleaned
+
+
+def load_owner_provided_sources(
     db: Session,
     settings: Settings,
     owner_item: OwnerProvidedSourceInput,
     *,
+    query: str,
     expected_project_id: str | None,
-) -> FetchedSourceRecord:
-    """Resolve an owner-uploaded ProjectFile + deterministic FileExtraction as reviewed evidence."""
+) -> list[FetchedSourceRecord]:
+    """Search ALL extracted pages and tables of an owner-provided file, returning best-matching page citations or not_relevant."""
     pf = db.get(ProjectFile, owner_item.file_id)
     if pf is None:
         raise ProjectNotFoundError(f"Owner-provided project file '{owner_item.file_id}' was not found.")
@@ -468,50 +551,167 @@ def _load_owner_provided_source(
     )
     if latest_ext is None:
         detail = extract_project_file(db, settings, pf.id)
-        raw_items = [item.model_dump() for item in detail.items]
+        payload_data: dict[str, Any] = {"items": [item.model_dump() for item in detail.items]}
     else:
         payload_data = latest_ext.payload_json if isinstance(latest_ext.payload_json, dict) else {}
-        raw_items = list(payload_data.get("items") or [])
 
-    chunks: list[str] = []
-    total_len = 0
+    raw_items = list(payload_data.get("items") or [])
+
+    # Collect ALL pages and tables without early character cutoff
+    buckets: dict[str, list[str]] = {}
+    bucket_order: list[str] = []
     for item in raw_items:
-        txt = str(item.get("text") or "").strip()
-        if not txt:
+        formatted = _format_extraction_item_text(item)
+        if not formatted:
             continue
-        loc = str(item.get("page_or_sheet") or "")
-        piece = f"[{loc}] {txt}" if loc else txt
-        chunks.append(piece)
-        total_len += len(piece)
-        if total_len >= MAX_EXTRACTED_CHARS:
-            break
-    full_text = "\n".join(chunks)[:MAX_EXTRACTED_CHARS].strip()
-    if not full_text:
-        full_text = f"Owner-provided uploaded file '{pf.original_filename}' (no extractable text items found)."
+        loc_key = str(item.get("page_or_sheet") or "").strip() or "text:body"
+        if loc_key not in buckets:
+            buckets[loc_key] = []
+            bucket_order.append(loc_key)
+        buckets[loc_key].append(formatted)
 
+    # Also inspect top-level payload tables if present on any snapshot
+    for tbl in list(payload_data.get("tables") or []):
+        if isinstance(tbl, dict):
+            loc_key = str(tbl.get("page_or_sheet") or tbl.get("page") or "tables").strip()
+            rows = tbl.get("rows") or tbl.get("raw_values") or []
+            if isinstance(rows, list):
+                row_lines = [
+                    " | ".join(str(c).strip() for c in r if c is not None and str(c).strip())
+                    for r in rows
+                    if isinstance(r, list)
+                ]
+                tbl_txt = "\n".join(line for line in row_lines if line)
+                if tbl_txt:
+                    if loc_key not in buckets:
+                        buckets[loc_key] = []
+                        bucket_order.append(loc_key)
+                    buckets[loc_key].append(tbl_txt)
+
+    base_url = f"project-file://{pf.id}/v{pf.current_version}"
     rank, rating, _stype = SOURCE_PRIORITY_SPEC.get(
         owner_item.priority_tier, (6, "low_reputable_reference", "reference")
     )
-    virtual_url = f"project-file://{pf.id}/v{pf.current_version}"
-    return FetchedSourceRecord(
-        url=virtual_url,
-        final_url=virtual_url,
-        source_name=pf.original_filename,
-        publication_date=owner_item.publication_date,
-        source_priority_tier=owner_item.priority_tier,
-        priority_rank=rank,
-        reliability_rating=rating,
-        source_type="owner_provided",
-        access_status="owner_provided",
-        reviewed=True,
-        http_status=None,
-        failure_reason=None,
-        extracted_text=full_text,
-        excerpt=full_text[:MAX_EXCERPT_CHARS].strip(),
-        injection_signals=_detect_injection_signals(full_text),
-        tier_is_provider_claim=False,
-        tier_claim_label="Owner-assigned priority tier",
-    )
+
+    if not bucket_order:
+        empty_reason = (
+            f"Not relevant to query '{query[:80]}' (uploaded file '{pf.original_filename}' has no extractable text or tables)."
+            if query.strip()
+            else f"Owner-provided uploaded file '{pf.original_filename}' (no extractable text items found)."
+        )
+        return [
+            FetchedSourceRecord(
+                url=base_url,
+                final_url=base_url,
+                source_name=pf.original_filename,
+                publication_date=owner_item.publication_date,
+                source_priority_tier=owner_item.priority_tier if not query.strip() else "unverified",
+                priority_rank=99 if query.strip() else rank,
+                reliability_rating="unrated" if query.strip() else rating,
+                source_type="owner_provided",
+                access_status="not_relevant" if query.strip() else "owner_provided",
+                reviewed=not bool(query.strip()),
+                http_status=None,
+                failure_reason=empty_reason if query.strip() else None,
+                extracted_text=None if query.strip() else empty_reason,
+                excerpt=None if query.strip() else empty_reason,
+                injection_signals=[],
+                tier_is_provider_claim=False,
+                tier_claim_label="Owner-assigned priority tier",
+            )
+        ]
+
+    terms = extract_query_terms(query)
+    code_terms = [t for t in terms if any(ch.isdigit() for ch in t) and len(t) >= 4]
+    query_phrase_lower = " ".join(query.lower().split())
+
+    scored_buckets: list[tuple[tuple[int, int, int, int, int], str, str]] = []
+    for idx_b, loc_key in enumerate(bucket_order):
+        combined_text = "\n".join(buckets[loc_key]).strip()
+        if not terms:
+            scored_buckets.append(((1, 0, 0, 1, -idx_b), loc_key, combined_text))
+            continue
+
+        body_lower = combined_text.lower()
+        matched_terms = [t for t in terms if _term_matches_body(t, body_lower)]
+        if not matched_terms:
+            continue
+
+        matched_code_hits = sum(1 for ct in code_terms if _term_matches_body(ct, body_lower))
+        relevant_page = is_text_relevant_to_query(combined_text, query) or matched_code_hits >= 1
+        if not relevant_page:
+            continue
+
+        total_occ = sum(body_lower.count(t) for t in matched_terms)
+        phrase_hit = 1 if (len(query_phrase_lower) >= 6 and query_phrase_lower in body_lower) else 0
+        score_key = (len(matched_terms), matched_code_hits, phrase_hit, total_occ, -idx_b)
+        scored_buckets.append((score_key, loc_key, combined_text))
+
+    if terms and not scored_buckets:
+        return [
+            FetchedSourceRecord(
+                url=base_url,
+                final_url=base_url,
+                source_name=pf.original_filename,
+                publication_date=owner_item.publication_date,
+                source_priority_tier=owner_item.priority_tier,
+                priority_rank=99,
+                reliability_rating="unrated",
+                source_type="owner_provided",
+                access_status="not_relevant",
+                reviewed=False,
+                http_status=None,
+                failure_reason=(
+                    f"Not relevant to query '{query[:80]}' (searched all {len(bucket_order)} extracted page(s)/table(s); "
+                    "no matching query terms found) — not cited."
+                ),
+                extracted_text=None,
+                excerpt=None,
+                injection_signals=[],
+                tier_is_provider_claim=False,
+                tier_claim_label="Owner-assigned priority tier",
+            )
+        ]
+
+    # Highest-scoring matching pages across the whole document (still keeping page order when un-queried)
+    if terms:
+        scored_buckets.sort(key=lambda item: item[0], reverse=True)
+
+    selected_records: list[FetchedSourceRecord] = []
+    remaining_budget = MAX_TOTAL_PROMPT_CHARS
+    max_pages_to_emit = 5
+    for _score, loc_key, combined_text in scored_buckets[:max_pages_to_emit]:
+        if remaining_budget < 200:
+            break
+        per_page_limit = min(MAX_PROMPT_CHARS_PER_SOURCE, remaining_budget)
+        bounded_text = _extract_centered_window(combined_text, terms, per_page_limit)
+        suffix, loc_label = _page_citation_suffix_and_label(loc_key)
+        page_url = f"{base_url}{suffix}"
+        source_label = f"{pf.original_filename} ({loc_label})" if loc_label else pf.original_filename
+        remaining_budget -= len(bounded_text)
+        selected_records.append(
+            FetchedSourceRecord(
+                url=page_url,
+                final_url=page_url,
+                source_name=source_label[:512],
+                publication_date=owner_item.publication_date,
+                source_priority_tier=owner_item.priority_tier,
+                priority_rank=rank,
+                reliability_rating=rating,
+                source_type="owner_provided",
+                access_status="owner_provided",
+                reviewed=True,
+                http_status=None,
+                failure_reason=None,
+                extracted_text=bounded_text,
+                excerpt=bounded_text[:MAX_EXCERPT_CHARS].strip(),
+                injection_signals=_detect_injection_signals(bounded_text),
+                tier_is_provider_claim=False,
+                tier_claim_label="Owner-assigned priority tier",
+            )
+        )
+
+    return selected_records
 
 
 def _persist_source_rows(
@@ -743,8 +943,6 @@ def execute_research_query(
     for explicit_url in request_payload.urls:
         if explicit_url not in seen_urls:
             seen_urls.add(explicit_url)
-            from app.services.research_fetch import classify_source_priority
-
             tier, rank, _, _ = classify_source_priority(explicit_url)
             merged_candidates.append(
                 SearchCandidate(
@@ -753,7 +951,7 @@ def execute_research_query(
                     source_priority_tier=tier,
                     priority_rank=rank,
                     provider_name=None,
-                    tier_claim_label=f"URL/domain heuristic ({tier}) — unverified claim",
+                    tier_claim_label=f"{UNVERIFIED_HEURISTIC_LABEL} ({tier})",
                 )
             )
     merged_candidates.sort(key=lambda c: c.priority_rank)
@@ -776,11 +974,12 @@ def execute_research_query(
         for cand in merged_candidates
     ]
     for owner_item in request_payload.owner_files:
-        fetched_records.append(
-            _load_owner_provided_source(
+        fetched_records.extend(
+            load_owner_provided_sources(
                 db,
                 settings,
                 owner_item,
+                query=request_payload.query,
                 expected_project_id=request_payload.project_id,
             )
         )

@@ -1123,6 +1123,260 @@ def test_research_crossref_no_auto_peer_reviewed_provider_claim_and_token_cap_sy
         assert len(captured_prompts) == 1
 
 
+def test_step08b_no_keyword_tier_inflation_ai_artifact_downgrade_vendor_cap_and_last_modified(tmp_path: Path) -> None:
+    """Verify commercial/vendor SEO blogs (ecalpro, power-panels, powerdistributionpanels) never inflate to standards_bodies/high_*, code fences & bare [n] artifacts downgrade cleanly, allowlisted standards work, HTTP Last-Modified is clearly distinguished, and every non-owner tier retains the heuristic-unverified label."""
+    # Mock DuckDuckGo Lite returning 5 URLs for 'power center panel TTA IEC EN 60439'
+    ddg_html = """
+    <html><body>
+      <table>
+        <tr><td><a class="result-link" href="https://ecalpro.com/power-center-panel-tta-iec-en-60439/">IEC EN 60439 Power Center Panel TTA Guide</a></td></tr>
+        <tr><td><a class="result-link" href="https://power-panels.net/products/tta-panel-iec-60439">Power Center Panel TTA Switchboard — Request a Quote</a></td></tr>
+        <tr><td><a class="result-link" href="https://powerdistributionpanels.net/iec-60439-standard-panels">Standard IEC 60439 Power Distribution Panels</a></td></tr>
+        <tr><td><a class="result-link" href="https://webstore.iec.ch/publication/iec-60439">IEC 60439 Low-Voltage Switchgear Standard Overview</a></td></tr>
+        <tr><td><a class="result-link" href="https://ieee.org/standards/power-panel-test">IEEE Standard Power Center Panel Requirements</a></td></tr>
+      </table>
+    </body></html>
+    """
+
+    ecalpro_html = (
+        "<html><head><title>IEC EN 60439 Power Center Panel TTA Guide</title></head>"
+        "<body><main>"
+        "<p>```html &lt;div class='panel'&gt;A power center panel TTA per IEC EN 60439 provides type-tested assembly "
+        "verification for short-circuit withstand strength and busbar clearance across industrial sub-main switchboards [1][3][5]. "
+        "Type tests verify temperature rise limits and dielectric strength without formal accredited laboratory traceability here [2]. "
+        "Engineers reviewing TTA power center assemblies must verify manufacturer certificates directly rather than blog summaries [4].</p>"
+        "</main></body></html>"
+    )
+    power_panels_html = (
+        "<html><head><title>IEC 60439 Power Center Panel TTA Product</title></head>"
+        "<body><main>"
+        "<p>Our power center panel TTA line complies with IEC EN 60439 modularity up to 4000A across industrial switchrooms. "
+        "Contact sales or request a quote for custom copper busbar ratings, powder-coated steel enclosures, and Form 4b segregation. "
+        "Standard modular switchgear cubicles ship pre-tested with routine dielectric inspection certificates from our factory floor.</p>"
+        "</main></body></html>"
+    )
+    dist_panels_html = (
+        "<html><head><title>IEC 60439 Power Distribution Panels</title></head>"
+        "<body><main>"
+        "<p>Power distribution panels built to TTA principles isolate incomer breakers and outgoing MCCB feeders cleanly [1][2]. "
+        "In power center assemblies matching IEC EN 60439 principles, neutral sizing and protective earth continuity require torque verification. "
+        "Thermal imaging during commissioning checks bolted joint resistance under rated load current across busbar risers [3].</p>"
+        "</main></body></html>"
+    )
+    iec_html = (
+        "<html><head><title>IEC 60439 Standard Scope</title>"
+        '<meta name="publication_date" content="2004-03-15" /></head>'
+        "<body><main>"
+        "<p>IEC 60439 specifies definitions, service conditions, construction requirements, and type-test criteria for low-voltage "
+        "switchgear and controlgear assemblies including type-tested TTA and partially type-tested PTTA power center assemblies. "
+        "Rated operational voltage, insulation voltage, impulse withstand voltage, and short-circuit protection rules govern compliance.</p>"
+        "</main></body></html>"
+    )
+    ieee_html = (
+        "<html><head><title>IEEE Switchgear Requirements</title>"
+        '<meta property="article:published_time" content="2023-08-10" /></head>'
+        "<body><main>"
+        "<p>IEEE metal-enclosed low-voltage power circuit breaker switchgear guides cover power center panel TTA short-circuit withstand "
+        "ratings, busway coordination, and maintenance clearances for hospital and mission-critical electrical rooms.</p>"
+        "</main></body></html>"
+    )
+
+    pages = {
+        "https://ecalpro.com/power-center-panel-tta-iec-en-60439/": (
+            ecalpro_html,
+            {"content-type": "text/html", "last-modified": "Wed, 18 Nov 2026 09:00:00 GMT"},
+        ),
+        "https://power-panels.net/products/tta-panel-iec-60439": (
+            power_panels_html,
+            {"content-type": "text/html", "last-modified": "Tue, 10 Nov 2026 12:30:00 GMT"},
+        ),
+        "https://powerdistributionpanels.net/iec-60439-standard-panels": (
+            dist_panels_html,
+            {"content-type": "text/html", "last-modified": "Mon, 02 Nov 2026 08:15:00 GMT"},
+        ),
+        "https://webstore.iec.ch/publication/iec-60439": (
+            iec_html,
+            {"content-type": "text/html", "last-modified": "Thu, 05 Nov 2026 10:00:00 GMT"},
+        ),
+        "https://ieee.org/standards/power-panel-test": (
+            ieee_html,
+            {"content-type": "text/html"},
+        ),
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if url.startswith("https://lite.duckduckgo.com/lite/"):
+            return httpx.Response(200, text=ddg_html, headers={"content-type": "text/html"})
+        if url in pages:
+            body, hdrs = pages[url]
+            return httpx.Response(200, text=body, headers=hdrs)
+        return httpx.Response(404, text="Not found")
+
+    app = create_app(
+        _test_settings(tmp_path),
+        secret_store=_InMemorySecretStore(),
+        research_http_transport=httpx.MockTransport(handler),
+    )
+    with TestClient(app) as client:
+        project_id, _ = _create_project(client)
+        res = client.post(
+            "/api/research/runs",
+            json={
+                "query": "power center panel TTA IEC EN 60439",
+                "project_id": project_id,
+                "max_results": 5,
+                "synthesize_with_ai": False,
+            },
+        )
+        assert res.status_code == 201, res.text
+        data = res.json()
+        by_url = {s["url"]: s for s in data["sources"]}
+
+        # 1. Non-allowlisted commercial/SEO domains NEVER inflate to standards_bodies or any high_* rating!
+        ecal = by_url["https://ecalpro.com/power-center-panel-tta-iec-en-60439/"]
+        ppanel = by_url["https://power-panels.net/products/tta-panel-iec-60439"]
+        pdist = by_url["https://powerdistributionpanels.net/iec-60439-standard-panels"]
+
+        assert ecal["source_priority_tier"] == "unverified"
+        assert ecal["reliability_rating"] == "unrated"
+        assert "[DOWNGRADED" in ecal["extracted_info"]
+
+        assert ppanel["source_priority_tier"] == "reputable"
+        assert ppanel["reliability_rating"] == "low_reputable_reference"
+
+        assert pdist["source_priority_tier"] == "unverified"
+        assert pdist["reliability_rating"] == "unrated"
+
+        # 2. Only explicit standards body domain allowlists earn standards_bodies / high_standards_body
+        iec = by_url["https://webstore.iec.ch/publication/iec-60439"]
+        ieee = by_url["https://ieee.org/standards/power-panel-test"]
+        assert iec["source_priority_tier"] == "standards_bodies"
+        assert iec["reliability_rating"] == "high_standards_body"
+        assert ieee["source_priority_tier"] == "standards_bodies"
+        assert ieee["reliability_rating"] == "high_standards_body"
+
+        # 3. Verified findings NEVER label vendor SEO blogs as [standards_bodies]
+        findings_by_url = {f["source_url"]: f for f in data["structured_output"]["verified_findings"]}
+        assert findings_by_url["https://ecalpro.com/power-center-panel-tta-iec-en-60439/"]["priority_tier"] == "unverified"
+        assert findings_by_url["https://power-panels.net/products/tta-panel-iec-60439"]["priority_tier"] == "reputable"
+        assert findings_by_url["https://webstore.iec.ch/publication/iec-60439"]["priority_tier"] == "standards_bodies"
+
+        # 4. Every non-owner source carries exact label "URL/domain heuristic claim - unverified"
+        for src in data["sources"]:
+            assert src["tier_is_provider_claim"] is True
+            assert "URL/domain heuristic claim - unverified" in src["tier_claim_label"]
+
+        # 5. HTTP Last-Modified header without real publication date is labelled explicitly, not disguised as Published
+        assert ecal["publication_date_kind"] == "http_last_modified"
+        assert ecal["publication_date"].startswith("Last modified (HTTP):")
+        assert ppanel["publication_date_kind"] == "http_last_modified"
+        assert iec["publication_date_kind"] == "published"
+        assert iec["publication_date"] == "2004-03-15"
+        assert ieee["publication_date_kind"] == "published"
+        assert ieee["publication_date"] == "2023-08-10"
+
+
+def test_step08b_long_owner_145_page_pdf_searches_all_pages_tables_and_cites_page_fragments(tmp_path: Path) -> None:
+    """Verify attached 145-page owner PDF searches beyond first 12k chars across ALL pages & vector tables, caps prompt chars, cites project-file://<id>/v1#page:<n>, and reports not_relevant when unmatched."""
+    doc = pymupdf.open()
+    for page_no in range(1, 146):
+        page = doc.new_page()
+        if page_no == 87:
+            body = (
+                "SECTION 16441 - LOW-VOLTAGE SWITCHBOARDS (Page 87)\n"
+                "Main Power Center Panel shall be a Factory-Built Type-Tested Assembly (TTA) complying with "
+                "IEC EN 60439-1 Form 4b construction with rated short-circuit withstand strength Icw = 65 kA for 1 second "
+                "and IP54 ingress protection for electrical substation room installation."
+            )
+            page.insert_textbox(pymupdf.Rect(50, 50, 540, 780), body)
+        elif page_no == 118:
+            page.insert_textbox(pymupdf.Rect(50, 45, 540, 80), "SCHEDULE 16441-B — PANEL RATING TABLE (Page 118)")
+            # Draw bordered vector table so pdfplumber extracts item_type="table" with raw_values
+            x0, y0, col_w, row_h = 50, 100, 150, 28
+            rows_data = [
+                ["Parameter", "Requirement", "Standard"],
+                ["TTA Busbar", "4000 A Copper", "IEC EN 60439-1"],
+                ["Form Separation", "Form 4b Barrier", "IEC 61439"],
+            ]
+            for r_i, row in enumerate(rows_data):
+                for c_i, cell_txt in enumerate(row):
+                    rect = pymupdf.Rect(x0 + c_i * col_w, y0 + r_i * row_h, x0 + (c_i + 1) * col_w, y0 + (r_i + 1) * row_h)
+                    page.draw_rect(rect)
+                    page.insert_textbox(pymupdf.Rect(rect.x0 + 4, rect.y0 + 6, rect.x1 - 4, rect.y1 - 2), cell_txt)
+        else:
+            filler = f"GENERAL ADMINISTRATIVE PROJECT CLAUSE BLOCK {page_no} — " + (
+                "Standard site mobilization, temporary fencing, surveying benchmarks, and quality control submittals. " * 5
+            )
+            page.insert_textbox(pymupdf.Rect(50, 50, 540, 780), filler)
+    long_pdf_bytes = doc.tobytes()
+    doc.close()
+
+    settings = _test_settings(tmp_path)
+    app = create_app(settings, secret_store=_InMemorySecretStore())
+
+    with TestClient(app) as client:
+        project_id, _ = _create_project(client)
+        up = client.post(
+            f"/api/projects/{project_id}/files",
+            files=[("files", ("electrical_spec_145pp.pdf", long_pdf_bytes, "application/pdf"))],
+        )
+        assert up.status_code == 201, up.text
+        file_id = up.json()["items"][0]["file"]["id"]
+
+        # 1. Query targeting prose on page 87 and table on page 118 (well past 12k chars!)
+        res_hit = client.post(
+            "/api/research/runs",
+            json={
+                "query": "power center panel TTA IEC EN 60439 short-circuit 65 kA busbar",
+                "project_id": project_id,
+                "owner_files": [{"file_id": file_id, "priority_tier": "standards_bodies"}],
+                "synthesize_with_ai": False,
+            },
+        )
+        assert res_hit.status_code == 201, res_hit.text
+        d_hit = res_hit.json()
+        assert d_hit["owner_provided_sources"] >= 2
+        assert d_hit["prompt_char_count"] <= d_hit["prompt_char_cap"]
+
+        cited_urls = {s["url"]: s for s in d_hit["sources"]}
+        p87_url = f"project-file://{file_id}/v1#page:87"
+        p118_url = f"project-file://{file_id}/v1#page:118"
+        assert p87_url in cited_urls
+        assert p118_url in cited_urls
+        assert cited_urls[p87_url]["reviewed"] is True
+        assert cited_urls[p87_url]["access_status"] == "owner_provided"
+        assert "65 kA" in cited_urls[p87_url]["extracted_info"]
+        assert cited_urls[p118_url]["reviewed"] is True
+        assert "4000 A Copper" in cited_urls[p118_url]["extracted_info"]
+
+        finding_urls = {f["source_url"] for f in d_hit["structured_output"]["verified_findings"]}
+        assert p87_url in finding_urls
+        assert p118_url in finding_urls
+
+        # 2. Query absent from all 145 pages & tables -> reports not_relevant honestly!
+        res_miss = client.post(
+            "/api/research/runs",
+            json={
+                "query": "helipad asphalt pavement compaction ASTM D6927 Marshall",
+                "project_id": project_id,
+                "owner_files": [{"file_id": file_id, "priority_tier": "standards_bodies"}],
+                "synthesize_with_ai": True,
+            },
+        )
+        assert res_miss.status_code == 201, res_miss.text
+        d_miss = res_miss.json()
+        assert d_miss["status"] == "no_accessible_sources"
+        assert d_miss["owner_provided_sources"] == 0
+        assert d_miss["not_relevant_sources"] == 1
+        assert d_miss["token_usage"]["total_tokens"] == 0
+        miss_src = d_miss["sources"][0]
+        assert miss_src["url"] == f"project-file://{file_id}/v1"
+        assert miss_src["access_status"] == "not_relevant"
+        assert miss_src["reviewed"] is False
+        assert "145" in miss_src["failure_reason"]
+
+
 @pytest.mark.real_research
 @pytest.mark.skipif(
     not _RUN_REAL_RESEARCH,
