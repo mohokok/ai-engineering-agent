@@ -37,6 +37,7 @@ EXPECTED_TABLES = {
     "qa_reviews",
     "issues",
     "calculations",
+    "specifications",
     "settings",
     "audit_log",
 }
@@ -76,6 +77,27 @@ def test_alembic_upgrade_and_downgrade_round_trip(tmp_path: Path) -> None:
         }.issubset(calc_columns)
         deliv_columns = {col["name"] for col in inspector.get_columns("deliverables")}
         assert "calculation_id" in deliv_columns
+        assert "specification_id" in deliv_columns
+        spec_columns = {col["name"] for col in inspector.get_columns("specifications")}
+        assert {
+            "id",
+            "project_id",
+            "task_id",
+            "title",
+            "discipline",
+            "language",
+            "classification",
+            "revision",
+            "version",
+            "export_version",
+            "status",
+            "use_ai",
+            "ai_draft_status",
+            "owner_approved_by",
+            "owner_approved_at",
+            "tokens_used",
+            "structured_payload_json",
+        }.issubset(spec_columns)
 
         with engine.connect() as conn:
             fk_enabled = conn.execute(text("PRAGMA foreign_keys")).scalar()

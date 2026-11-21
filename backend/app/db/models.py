@@ -82,6 +82,9 @@ class Project(Base):
     calculations: Mapped[list["Calculation"]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )
+    specifications: Mapped[list["Specification"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
     audit_logs: Mapped[list["AuditLog"]] = relationship(back_populates="project")
 
 
@@ -253,6 +256,9 @@ class Deliverable(Base):
     calculation_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("calculations.id", ondelete="SET NULL"), index=True, nullable=True
     )
+    specification_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("specifications.id", ondelete="SET NULL"), index=True, nullable=True
+    )
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     deliverable_type: Mapped[str] = mapped_column(String(64), nullable=False)
     discipline: Mapped[str] = mapped_column(
@@ -283,6 +289,7 @@ class Deliverable(Base):
     boq_sheet: Mapped["BoqSheet | None"] = relationship(back_populates="deliverables")
     parametric_drawing: Mapped["ParametricDrawing | None"] = relationship(back_populates="deliverables")
     calculation: Mapped["Calculation | None"] = relationship(back_populates="deliverables")
+    specification: Mapped["Specification | None"] = relationship(back_populates="deliverables")
 
 
 class ParametricDrawing(Base):
@@ -659,6 +666,52 @@ class Calculation(Base):
 
     project: Mapped["Project"] = relationship(back_populates="calculations")
     deliverables: Mapped[list["Deliverable"]] = relationship(back_populates="calculation")
+
+
+class Specification(Base):
+    """Step 14 technical specification package traced deterministically to project BOQs, drawings, and verified sources."""
+
+    __tablename__ = "specifications"
+    __table_args__ = (
+        classification_check_constraint(),
+        CheckConstraint(
+            "ai_draft_status IN ('not_used', 'unverified_ai_draft', 'owner_approved')",
+            name="ck_specifications_ai_draft_status_valid",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    project_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("projects.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    task_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("tasks.id", ondelete="SET NULL"), index=True, nullable=True
+    )
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    discipline: Mapped[str] = mapped_column(String(64), default="multidisciplinary", nullable=False)
+    language: Mapped[str] = mapped_column(String(16), default="ar", nullable=False)
+    classification: Mapped[str] = mapped_column(String(32), default="Preliminary", nullable=False)
+    revision: Mapped[str] = mapped_column(String(32), default="Rev 01", nullable=False)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    export_version: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="generated", nullable=False)
+    use_ai: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    ai_draft_status: Mapped[str] = mapped_column(String(32), default="not_used", nullable=False)
+    owner_approved_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    owner_approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    tokens_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    token_usage_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    structured_payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, index=True, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+    project: Mapped["Project"] = relationship(back_populates="specifications")
+    deliverables: Mapped[list["Deliverable"]] = relationship(back_populates="specification")
 
 
 class FileExtraction(Base):

@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { App } from "./App";
 import {
   addBoqItem,
+  approveSpecificationDraft,
   confirmExtractionDrawingUnit,
   createBoqSheet,
   createCalculation,
@@ -13,17 +14,22 @@ import {
   enhanceReviewReportAi,
   exportBoqDeliverables,
   exportCalculationDeliverables,
+  exportSpecificationDeliverables,
   extractProjectFile,
   generateParametricDrawing,
+  generateProjectSpecification,
   generateReviewReport,
   getCalculationDetail,
   getClinicPresetModel,
   getParametricDrawingDetail,
+  getSpecificationDetail,
   listCalculationPresets,
   listProjectCalculations,
   listProjectIssues,
   listProjectParametricDrawings,
   listProjectQaReviews,
+  listProjectSpecifications,
+  listSpecificationPresets,
   runProjectQaReview,
   suggestParametricModel,
   updateCalculation,
@@ -66,6 +72,7 @@ import { ProjectFilesPanel } from "./components/ProjectFilesPanel";
 import { ProjectWorkspaceView } from "./components/ProjectWorkspaceView";
 import { ProviderSettingsView } from "./components/ProviderSettingsView";
 import { ResearchView } from "./components/ResearchView";
+import { SpecificationsView } from "./components/SpecificationsView";
 import type {
   BoqDetailOut,
   DeliverableOut,
@@ -2606,5 +2613,162 @@ describe("App Step 10 BOQ & quantity UI", () => {
     expect(updated.version).toBe(2);
     const exported = await exportCalculationDeliverables("calc-13", { language: "en" });
     expect(exported.xlsx_deliverable.folder_name).toBe("04_Engineering_Calculations");
+  });
+
+  it("renders Step 14 bilingual SpecificationsView (RTL/LTR) with BOQ/drawing trace anchors, unverified AI banner, and API wrappers", async () => {
+    const sampleSpec = {
+      id: "spec-14",
+      project_id: "proj-14",
+      project_code: "PRJ-014",
+      project_name: "Synthetic Clinic Specs",
+      task_id: null,
+      title: "Clinic Technical Specifications Package",
+      discipline: "multidisciplinary",
+      language: "en",
+      classification: "For Review",
+      revision: "Rev 01",
+      version: 1,
+      export_version: 1,
+      status: "ai_draft_unverified",
+      use_ai: true,
+      ai_draft_status: "unverified_ai_draft",
+      ai_draft_label: "UNVERIFIED AI DRAFT — Pending Owner Approval",
+      owner_approved_by: null,
+      owner_approved_at: null,
+      sections_count: 1,
+      clauses_count: 8,
+      tokens_used: 640,
+      summary: "Synthetic specification traced to clinic BOQ & A-101.",
+      created_at: "2026-11-21T22:00:00Z",
+      updated_at: "2026-11-21T22:00:00Z",
+      source_boq_sheet_ids: ["boq-1"],
+      source_drawing_ids: ["dwg-1"],
+      source_research_ids: [],
+      missing_standards_notices: [
+        "SPEC-01 (Doors): no verified standard on file - verify against the locally adopted code",
+      ],
+      sections: [
+        {
+          section_code: "SPEC-01",
+          title: "Doors, Frames & Architectural Hardware",
+          discipline: "architecture",
+          mapped_boq_item_ids: ["boq-item-1"],
+          mapped_drawing_ids: ["dwg-1"],
+          mapped_drawing_refs: ["A-101:door_schedule"],
+          standards: [
+            {
+              research_source_id: null,
+              source_name: "no verified standard on file - verify against the locally adopted code",
+              url: "",
+              publication_date: null,
+              status: "no_verified_standard_on_file",
+              citation_text: "no verified standard on file - verify against the locally adopted code",
+              verification_label: "no verified standard on file - verify against the locally adopted code",
+            },
+          ],
+          clauses: [
+            {
+              clause_id: "SPEC-01-SCOPE-01",
+              part: "scope",
+              text: "[UNVERIFIED AI DRAFT — Pending Owner Approval] Supply HPL doors matching A-101.",
+              draft_origin: "ai_unverified_draft",
+              trace_refs: [
+                {
+                  trace_id: "BOQ-A-01",
+                  trace_kind: "boq_item" as const,
+                  boq_item_id: "boq-item-1",
+                  label: "BOQ A-01: Flush HPL door (5 nos)",
+                },
+              ],
+            },
+          ],
+          missing_parts: [],
+        },
+      ],
+      token_usage: {
+        prompt_tokens: 520,
+        output_tokens: 120,
+        total_tokens: 640,
+        thoughts_tokens: 0,
+        cached_tokens: 0,
+        latency_ms: 0,
+      },
+      deliverables: [
+        {
+          id: "del-spec-1",
+          project_id: "proj-14",
+          specification_id: "spec-14",
+          title: "Clinic Specs (Rev 01 v1 — PDF EN)",
+          deliverable_type: "technical_specification",
+          discipline: "multidisciplinary",
+          format: "pdf",
+          classification: "For Review",
+          status: "issued",
+          version: 1,
+          folder_name: "07_Technical_Specifications",
+          filename: "spec_v1.pdf",
+          relative_path: "07_Technical_Specifications/spec_v1.pdf",
+          sha256: "deadbeef1234567890",
+          download_url: "/api/deliverables/del-spec-1/download",
+          created_at: "2026-11-21T22:00:00Z",
+          updated_at: "2026-11-21T22:00:00Z",
+        },
+      ],
+    };
+
+    const appSpecAr = renderToStaticMarkup(<App initialLang="ar" initialTab="specifications" />);
+    expect(appSpecAr).toContain("المواصفات الفنية (Specs)");
+    expect(appSpecAr).toContain("مولّد المواصفات الفنية");
+
+    const appSpecEn = renderToStaticMarkup(<App initialLang="en" initialTab="specifications" />);
+    expect(appSpecEn).toContain("Technical Specs");
+
+    const viewEn = renderToStaticMarkup(
+      <SpecificationsView lang="en" initialSpec={sampleSpec} initialSpecs={[sampleSpec]} />
+    );
+    expect(viewEn).toContain("Owner Approval Required for AI-Drafted Specification");
+    expect(viewEn).toContain("no verified standard on file - verify against the locally adopted code");
+    expect(viewEn).toContain("SPEC-01-SCOPE-01");
+    expect(viewEn).toContain("BOQ-A-01");
+    expect(viewEn).toContain("deadbeef12");
+
+    const viewAr = renderToStaticMarkup(
+      <SpecificationsView lang="ar" initialSpec={sampleSpec} initialSpecs={[sampleSpec]} />
+    );
+    expect(viewAr).toContain("اعتماد المالك لمسودة الذكاء الاصطناعي");
+    expect(viewAr).toContain("no verified standard on file - verify against the locally adopted code");
+
+    const approvedSpec = { ...sampleSpec, ai_draft_status: "owner_approved", owner_approved_by: "Owner" };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ presets: [] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(sampleSpec), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ specifications: [sampleSpec], total: 1 }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(sampleSpec), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(approvedSpec), { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            specification: approvedSpec,
+            docx_deliverable: sampleSpec.deliverables[0],
+            pdf_deliverable: sampleSpec.deliverables[0],
+          }),
+          { status: 201 }
+        )
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const presetsRes = await listSpecificationPresets();
+    expect(presetsRes.presets).toEqual([]);
+    const generated = await generateProjectSpecification("proj-14", { language: "en", use_ai: false });
+    expect(generated.id).toBe("spec-14");
+    const listed = await listProjectSpecifications("proj-14");
+    expect(listed.total).toBe(1);
+    const detail = await getSpecificationDetail("spec-14");
+    expect(detail.sections_count).toBe(1);
+    const approved = await approveSpecificationDraft("spec-14", { approved_by: "Owner" });
+    expect(approved.ai_draft_status).toBe("owner_approved");
+    const exported = await exportSpecificationDeliverables("spec-14", { language: "en" });
+    expect(exported.pdf_deliverable.folder_name).toBe("07_Technical_Specifications");
   });
 });
