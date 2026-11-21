@@ -323,6 +323,7 @@ def verify_task_after_qa(
         len(snap.get("inspected_boq_ids") or [])
         + len(snap.get("inspected_drawing_ids") or [])
         + len(snap.get("inspected_report_ids") or [])
+        + len(snap.get("inspected_calculation_ids") or [])
         + len(snap.get("inspected_deliverable_ids") or [])
     )
     if qa_row.status == "no_evidence" or inspected_total == 0:

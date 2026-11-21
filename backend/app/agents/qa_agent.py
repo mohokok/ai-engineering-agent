@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.core.config import Settings
 from app.db.models import (
     BoqSheet,
+    Calculation,
     Deliverable,
     FileExtraction,
     ParametricDrawing,
@@ -23,10 +24,12 @@ from app.db.models import (
     ReviewReport,
     Task,
 )
+from app.schemas.calculations import VERIFY_CODE_LABEL
 from app.schemas.drawings import ParametricPlanModel
 from app.schemas.qa import IssueCategory, IssueSeverity, QaCheckMetricOut, QaContextIsolationReport
 from app.services.parametric_cad import build_schedules_from_model, compute_room_metrics, sha256_file
 from app.services.workspace import resolve_project_file_path
+from app.skills.calculations import evaluate_calculation
 
 PRODUCER_REASONING_EXCLUDED_FIELDS: tuple[str, ...] = (
     "Task.plan_summary",
@@ -81,6 +84,7 @@ class QaContextData:
     boq_sheets: list[dict[str, Any]] = field(default_factory=list)
     drawings: list[dict[str, Any]] = field(default_factory=list)
     review_reports: list[dict[str, Any]] = field(default_factory=list)
+    calculations: list[dict[str, Any]] = field(default_factory=list)
     extractions: list[dict[str, Any]] = field(default_factory=list)
     project_files: list[dict[str, Any]] = field(default_factory=list)
     reviewed_research_urls: set[str] = field(default_factory=set)
@@ -127,6 +131,7 @@ def build_isolated_qa_context(
                 "report_id": d.report_id,
                 "boq_id": d.boq_id,
                 "drawing_id": d.drawing_id,
+                "calculation_id": d.calculation_id,
                 "title": d.title,
                 "deliverable_type": d.deliverable_type,
                 "discipline": d.discipline,
@@ -235,6 +240,37 @@ def build_isolated_qa_context(
             }
         )
 
+    calc_rows = db.scalars(
+        select(Calculation)
+        .where(Calculation.project_id == project.id)
+        .order_by(Calculation.created_at.desc())
+    ).all()
+    for c_row in calc_rows:
+        if task is not None and c_row.task_id and c_row.task_id != task.id:
+            continue
+        ctx.calculations.append(
+            {
+                "id": c_row.id,
+                "task_id": c_row.task_id,
+                "title": c_row.title,
+                "discipline": c_row.discipline,
+                "calculation_type": c_row.calculation_type,
+                "inputs_json": dict(c_row.inputs_json or {}),
+                "units_json": dict(c_row.units_json or {}),
+                "equations": c_row.equations or "",
+                "methodology": c_row.methodology or "",
+                "assumptions": c_row.assumptions or "",
+                "results_json": dict(c_row.results_json or {}),
+                "acceptance_criteria": c_row.acceptance_criteria or "",
+                "references_text": c_row.references_text or "",
+                "references_json": list(c_row.references_json or []),
+                "revision": c_row.revision,
+                "version": c_row.version,
+                "export_version": c_row.export_version,
+                "acceptance_passed": bool(c_row.acceptance_passed),
+            }
+        )
+
     files = db.scalars(select(ProjectFile).where(ProjectFile.project_id == project.id)).all()
     file_name_by_id = {f.id: f.original_filename for f in files}
     for f in files:
@@ -296,11 +332,12 @@ def build_isolated_qa_context(
 
 
 def count_inspected_artefacts(ctx: QaContextData) -> int:
-    """Return total concrete deliverables, BOQ sheets, drawings, and reports available for QA inspection."""
+    """Return total concrete deliverables, BOQ sheets, drawings, calculations, and reports available for QA inspection."""
     return (
         len(ctx.boq_sheets)
         + len(ctx.drawings)
         + len(ctx.review_reports)
+        + len(ctx.calculations)
         + len(ctx.deliverables)
     )
 
@@ -314,6 +351,10 @@ def _expected_deliverable_covered(exp: str, ctx: QaContextData) -> bool:
     haystacks.extend(f"{b.get('title', '')} boq bill of quantities".lower() for b in ctx.boq_sheets)
     haystacks.extend(f"{dr.get('title', '')} {dr.get('drawing_no', '')} drawing plan cad".lower() for dr in ctx.drawings)
     haystacks.extend(f"{rp.get('title', '')} {rp.get('discipline', '')} report review".lower() for rp in ctx.review_reports)
+    haystacks.extend(
+        f"{c.get('title', '')} {c.get('discipline', '')} {c.get('calculation_type', '')} calculation".lower()
+        for c in ctx.calculations
+    )
     if not haystacks:
         return False
 
@@ -336,6 +377,7 @@ def build_qa_context_isolation_report(ctx: QaContextData) -> QaContextIsolationR
         inspected_boq_ids=[b["id"] for b in ctx.boq_sheets],
         inspected_drawing_ids=[d["id"] for d in ctx.drawings],
         inspected_report_ids=[r["id"] for r in ctx.review_reports],
+        inspected_calculation_ids=[c["id"] for c in ctx.calculations],
         inspected_deliverable_ids=[d["id"] for d in ctx.deliverables],
         inspected_extraction_ids=[e["id"] for e in ctx.extractions],
         inspected_research_source_count=len(ctx.all_research_sources),
@@ -371,6 +413,20 @@ def serialize_isolated_qa_prompt_context(ctx: QaContextData) -> str:
                 "window_schedule": (d["computed_metrics_json"] or {}).get("window_schedule", []),
             }
             for d in ctx.drawings
+        ],
+        "calculations": [
+            {
+                "id": c["id"],
+                "title": c["title"],
+                "discipline": c["discipline"],
+                "calculation_type": c["calculation_type"],
+                "inputs": c["inputs_json"],
+                "units": c["units_json"],
+                "results": c["results_json"],
+                "acceptance_passed": c["acceptance_passed"],
+                "references": c["references_json"],
+            }
+            for c in ctx.calculations
         ],
         "deliverables": ctx.deliverables,
         "reviewed_research_urls": sorted(ctx.reviewed_research_urls),
@@ -527,35 +583,36 @@ def _check_arithmetic(
                     ws = wb.active
                     if ws is None:
                         raise ValueError(f"Exported XLSX '{rel_xlsx}' has no active worksheet.")
-                    for row_idx in range(6, ws.max_row + 1):
-                        qty_cell = ws.cell(row=row_idx, column=4).value
-                        rate_cell = ws.cell(row=row_idx, column=5).value
-                        tot_cell = ws.cell(row=row_idx, column=6).value
-                        item_no_cell = ws.cell(row=row_idx, column=1).value
-                        if item_no_cell and qty_cell is not None and rate_cell is not None:
-                            if not (isinstance(tot_cell, str) and tot_cell.startswith("=")):
-                                q_d = _to_decimal(qty_cell)
-                                r_d = _to_decimal(rate_cell)
-                                t_d = _to_decimal(tot_cell)
-                                if q_d is not None and r_d is not None and t_d is not None:
-                                    exp = _round4(q_d * r_d)
-                                    if abs(t_d - exp) > Decimal("0.01"):
-                                        findings.append(
-                                            QaCandidateFinding(
-                                                check_category="arithmetic",
-                                                discipline="quantity_surveying",
-                                                severity="high",
-                                                title="Exported XLSX hardcoded total mismatch",
-                                                description=(
-                                                    f"XLSX row {row_idx} ({item_no_cell}) contains non-formula total {t_d} "
-                                                    f"instead of expected {exp}."
-                                                ),
-                                                reference=str(rel_xlsx),
-                                                corrective_action="Re-export BOQ XLSX with live Excel formulas.",
-                                                deliverable_id=d["id"],
-                                                task_id=d.get("task_id"),
+                    if not d.get("calculation_id"):
+                        for row_idx in range(6, ws.max_row + 1):
+                            qty_cell = ws.cell(row=row_idx, column=4).value
+                            rate_cell = ws.cell(row=row_idx, column=5).value
+                            tot_cell = ws.cell(row=row_idx, column=6).value
+                            item_no_cell = ws.cell(row=row_idx, column=1).value
+                            if item_no_cell and qty_cell is not None and rate_cell is not None:
+                                if not (isinstance(tot_cell, str) and tot_cell.startswith("=")):
+                                    q_d = _to_decimal(qty_cell)
+                                    r_d = _to_decimal(rate_cell)
+                                    t_d = _to_decimal(tot_cell)
+                                    if q_d is not None and r_d is not None and t_d is not None:
+                                        exp = _round4(q_d * r_d)
+                                        if abs(t_d - exp) > Decimal("0.01"):
+                                            findings.append(
+                                                QaCandidateFinding(
+                                                    check_category="arithmetic",
+                                                    discipline="quantity_surveying",
+                                                    severity="high",
+                                                    title="Exported XLSX hardcoded total mismatch",
+                                                    description=(
+                                                        f"XLSX row {row_idx} ({item_no_cell}) contains non-formula total {t_d} "
+                                                        f"instead of expected {exp}."
+                                                    ),
+                                                    reference=str(rel_xlsx),
+                                                    corrective_action="Re-export BOQ XLSX with live Excel formulas.",
+                                                    deliverable_id=d["id"],
+                                                    task_id=d.get("task_id"),
+                                                )
                                             )
-                                        )
                 finally:
                     wb.close()
             except Exception as exc:
@@ -618,6 +675,63 @@ def _check_arithmetic(
                 )
             )
 
+    # Recompute Step 13 engineering calculations strictly from inputs_json
+    deliv_by_calc = {d["calculation_id"]: d["id"] for d in ctx.deliverables if d.get("calculation_id")}
+    for calc in ctx.calculations:
+        checked += 1
+        calc_deliv_id = deliv_by_calc.get(calc["id"])
+        ref = f"Calculation {calc['title']} ({calc['id'][:8]})"
+        try:
+            ev = evaluate_calculation(calc["calculation_type"], calc.get("inputs_json") or {})
+            stored_res = calc.get("results_json") or {}
+            mismatches: list[str] = []
+            for key, exp_val in ev.results.items():
+                if isinstance(exp_val, bool):
+                    if bool(stored_res.get(key)) != exp_val:
+                        mismatches.append(f"{key}: stored={stored_res.get(key)}, expected={exp_val}")
+                elif isinstance(exp_val, (int, float)):
+                    stored_num = _to_decimal(stored_res.get(key))
+                    exp_num = _to_decimal(exp_val)
+                    if stored_num is None or exp_num is None or abs(stored_num - exp_num) > Decimal("0.01"):
+                        mismatches.append(f"{key}: stored={stored_res.get(key)}, expected={exp_val}")
+                elif key in ("data_provenance", "acceptance_outcome_label"):
+                    if str(stored_res.get(key) or "") != str(exp_val or ""):
+                        mismatches.append(f"{key}: stored={stored_res.get(key)}, expected={exp_val}")
+                elif exp_val is None and key in ("outer_diameter_mm", "wall_thickness_mm"):
+                    if stored_res.get(key) is not None:
+                        mismatches.append(f"{key}: stored={stored_res.get(key)}, expected=None")
+            if mismatches:
+                findings.append(
+                    QaCandidateFinding(
+                        check_category="arithmetic",
+                        discipline=calc.get("discipline") or "multidisciplinary",
+                        severity="high",
+                        title="Engineering calculation result mismatch",
+                        description=(
+                            f"Calculation '{calc['title']}' ({calc['calculation_type']}) stored results disagree with "
+                            f"independent Python recomputation: {'; '.join(mismatches[:5])}."
+                        ),
+                        reference=ref,
+                        corrective_action="Re-run deterministic calculation via PATCH /api/calculations/{id} to restore code-computed outputs.",
+                        deliverable_id=calc_deliv_id,
+                        task_id=calc.get("task_id"),
+                    )
+                )
+        except Exception as exc:
+            findings.append(
+                QaCandidateFinding(
+                    check_category="arithmetic",
+                    discipline=calc.get("discipline") or "multidisciplinary",
+                    severity="high",
+                    title="Engineering calculation failed deterministic re-evaluation",
+                    description=f"Calculation '{calc['title']}' failed QA recomputation: {exc}",
+                    reference=ref,
+                    corrective_action="Fix invalid calculation inputs or type and recompute.",
+                    deliverable_id=calc_deliv_id,
+                    task_id=calc.get("task_id"),
+                )
+            )
+
     failed_cnt = len(findings)
     return (
         QaCheckMetricOut(
@@ -625,7 +739,7 @@ def _check_arithmetic(
             checked_count=checked,
             failed_count=failed_cnt,
             passed=(failed_cnt == 0),
-            details=f"Recomputed {checked} BOQ/XLSX/drawing arithmetic target(s); found {failed_cnt} issue(s).",
+            details=f"Recomputed {checked} BOQ/XLSX/drawing/calculation arithmetic target(s); found {failed_cnt} issue(s).",
         ),
         findings,
     )
@@ -767,6 +881,48 @@ def _check_units(ctx: QaContextData) -> tuple[QaCheckMetricOut, list[QaCandidate
                 )
             )
 
+    deliv_by_calc = {d["calculation_id"]: d["id"] for d in ctx.deliverables if d.get("calculation_id")}
+    for calc in ctx.calculations:
+        checked += 1
+        units_map = calc.get("units_json") or {}
+        ref = f"Calculation {calc['title']} ({calc['id'][:8]})"
+        calc_deliv_id = deliv_by_calc.get(calc["id"])
+        if not units_map:
+            findings.append(
+                QaCandidateFinding(
+                    check_category="unit",
+                    discipline=calc.get("discipline") or "multidisciplinary",
+                    severity="high",
+                    title="Engineering calculation missing units map",
+                    description=f"Calculation '{calc['title']}' does not declare units_json for inputs/results.",
+                    reference=ref,
+                    corrective_action="Recompute calculation so explicit SI/engineering units are persisted.",
+                    deliverable_id=calc_deliv_id,
+                    task_id=calc.get("task_id"),
+                )
+            )
+        else:
+            bad_units = [
+                f"{k}={v}"
+                for k, v in units_map.items()
+                if not str(v).strip()
+                or any(tok in str(v).lower() for tok in ("unconfirmed", "unknown", "ft", "in", "psi", "??"))
+            ]
+            if bad_units:
+                findings.append(
+                    QaCandidateFinding(
+                        check_category="unit",
+                        discipline=calc.get("discipline") or "multidisciplinary",
+                        severity="high",
+                        title="Invalid or unconfirmed unit in calculation",
+                        description=f"Calculation '{calc['title']}' declares non-standard/unconfirmed unit(s): {', '.join(bad_units)}.",
+                        reference=ref,
+                        corrective_action="Standardize calculation units strictly to confirmed SI/engineering units.",
+                        deliverable_id=calc_deliv_id,
+                        task_id=calc.get("task_id"),
+                    )
+                )
+
     failed_cnt = len(findings)
     return (
         QaCheckMetricOut(
@@ -774,7 +930,7 @@ def _check_units(ctx: QaContextData) -> tuple[QaCheckMetricOut, list[QaCandidate
             checked_count=checked,
             failed_count=failed_cnt,
             passed=(failed_cnt == 0),
-            details=f"Checked {checked} BOQ items/drawings/CAD units; found {failed_cnt} unit issue(s).",
+            details=f"Checked {checked} BOQ/drawing/CAD/calculation units; found {failed_cnt} unit issue(s).",
         ),
         findings,
     )
@@ -976,6 +1132,125 @@ def _check_references(ctx: QaContextData) -> tuple[QaCheckMetricOut, list[QaCand
                             )
                         )
 
+    # 3. Check Step 13 calculation references against owner/verified source logs & mandatory verify-code label
+    deliv_by_calc = {d["calculation_id"]: d["id"] for d in ctx.deliverables if d.get("calculation_id")}
+    reviewed_rs_ids = {
+        str(rs["id"])
+        for rs in ctx.all_research_sources
+        if rs.get("reviewed") and rs.get("access_status") in ("accessible", "owner_provided")
+    }
+    for calc in ctx.calculations:
+        checked += 1
+        calc_deliv_id = deliv_by_calc.get(calc["id"])
+        ref_label = f"Calculation {calc['title']} ({calc['id'][:8]})"
+        refs_list = calc.get("references_json") or []
+        refs_text = str(calc.get("references_text") or "").strip()
+
+        if not refs_list and not refs_text:
+            findings.append(
+                QaCandidateFinding(
+                    check_category="reference",
+                    discipline=calc.get("discipline") or "multidisciplinary",
+                    severity="high",
+                    title="Calculation missing standards/owner references",
+                    description=f"Calculation '{calc['title']}' has no owner-supplied or verified source-log references.",
+                    reference=ref_label,
+                    corrective_action="Attach at least one owner-supplied or reviewed ResearchSource reference labelled 'verify against the locally adopted code'.",
+                    deliverable_id=calc_deliv_id,
+                    task_id=calc.get("task_id"),
+                )
+            )
+            continue
+
+        if VERIFY_CODE_LABEL not in refs_text.lower() and any(
+            VERIFY_CODE_LABEL not in str(r.get("verification_label") or "").lower()
+            for r in refs_list
+            if isinstance(r, dict)
+        ):
+            findings.append(
+                QaCandidateFinding(
+                    check_category="reference",
+                    discipline=calc.get("discipline") or "multidisciplinary",
+                    severity="high",
+                    title="Calculation reference missing locally-adopted-code verification label",
+                    description=(
+                        f"Calculation '{calc['title']}' references lack the mandatory '{VERIFY_CODE_LABEL}' label."
+                    ),
+                    reference=ref_label,
+                    corrective_action=f"Label every calculation reference with '{VERIFY_CODE_LABEL}'.",
+                    deliverable_id=calc_deliv_id,
+                    task_id=calc.get("task_id"),
+                )
+            )
+
+        for r_item in refs_list:
+            if not isinstance(r_item, dict):
+                continue
+            checked += 1
+            s_kind = str(r_item.get("source_kind") or "")
+            s_ref = str(r_item.get("source_ref") or "").strip()
+            rs_id = str(r_item.get("research_source_id") or "").strip()
+            if s_kind == "verified_source_log":
+                url_ok = s_ref in ctx.reviewed_research_urls or any(
+                    u in s_ref for u in ctx.reviewed_research_urls
+                )
+                id_ok = bool(rs_id and rs_id in reviewed_rs_ids)
+                if not (url_ok or id_ok):
+                    findings.append(
+                        QaCandidateFinding(
+                            check_category="reference",
+                            discipline=calc.get("discipline") or "multidisciplinary",
+                            severity="high",
+                            title="Calculation cites unreviewed or missing research source",
+                            description=(
+                                f"Calculation '{calc['title']}' verified_source_log reference '{s_ref}' "
+                                "does not match a reviewed ResearchSource in the project log."
+                            ),
+                            reference=ref_label,
+                            corrective_action="Bind calculation reference to an accessible, reviewed ResearchSource or use owner_supplied.",
+                            deliverable_id=calc_deliv_id,
+                            task_id=calc.get("task_id"),
+                        )
+                    )
+            for url_match in _URL_RE.findall(s_ref):
+                if not _url_is_reviewed(url_match):
+                    findings.append(
+                        QaCandidateFinding(
+                            check_category="reference",
+                            discipline=calc.get("discipline") or "multidisciplinary",
+                            severity="high",
+                            title="Calculation cites unreviewed URL",
+                            description=(
+                                f"Calculation '{calc['title']}' reference cites '{url_match}', "
+                                "which is absent from reviewed project ResearchSource logs."
+                            ),
+                            reference=ref_label,
+                            corrective_action="Verify URL via Research tab or replace with an approved owner source.",
+                            deliverable_id=calc_deliv_id,
+                            task_id=calc.get("task_id"),
+                        )
+                    )
+
+        for url_match in _URL_RE.findall(refs_text):
+            checked += 1
+            if not _url_is_reviewed(url_match):
+                findings.append(
+                    QaCandidateFinding(
+                        check_category="reference",
+                        discipline=calc.get("discipline") or "multidisciplinary",
+                        severity="high",
+                        title="Calculation references_text cites unreviewed URL",
+                        description=(
+                            f"Calculation '{calc['title']}' references_text cites '{url_match}', "
+                            "which is not in reviewed project ResearchSource logs."
+                        ),
+                        reference=ref_label,
+                        corrective_action="Replace unreviewed URL with a reviewed ResearchSource or owner-supplied document reference.",
+                        deliverable_id=calc_deliv_id,
+                        task_id=calc.get("task_id"),
+                    )
+                )
+
     failed_cnt = len(findings)
     return (
         QaCheckMetricOut(
@@ -983,7 +1258,7 @@ def _check_references(ctx: QaContextData) -> tuple[QaCheckMetricOut, list[QaCand
             checked_count=checked,
             failed_count=failed_cnt,
             passed=(failed_cnt == 0),
-            details=f"Verified {checked} report/BOQ source & drawing references against project logs; found {failed_cnt} issue(s).",
+            details=f"Verified {checked} report/BOQ/calculation source & drawing references against project logs; found {failed_cnt} issue(s).",
         ),
         findings,
     )
@@ -1156,6 +1431,60 @@ def _check_cross_deliverable_consistency(ctx: QaContextData) -> tuple[QaCheckMet
                             )
                         )
 
+    # 3. Check Step 13 calculation acceptance criteria & mandatory 8-section completeness
+    deliv_by_calc = {d["calculation_id"]: d["id"] for d in ctx.deliverables if d.get("calculation_id")}
+    for calc in ctx.calculations:
+        checked += 1
+        calc_deliv_id = deliv_by_calc.get(calc["id"])
+        ref = f"Calculation {calc['title']} ({calc['id'][:8]})"
+        missing_sections = [
+            sec
+            for sec, val in (
+                ("inputs_json", calc.get("inputs_json")),
+                ("units_json", calc.get("units_json")),
+                ("equations", calc.get("equations")),
+                ("methodology", calc.get("methodology")),
+                ("assumptions", calc.get("assumptions")),
+                ("results_json", calc.get("results_json")),
+                ("acceptance_criteria", calc.get("acceptance_criteria")),
+                ("references", calc.get("references_json") or calc.get("references_text")),
+            )
+            if not val
+        ]
+        if missing_sections:
+            findings.append(
+                QaCandidateFinding(
+                    check_category="schedule_consistency",
+                    discipline=calc.get("discipline") or "multidisciplinary",
+                    severity="high",
+                    title="Calculation missing mandatory framework sections",
+                    description=(
+                        f"Calculation '{calc['title']}' is missing required section(s): {', '.join(missing_sections)}."
+                    ),
+                    reference=ref,
+                    corrective_action="Recompute calculation so all 8 required documentation sections are populated.",
+                    deliverable_id=calc_deliv_id,
+                    task_id=calc.get("task_id"),
+                )
+            )
+        if not calc.get("acceptance_passed") or not (calc.get("results_json") or {}).get("acceptance_passed"):
+            findings.append(
+                QaCandidateFinding(
+                    check_category="schedule_consistency",
+                    discipline=calc.get("discipline") or "multidisciplinary",
+                    severity="high",
+                    title="Calculation fails engineering acceptance criteria",
+                    description=(
+                        f"Calculation '{calc['title']}' ({calc['calculation_type']}) did not pass its engineering acceptance criteria "
+                        f"({calc.get('acceptance_criteria', '')[:200]})."
+                    ),
+                    reference=ref,
+                    corrective_action="Adjust sizing/design parameters until all acceptance criteria pass and re-run calculation.",
+                    deliverable_id=calc_deliv_id,
+                    task_id=calc.get("task_id"),
+                )
+            )
+
     failed_cnt = len(findings)
     return (
         QaCheckMetricOut(
@@ -1163,7 +1492,7 @@ def _check_cross_deliverable_consistency(ctx: QaContextData) -> tuple[QaCheckMet
             checked_count=checked,
             failed_count=failed_cnt,
             passed=(failed_cnt == 0),
-            details=f"Evaluated {checked} drawing/BOQ/schedule consistency cross-check(s); found {failed_cnt} issue(s).",
+            details=f"Evaluated {checked} drawing/BOQ/calculation consistency & acceptance check(s); found {failed_cnt} issue(s).",
         ),
         findings,
     )
@@ -1181,6 +1510,7 @@ def _check_missing_deliverables_and_integrity(
     delivs_by_dwg: dict[str, set[str]] = {}
     delivs_by_report: dict[str, set[str]] = {}
     delivs_by_boq: dict[str, set[str]] = {}
+    delivs_by_calc: dict[str, set[str]] = {}
 
     for d in ctx.deliverables:
         checked += 1
@@ -1191,6 +1521,8 @@ def _check_missing_deliverables_and_integrity(
             delivs_by_report.setdefault(d["report_id"], set()).add(f"{d.get('folder_name')}:{d.get('format')}")
         if d.get("boq_id"):
             delivs_by_boq.setdefault(d["boq_id"], set()).add(str(d.get("format") or "").lower())
+        if d.get("calculation_id"):
+            delivs_by_calc.setdefault(d["calculation_id"], set()).add(str(d.get("format") or "").lower())
 
         if not rel:
             findings.append(
@@ -1300,12 +1632,37 @@ def _check_missing_deliverables_and_integrity(
                     )
                 )
 
+    for calc in ctx.calculations:
+        if int(calc.get("export_version") or 0) > 0:
+            checked += 1
+            fmts = delivs_by_calc.get(calc["id"], set())
+            missing = sorted({"docx", "pdf", "xlsx"} - fmts)
+            if missing:
+                findings.append(
+                    QaCandidateFinding(
+                        check_category="missing_deliverable",
+                        discipline=calc.get("discipline") or "multidisciplinary",
+                        severity="high",
+                        title="Exported calculation deliverables incomplete",
+                        description=(
+                            f"Calculation '{calc['title']}' is missing {', '.join(missing).upper()} "
+                            "export file(s) in 04_Engineering_Calculations."
+                        ),
+                        reference=f"Calculation {calc['title']}",
+                        corrective_action="Re-export calculation DOCX + PDF + XLSX into 04_Engineering_Calculations.",
+                        task_id=calc.get("task_id"),
+                    )
+                )
+
     # 3. Task expected deliverables coverage check (without reading producer reasoning)
     if ctx.task_id and ctx.expected_task_deliverables:
         has_boq = bool(ctx.boq_sheets) or any(d.get("folder_name") == "06_BOQ" for d in ctx.deliverables)
         has_drawing = bool(ctx.drawings) or any(d.get("folder_name") == "05_Design_Drawings" for d in ctx.deliverables)
         has_report = bool(ctx.review_reports) or any(
             d.get("folder_name") in {"08_Reports", "10_Final_Deliverables"} for d in ctx.deliverables
+        )
+        has_calc = bool(ctx.calculations) or any(
+            d.get("folder_name") == "04_Engineering_Calculations" for d in ctx.deliverables
         )
         for exp in ctx.expected_task_deliverables:
             checked += 1
@@ -1352,6 +1709,20 @@ def _check_missing_deliverables_and_integrity(
                             task_id=ctx.task_id,
                         )
                     )
+            elif any(k in low for k in ("calculation", "calc", "load schedule", "cable sizing", "voltage drop", "water demand", "pipe sizing", "حسابات", "حساب")):
+                if not has_calc:
+                    findings.append(
+                        QaCandidateFinding(
+                            check_category="missing_deliverable",
+                            discipline="multidisciplinary",
+                            severity="high",
+                            title="Missing expected engineering calculation deliverable for task",
+                            description=f"Task expects deliverable '{exp}', but no Calculation or 04_Engineering_Calculations deliverable is linked.",
+                            reference=f"Task {ctx.task_id[:8]} / {exp}",
+                            corrective_action="Run and link deterministic calculation (and export DOCX/PDF/XLSX) for this task.",
+                            task_id=ctx.task_id,
+                        )
+                    )
             elif not _expected_deliverable_covered(exp, ctx):
                 findings.append(
                     QaCandidateFinding(
@@ -1367,7 +1738,7 @@ def _check_missing_deliverables_and_integrity(
                 )
 
     # Also catch zero-deliverable QA run on a task so an empty task never falsely passes verification
-    if ctx.task_id and not (ctx.deliverables or ctx.boq_sheets or ctx.drawings or ctx.review_reports):
+    if ctx.task_id and not (ctx.deliverables or ctx.boq_sheets or ctx.drawings or ctx.review_reports or ctx.calculations):
         checked += 1
         findings.append(
             QaCandidateFinding(

@@ -5,22 +5,28 @@ import {
   addBoqItem,
   confirmExtractionDrawingUnit,
   createBoqSheet,
+  createCalculation,
   createManualIssue,
   createProject,
   createTask,
   deleteProviderApiKey,
   enhanceReviewReportAi,
   exportBoqDeliverables,
+  exportCalculationDeliverables,
   extractProjectFile,
   generateParametricDrawing,
   generateReviewReport,
+  getCalculationDetail,
   getClinicPresetModel,
   getParametricDrawingDetail,
+  listCalculationPresets,
+  listProjectCalculations,
   listProjectIssues,
   listProjectParametricDrawings,
   listProjectQaReviews,
   runProjectQaReview,
   suggestParametricModel,
+  updateCalculation,
   updateQaIssue,
   verifyTaskWithQa,
   getDeliverableDownloadUrl,
@@ -52,6 +58,7 @@ import {
 } from "./api";
 import { AssignmentsView } from "./components/AssignmentsView";
 import { BoqView } from "./components/BoqView";
+import { CalculationsView } from "./components/CalculationsView";
 import { DeliverablesView } from "./components/DeliverablesView";
 import { ParametricDrawingView } from "./components/ParametricDrawingView";
 import { QaIssuesView } from "./components/QaIssuesView";
@@ -2405,5 +2412,199 @@ describe("App Step 10 BOQ & quantity UI", () => {
     expect(closed.status).toBe("closed");
     const verified = await verifyTaskWithQa("task-12", { verifier_note: "All clear" });
     expect(verified.verification_status).toBe("verified");
+  });
+
+  it("renders Step 13 bilingual CalculationsView (RTL/LTR) with all 8 sections and wraps calculation APIs", async () => {
+    const sampleCalc = {
+      id: "calc-13",
+      project_id: "proj-13",
+      project_code: "PRJ-013",
+      project_name: "Synthetic Clinic",
+      task_id: null,
+      title: "Synthetic Clinic Panel Load Schedule (MDB-CLINIC-01)",
+      discipline: "electrical",
+      calculation_type: "electrical_load_schedule",
+      language: "en",
+      classification: "Preliminary",
+      revision: "Rev 01",
+      version: 1,
+      export_version: 1,
+      status: "exported",
+      acceptance_passed: true,
+      data_provenance: "owner_supplied",
+      acceptance_outcome_label: "PASS",
+      tokens_used: 0,
+      created_at: "2026-11-21T16:00:00Z",
+      updated_at: "2026-11-21T16:00:00Z",
+      inputs: { panel_name: "MDB-CLINIC-01", system_voltage_v: 400, phases: "3ph", spare_capacity_pct: 20 },
+      units: { system_voltage_v: "V", design_current_a: "A", design_load_kw: "kW" },
+      equations: "I_des = (S_des * 1000) / (sqrt(3) * V_sys)",
+      method: "Deterministic panel load aggregation with demand factors.",
+      assumptions: ["Default panel power factor = 0.85"],
+      assumptions_text: "Default panel power factor = 0.85",
+      results: {
+        design_load_kw: 38.76,
+        design_current_a: 65.8178,
+        acceptance_passed: true,
+        circuits: [
+          {
+            circuit_id: "C-01",
+            description: "LED Lighting",
+            phase: "L1",
+            connected_load_kw: 6.0,
+            demand_factor: 0.9,
+            power_factor: 0.85,
+            demand_load_kw: 5.4,
+            apparent_power_kva: 6.3529,
+          },
+        ],
+      },
+      acceptance_criteria: ["3-phase demand unbalance <= 15%: 5.57% -> PASS"],
+      acceptance_criteria_text: "3-phase demand unbalance <= 15%: 5.57% -> PASS",
+      references: [
+        {
+          source_kind: "owner_supplied" as const,
+          source_name: "Synthetic Clinic Design Basis",
+          source_ref: "Owner Basis Rev 01",
+          verification_label: "verify against the locally adopted code",
+        },
+      ],
+      references_text: "[owner_supplied] Synthetic Clinic Design Basis — verify against the locally adopted code",
+      deliverables: [
+        {
+          id: "del-calc-1",
+          project_id: "proj-13",
+          calculation_id: "calc-13",
+          title: "Load Schedule (v1 XLSX)",
+          deliverable_type: "engineering_calculation",
+          discipline: "electrical",
+          format: "xlsx",
+          classification: "Preliminary",
+          status: "issued",
+          version: 1,
+          folder_name: "04_Engineering_Calculations",
+          filename: "calc_v1.xlsx",
+          relative_path: "04_Engineering_Calculations/calc_v1.xlsx",
+          download_url: "/api/deliverables/del-calc-1/download",
+          created_at: "2026-11-21T16:00:00Z",
+          updated_at: "2026-11-21T16:00:00Z",
+        },
+      ],
+    };
+
+    const appCalcArHtml = renderToStaticMarkup(<App initialLang="ar" initialTab="calculations" />);
+    expect(appCalcArHtml).toContain("الحسابات الهندسية (MEP)");
+    expect(appCalcArHtml).toContain("إطار الحسابات الهندسية الحتمية");
+
+    const appCalcEnHtml = renderToStaticMarkup(<App initialLang="en" initialTab="calculations" />);
+    expect(appCalcEnHtml).toContain("Calculations (MEP)");
+
+    const viewEn = renderToStaticMarkup(
+      <CalculationsView lang="en" initialCalculation={sampleCalc} initialCalculations={[sampleCalc]} />
+    );
+    expect(viewEn).toContain("1. Inputs");
+    expect(viewEn).toContain("3. Equations");
+    expect(viewEn).toContain("4. Method");
+    expect(viewEn).toContain("5. Assumptions");
+    expect(viewEn).toContain("6. Results");
+    expect(viewEn).toContain("7. Acceptance Criteria");
+    expect(viewEn).toContain("8. References");
+    expect(viewEn).toContain("verify against the locally adopted code");
+    expect(viewEn).toContain("65.8178");
+    expect(viewEn).toContain("Download XLSX");
+    expect(viewEn).toContain("owner_supplied");
+
+    const builtinPipeCalc = {
+      ...sampleCalc,
+      id: "calc-13-pipe",
+      discipline: "plumbing",
+      calculation_type: "plumbing_pipe_sizing",
+      title: "Synthetic Cold Water Main Riser Sizing (RISER-CWS-MAIN)",
+      acceptance_passed: true,
+      data_provenance:
+        "built-in preliminary baseline data, not from a cited source, verify against manufacturer datasheet and locally adopted code",
+      acceptance_outcome_label: "PRELIMINARY PASS (built-in baseline data)",
+      results: {
+        selected_nominal_diameter_mm: 63.0,
+        outer_diameter_mm: 63.0,
+        wall_thickness_mm: 10.5,
+        internal_diameter_mm: 42.0,
+        velocity_mps: 1.0827,
+        data_provenance:
+          "built-in preliminary baseline data, not from a cited source, verify against manufacturer datasheet and locally adopted code",
+        acceptance_outcome_label: "PRELIMINARY PASS (built-in baseline data)",
+        acceptance_passed: true,
+        evaluated_sizes: [
+          {
+            nominal_diameter_mm: 40.0,
+            outer_diameter_mm: 40.0,
+            wall_thickness_mm: 6.7,
+            internal_diameter_mm: 26.6,
+            velocity_mps: 2.6992,
+            status: "PRELIMINARY FAIL (built-in baseline data)",
+          },
+          {
+            nominal_diameter_mm: 63.0,
+            outer_diameter_mm: 63.0,
+            wall_thickness_mm: 10.5,
+            internal_diameter_mm: 42.0,
+            velocity_mps: 1.0827,
+            status: "PRELIMINARY PASS (built-in baseline data)",
+          },
+        ],
+      },
+    };
+    const viewBuiltin = renderToStaticMarkup(
+      <CalculationsView lang="en" initialCalculation={builtinPipeCalc} initialCalculations={[builtinPipeCalc]} />
+    );
+    expect(viewBuiltin).toContain(
+      "built-in preliminary baseline data, not from a cited source, verify against manufacturer datasheet and locally adopted code"
+    );
+    expect(viewBuiltin).toContain("PRELIMINARY PASS (built-in baseline data)");
+    expect(viewBuiltin).toContain("26.6");
+
+    const viewAr = renderToStaticMarkup(
+      <CalculationsView lang="ar" initialCalculation={sampleCalc} initialCalculations={[sampleCalc]} />
+    );
+    expect(viewAr).toContain("1. المدخلات");
+    expect(viewAr).toContain("verify against the locally adopted code");
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ presets: [] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(sampleCalc), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ calculations: [sampleCalc], total: 1 }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(sampleCalc), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ...sampleCalc, version: 2 }), { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            calculation: sampleCalc,
+            docx_deliverable: sampleCalc.deliverables[0],
+            pdf_deliverable: sampleCalc.deliverables[0],
+            xlsx_deliverable: sampleCalc.deliverables[0],
+          }),
+          { status: 201 }
+        )
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const presetsRes = await listCalculationPresets();
+    expect(presetsRes.presets).toEqual([]);
+    const created = await createCalculation("proj-13", {
+      title: "Test Load Calc",
+      calculation_type: "electrical_load_schedule",
+      inputs: sampleCalc.inputs,
+      references: sampleCalc.references,
+    });
+    expect(created.id).toBe("calc-13");
+    const listed = await listProjectCalculations("proj-13");
+    expect(listed.total).toBe(1);
+    const fetched = await getCalculationDetail("calc-13");
+    expect(fetched.acceptance_passed).toBe(true);
+    const updated = await updateCalculation("calc-13", { title: "Updated" });
+    expect(updated.version).toBe(2);
+    const exported = await exportCalculationDeliverables("calc-13", { language: "en" });
+    expect(exported.xlsx_deliverable.folder_name).toBe("04_Engineering_Calculations");
   });
 });

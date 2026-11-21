@@ -771,6 +771,7 @@ export interface DeliverableOut {
   report_id?: string | null;
   boq_id?: string | null;
   drawing_id?: string | null;
+  calculation_id?: string | null;
   task_id?: string | null;
   file_id?: string | null;
   title: string;
@@ -1293,4 +1294,89 @@ export interface TaskVerifyOut {
   qa_review_id: string;
   open_issues_count: number;
   message: string;
+}
+
+export type CalculationDiscipline = "electrical" | "plumbing";
+export type CalculationType =
+  | "electrical_load_schedule"
+  | "electrical_cable_sizing"
+  | "electrical_voltage_drop"
+  | "plumbing_water_demand"
+  | "plumbing_pipe_sizing";
+export type CalculationReferenceKind = "owner_supplied" | "verified_source_log";
+
+export interface CalculationReferenceIn {
+  source_kind: CalculationReferenceKind;
+  source_name: string;
+  source_ref: string;
+  research_source_id?: string | null;
+  publication_date?: string | null;
+  notes?: string | null;
+}
+
+export interface CalculationReferenceOut extends CalculationReferenceIn {
+  verification_label: string;
+}
+
+export interface CalculationSummaryOut {
+  id: string;
+  project_id: string;
+  project_code: string;
+  project_name: string;
+  task_id?: string | null;
+  title: string;
+  discipline: CalculationDiscipline | string;
+  calculation_type: CalculationType | string;
+  language: ReportLanguage | string;
+  classification: ProjectClassification | string;
+  revision: string;
+  version: number;
+  export_version: number;
+  status: string;
+  acceptance_passed: boolean;
+  data_provenance?: string;
+  acceptance_outcome_label?: string;
+  tokens_used: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CalculationDetailOut extends CalculationSummaryOut {
+  inputs: Record<string, unknown>;
+  units: Record<string, string>;
+  equations: string;
+  method: string;
+  assumptions: string[];
+  assumptions_text: string;
+  results: Record<string, unknown>;
+  acceptance_criteria: string[];
+  acceptance_criteria_text: string;
+  references: CalculationReferenceOut[];
+  references_text: string;
+  deliverables: DeliverableOut[];
+}
+
+export interface CalculationListResponse {
+  calculations: CalculationSummaryOut[];
+  total: number;
+}
+
+export interface CalculationExportOut {
+  calculation: CalculationDetailOut;
+  docx_deliverable: DeliverableOut;
+  pdf_deliverable: DeliverableOut;
+  xlsx_deliverable: DeliverableOut;
+}
+
+export interface CalculationPresetOut {
+  calculation_type: CalculationType;
+  discipline: CalculationDiscipline;
+  title_en: string;
+  title_ar: string;
+  inputs: Record<string, unknown>;
+  default_reference: CalculationReferenceIn;
+}
+
+export interface CalculationPresetListResponse {
+  presets: CalculationPresetOut[];
 }
