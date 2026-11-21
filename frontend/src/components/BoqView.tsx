@@ -668,6 +668,16 @@ export function BoqView({
               <div className="muted-hint" style={{ marginTop: "0.25rem" }}>
                 {copy.rateBlockedHint}
               </div>
+              {Boolean(
+                (activeBoq.source_metadata?.omission_summary as { omitted_count?: number } | undefined)
+                  ?.omitted_count
+              ) && (
+                <div className="muted-hint" style={{ marginTop: "0.25rem", fontWeight: 600 }}>
+                  {String(
+                    (activeBoq.source_metadata?.omission_summary as { note?: string } | undefined)?.note || ""
+                  )}
+                </div>
+              )}
             </div>
 
             {editingItem && (
@@ -807,6 +817,19 @@ export function BoqView({
                           >
                             {copy.setRateAction}
                           </button>
+                          {it.verification_status === "Extracted-Needs-Check" && (
+                            <button
+                              type="button"
+                              className="btn btn-secondary btn-compact"
+                              onClick={() =>
+                                void updateBoqItem(activeBoq.id, it.id, {
+                                  verification_status: "Extracted-Verified",
+                                }).then(setActiveBoq)
+                              }
+                            >
+                              {lang === "ar" ? "تأكيد التحقق" : "Mark Verified"}
+                            </button>
+                          )}
                           <button
                             type="button"
                             className="btn btn-secondary btn-compact"
