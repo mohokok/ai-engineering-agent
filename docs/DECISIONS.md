@@ -327,4 +327,18 @@ Classification: For Review
 - **Alternatives:** Shipping logs to an external syslog/SaaS aggregator or exposing raw logs over `/api/system/logs`, stripping `detail` from FastAPI error responses (breaking existing clients), or upgrading dev dependencies (`vitest`) across major versions blindly.
 - **Reason:** Local-only rotating redacted logs, backward-compatible bilingual error envelopes, verified ZIP+SHA-256 backup/restore, and preserved test stability deliver verifiable production hardening for an offline-capable consultancy workstation.
 
+---
+
+## ADR-030: Step 21 Final Test Pass, 15-Tab Synthetic E2E Smoke Suite & Bilingual Release Documentation
+- **Date:** 2026-11-22
+- **Status:** Accepted
+- **Context:** Step 21 closes the 21-step build plan with zero feature code edits, verifying all modules together and delivering clean Windows install/run instructions, EN/AR user guides, known limitations, release checklist, and 17-acceptance-criteria verification report.
+- **Decision:**
+  1. Freeze application feature code (`backend/app/`, `frontend/src/components/`, migrations `0001`–`0017`) with zero functional modifications.
+  2. Add comprehensive 15-tab / 17-acceptance-criteria synthetic smoke coverage in `backend/tests/test_e2e_smoke.py` (`TestClient` full workflow ending in independent QA `status == "passed"` -> task `verification_status == "verified"` -> backup dry-run) and bilingual RTL/LTR 15-tab render smoke test in `frontend/src/App.test.tsx`.
+  3. Deliver complete clean-Windows install/run instructions in `README.md` alongside bilingual manuals in `docs/user-guide/README.md`, `docs/user-guide/user-guide-en.md`, and `docs/user-guide/user-guide-ar.md`, plus transparent `Done`/`Partial`/`Not built` accounting in `docs/reports/step-21.md`.
+- **Alternatives:** Keeping documentation minimal in `README.md` only or modifying application behavior late in Step 21.
+- **Reason:** Freezing tested behavior and pairing automated full-stack smoke tests with clean-account EN/AR manuals prevents late regressions while giving the owner reproducible verification instructions.
+
+
 
