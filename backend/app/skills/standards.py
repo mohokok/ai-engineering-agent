@@ -30,7 +30,7 @@ from app.services.research import estimate_prompt_tokens
 
 # Case-sensitive standard code syntax detector (uppercase issuer prefixes only so lowercase English text like "en" never matches).
 STANDARD_CODE_DETECT_RE = re.compile(
-    r"\b(?:SYN|ISO|IEC|ASTM|ACI|BS|EN|IEEE|ASHRAE|NFPA|ASME|ANSI|SBC|LBC)(?:\s+[A-Z]|\s*-?\s*\d)[\w./-]*\b"
+    r"(?<![A-Za-z0-9-])(?:SYN|ISO|IEC|ASTM|ACI|BS|EN|IEEE|ASHRAE|NFPA|ASME|ANSI|SBC|LBC)(?:\s+[A-Z]|\s*-?\s*\d)[\w./-]*\b"
 )
 
 _DOC_NUMBER_RE = re.compile(r"\b[A-Z]{2,10}(?:\s+[A-Z])?\s*-?\s*\d{2,6}[\w./-]*\b")

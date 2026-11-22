@@ -1153,3 +1153,101 @@ export function exportStandardsRegister(payload: {
 export function getStandardsRegisterDownloadUrl(filename: string): string {
   return `/api/standards/register-files/${encodeURIComponent(filename)}`;
 }
+
+export function listSpecialistPresets(): Promise<import("./types").SpecialistPresetListResponse> {
+  return requestJson<import("./types").SpecialistPresetListResponse>(
+    "/api/specialist-assessments/presets"
+  );
+}
+
+export function createSpecialistAssessment(
+  projectId: string,
+  payload: {
+    task_id?: string | null;
+    domain: import("./types").SpecialistDomain;
+    workflow_mode?: import("./types").SpecialistWorkflowMode;
+    title: string;
+    language?: import("./types").ReportLanguage;
+    classification?: ProjectClassification;
+    revision?: string;
+    inputs: Record<string, unknown>;
+    references?: import("./types").SpecialistReferenceIn[];
+    use_ai?: boolean;
+    complexity?: TaskComplexity;
+  }
+): Promise<import("./types").SpecialistDetailOut> {
+  return requestJson<import("./types").SpecialistDetailOut>(
+    `/api/projects/${encodeURIComponent(projectId)}/specialist-assessments`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }
+  );
+}
+
+export function listProjectSpecialistAssessments(
+  projectId: string
+): Promise<import("./types").SpecialistListResponse> {
+  return requestJson<import("./types").SpecialistListResponse>(
+    `/api/projects/${encodeURIComponent(projectId)}/specialist-assessments`
+  );
+}
+
+export function getSpecialistDetail(
+  assessmentId: string
+): Promise<import("./types").SpecialistDetailOut> {
+  return requestJson<import("./types").SpecialistDetailOut>(
+    `/api/specialist-assessments/${encodeURIComponent(assessmentId)}`
+  );
+}
+
+export function updateSpecialistAssessment(
+  assessmentId: string,
+  payload: {
+    workflow_mode?: import("./types").SpecialistWorkflowMode;
+    title?: string;
+    language?: import("./types").ReportLanguage;
+    classification?: ProjectClassification;
+    revision?: string;
+    inputs?: Record<string, unknown>;
+    references?: import("./types").SpecialistReferenceIn[];
+  }
+): Promise<import("./types").SpecialistDetailOut> {
+  return requestJson<import("./types").SpecialistDetailOut>(
+    `/api/specialist-assessments/${encodeURIComponent(assessmentId)}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }
+  );
+}
+
+export function approveSpecialistAssessment(
+  assessmentId: string,
+  payload: { approved_by?: string; approval_note?: string | null }
+): Promise<import("./types").SpecialistDetailOut> {
+  return requestJson<import("./types").SpecialistDetailOut>(
+    `/api/specialist-assessments/${encodeURIComponent(assessmentId)}/approve`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }
+  );
+}
+
+export function exportSpecialistDeliverables(
+  assessmentId: string,
+  payload?: { language?: import("./types").ReportLanguage }
+): Promise<import("./types").SpecialistExportOut> {
+  return requestJson<import("./types").SpecialistExportOut>(
+    `/api/specialist-assessments/${encodeURIComponent(assessmentId)}/export`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload ?? {}),
+    }
+  );
+}

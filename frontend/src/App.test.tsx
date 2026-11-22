@@ -5,6 +5,7 @@ import {
   addBoqItem,
   approveSpecificationDraft,
   approveScheduleDraft,
+  approveSpecialistAssessment,
   confirmExtractionDrawingUnit,
   confirmStandardMetadata,
   createBoqSheet,
@@ -12,6 +13,7 @@ import {
   createManualIssue,
   createProject,
   createProjectSchedule,
+  createSpecialistAssessment,
   createStandard,
   createTask,
   createTechnicalComparison,
@@ -21,6 +23,7 @@ import {
   exportBoqDeliverables,
   exportCalculationDeliverables,
   exportScheduleDeliverables,
+  exportSpecialistDeliverables,
   exportSpecificationDeliverables,
   exportStandardsRegister,
   exportTechnicalComparison,
@@ -33,6 +36,7 @@ import {
   getComparisonDetail,
   getParametricDrawingDetail,
   getScheduleDetail,
+  getSpecialistDetail,
   getSpecificationDetail,
   getStandardDetail,
   getStandardsRegisterDownloadUrl,
@@ -45,7 +49,9 @@ import {
   listProjectParametricDrawings,
   listProjectQaReviews,
   listProjectSchedules,
+  listProjectSpecialistAssessments,
   listProjectSpecifications,
+  listSpecialistPresets,
   listSpecificationPresets,
   listStandardPresets,
   listStandards,
@@ -55,6 +61,7 @@ import {
   suggestParametricModel,
   updateCalculation,
   updateQaIssue,
+  updateSpecialistAssessment,
   updateStandard,
   verifyTaskWithQa,
   getDeliverableDownloadUrl,
@@ -96,6 +103,7 @@ import { ProjectWorkspaceView } from "./components/ProjectWorkspaceView";
 import { ProviderSettingsView } from "./components/ProviderSettingsView";
 import { ResearchView } from "./components/ResearchView";
 import { SpecificationsView } from "./components/SpecificationsView";
+import { SpecialistEngineeringView } from "./components/SpecialistEngineeringView";
 import { StandardsLibraryView } from "./components/StandardsLibraryView";
 import { TechnicalComparisonsView } from "./components/TechnicalComparisonsView";
 import type {
@@ -110,6 +118,7 @@ import type {
   ResearchRunDetailOut,
   ResearchRunSummaryOut,
   ReviewReportDetailOut,
+  SpecialistDetailOut,
   StandardDocumentOut,
   TaskDetailOut,
   TaskSummaryOut,
@@ -3566,5 +3575,173 @@ describe("App Step 10 BOQ & quantity UI", () => {
     expect(getStandardsRegisterDownloadUrl("standards_register_v1.xlsx")).toBe(
       "/api/standards/register-files/standards_register_v1.xlsx"
     );
+  });
+
+  it("renders Step 18 HVAC/Fire/Healthcare view in RTL Arabic & LTR English and calls specialist endpoints", async () => {
+    const sampleAssessment: SpecialistDetailOut = {
+      id: "spec-18-1",
+      project_id: "proj-18",
+      project_code: "MED-18",
+      project_name: "Synthetic Medical Clinic",
+      domain: "healthcare",
+      workflow_mode: "full_preflight",
+      title: "Synthetic Isolation Room Ventilation Check",
+      language: "en",
+      classification: "Preliminary",
+      revision: "Rev 01",
+      version: 1,
+      export_version: 1,
+      status: "evaluated",
+      checks_passed: true,
+      blocked_missing_count: 0,
+      failed_checks_count: 0,
+      standards_status: "no_verified_standard_on_file",
+      use_ai: true,
+      ai_draft_status: "unverified_ai_draft",
+      ai_draft_label: "UNVERIFIED AI DRAFT — prose not yet verified or approved by owner",
+      tokens_used: 85,
+      preliminary_label: "Preliminary — assumptions, presets, and engineering thresholds must be verified by a licensed engineer",
+      software_recommendation: "Input preparation & sanity check ONLY — validated commercial MEP/airflow software recommended (e.g., Carrier HAP, CONTAM).",
+      summary: "Synthetic preflight check",
+      created_at: "2026-11-22T00:00:00Z",
+      updated_at: "2026-11-22T00:00:00Z",
+      inputs: { spaces: [{ space_id: "HC-ISO-01" }] },
+      results: {
+        equations: ["Room Volume = floor_area_m2 * ceiling_height_m  [m³]"],
+        methodology: "Deterministic room balance check",
+        prepared_items: [
+          { space_id: "HC-ISO-01", room_volume_m3: 60.0, effective_ach: 13.2, air_balance_ls: -40.0 },
+        ],
+        check_rows: [
+          {
+            item_id: "HC-ISO-01",
+            label: "Effective Total ACH >= Target",
+            expected: ">= 12.0 ACH",
+            actual: "13.2 ACH",
+            unit: "ACH",
+            status: "PASS (PRELIMINARY)",
+            notes: "Owner-supplied limit",
+          },
+        ],
+        blocked_flags: [],
+        metrics: { passed_checks_count: 4 },
+      },
+      references: [
+        {
+          source_kind: "no_verified_standard_on_file",
+          code_or_source_name: "no verified standard on file - verify against the locally adopted code",
+          edition_or_date: "unknown",
+          status: "no_verified_standard_on_file",
+          verification_label: "no verified standard on file - verify against the locally adopted code",
+        },
+      ],
+      preliminary_assumptions: ["Preliminary — verify by a licensed engineer"],
+      token_usage: {
+        prompt_tokens: 55,
+        output_tokens: 30,
+        total_tokens: 85,
+        thoughts_tokens: 0,
+        cached_tokens: 0,
+        latency_ms: 120,
+      },
+      deliverables: [
+        {
+          id: "deliv-18-1",
+          project_id: "proj-18",
+          assessment_id: "spec-18-1",
+          title: "Healthcare Check PDF",
+          deliverable_type: "specialist_healthcare",
+          discipline: "healthcare",
+          format: "pdf",
+          classification: "Preliminary",
+          status: "exported",
+          version: 1,
+          folder_name: "04_Engineering_Calculations",
+          filename: "healthcare_spec18_v1_e1_en.pdf",
+          relative_path: "04_Engineering_Calculations/healthcare_spec18_v1_e1_en.pdf",
+          sha256: "cafe12345678",
+          download_url: "/api/deliverables/deliv-18-1/download",
+          created_at: "2026-11-22T00:00:00Z",
+          updated_at: "2026-11-22T00:00:00Z",
+        },
+      ],
+    };
+
+    const appAr = renderToStaticMarkup(<App initialLang="ar" initialTab="specialist" />);
+    expect(appAr).toContain("تكييف / حريق / صحة");
+    expect(appAr).toContain("الخطوة 18");
+    expect(appAr).toContain("dir=\"rtl\"");
+
+    const appEn = renderToStaticMarkup(<App initialLang="en" initialTab="specialist" />);
+    expect(appEn).toContain("HVAC / Fire / Healthcare");
+    expect(appEn).toContain("Step 18");
+    expect(appEn).toContain("dir=\"ltr\"");
+
+    const viewEn = renderToStaticMarkup(
+      <SpecialistEngineeringView
+        lang="en"
+        initialPresets={[]}
+        initialAssessments={[sampleAssessment]}
+        initialSelected={sampleAssessment}
+      />
+    );
+    expect(viewEn).toContain("no verified standard on file - verify against the locally adopted code");
+    expect(viewEn).toContain("UNVERIFIED AI DRAFT");
+    expect(viewEn).toContain("Carrier HAP");
+    expect(viewEn).toContain("PASS (PRELIMINARY)");
+    expect(viewEn).toContain("cafe12345678");
+
+    const viewAr = renderToStaticMarkup(
+      <SpecialistEngineeringView
+        lang="ar"
+        initialPresets={[]}
+        initialAssessments={[sampleAssessment]}
+        initialSelected={sampleAssessment}
+      />
+    );
+    expect(viewAr).toContain("تحضير المدخلات وفحص المخرجات");
+    expect(viewAr).toContain("توصية البرمجيات الهندسية المعتمدة");
+
+    const approved = { ...sampleAssessment, ai_draft_status: "owner_approved", version: 2 };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ presets: [] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(sampleAssessment), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ assessments: [sampleAssessment], total: 1 }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(sampleAssessment), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(approved), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(approved), { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            assessment: approved,
+            docx_deliverable: sampleAssessment.deliverables[0],
+            pdf_deliverable: sampleAssessment.deliverables[0],
+            xlsx_deliverable: sampleAssessment.deliverables[0],
+          }),
+          { status: 201 }
+        )
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const pRes = await listSpecialistPresets();
+    expect(pRes.presets).toEqual([]);
+    const created = await createSpecialistAssessment("proj-18", {
+      domain: "healthcare",
+      workflow_mode: "full_preflight",
+      title: "Isolation Check",
+      inputs: { spaces: [] },
+    });
+    expect(created.id).toBe("spec-18-1");
+    const listed = await listProjectSpecialistAssessments("proj-18");
+    expect(listed.total).toBe(1);
+    const det = await getSpecialistDetail("spec-18-1");
+    expect(det.checks_passed).toBe(true);
+    const upd = await updateSpecialistAssessment("spec-18-1", { workflow_mode: "output_check" });
+    expect(upd.version).toBe(2);
+    const appRes = await approveSpecialistAssessment("spec-18-1", { approved_by: "Owner" });
+    expect(appRes.ai_draft_status).toBe("owner_approved");
+    const expRes = await exportSpecialistDeliverables("spec-18-1", { language: "en" });
+    expect(expRes.pdf_deliverable.folder_name).toBe("04_Engineering_Calculations");
   });
 });
