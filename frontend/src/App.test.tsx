@@ -25,6 +25,7 @@ import {
   enhanceReviewReportAi,
   exportBoqDeliverables,
   exportCalculationDeliverables,
+  exportQaReviewReport,
   exportScheduleDeliverables,
   exportSpecialistDeliverables,
   exportSpecificationDeliverables,
@@ -4050,5 +4051,107 @@ describe("Step 21 End-to-End 15-Tab UI Smoke Render (EN LTR + AR RTL)", () => {
       expect(enHtml).toContain('dir="ltr"');
       expect(enHtml).toContain("Step 20");
     }
+  });
+});
+
+describe("Step 22 Company Branding, Design Tokens & QA Branded Export", () => {
+  it("renders ALHARAM ALDAHABY / الهرم الذهبي header, logo, classification badge, and footer in RTL and LTR", () => {
+    const arHtml = renderToStaticMarkup(<App initialLang="ar" initialTab="projects" />);
+    expect(arHtml).toContain('dir="rtl"');
+    expect(arHtml).toContain('src="/branding/logo.jpg"');
+    expect(arHtml).toContain("ALHARAM ALDAHABY Engineering Consultancy");
+    expect(arHtml).toContain("الهرم الذهبي للاستشارات الهندسية");
+    expect(arHtml).toContain("badge-prelim");
+    expect(arHtml).toContain("Preliminary");
+    expect(arHtml).toContain("app-footer");
+
+    const enHtml = renderToStaticMarkup(<App initialLang="en" initialTab="projects" />);
+    expect(enHtml).toContain('dir="ltr"');
+    expect(enHtml).toContain('src="/branding/logo.jpg"');
+    expect(enHtml).toContain("ALHARAM ALDAHABY Engineering Consultancy");
+    expect(enHtml).toContain("الهرم الذهبي للاستشارات الهندسية");
+    expect(enHtml).toContain("badge-prelim");
+    expect(enHtml).toContain("app-footer");
+  });
+
+  it("exposes corporate branding constants and wires QA branded export API cleanly", async () => {
+    const { BRAND_COLORS, BRAND_IDENTITY, BRAND_LOGO_URL } = await import("./branding");
+    expect(BRAND_COLORS.brown).toBe("#5A3A1A");
+    expect(BRAND_COLORS.gold).toBe("#E0AE1B");
+    expect(BRAND_COLORS.bgCream).toBe("#FAF7F0");
+    expect(BRAND_LOGO_URL).toBe("/branding/logo.jpg");
+    expect(BRAND_IDENTITY.en.name).toBe("ALHARAM ALDAHABY");
+    expect(BRAND_IDENTITY.ar.name).toBe("الهرم الذهبي");
+
+    const { QaIssuesView } = await import("./components/QaIssuesView");
+    const qaHtmlEn = renderToStaticMarkup(
+      <QaIssuesView
+        lang="en"
+        initialReview={{
+          id: "qa-rev-22",
+          project_id: "p-22",
+          project_code: "SYN-22",
+          project_name: "Synthetic Tower",
+          classification: "Preliminary",
+          status: "passed",
+          producer_reasoning_excluded: true,
+          qa_context_summary: {
+            producer_reasoning_excluded: true,
+            excluded_fields: [],
+            inspected_boq_ids: [],
+            inspected_drawing_ids: [],
+            inspected_report_ids: [],
+            inspected_calculation_ids: [],
+            inspected_specification_ids: [],
+            inspected_comparison_ids: [],
+            inspected_schedule_ids: [],
+            inspected_standard_ids: [],
+            inspected_assessment_ids: [],
+            inspected_structural_ids: [],
+            inspected_deliverable_ids: [],
+            inspected_extraction_ids: [],
+            inspected_research_source_count: 0,
+            expected_task_deliverables: [],
+          },
+          checks: [],
+          issues_opened_count: 0,
+          open_issues_count: 0,
+          tokens_used: 0,
+          issues: [],
+          created_at: "2026-11-22T10:00:00Z",
+        }}
+      />
+    );
+    expect(qaHtmlEn).toContain("Export Branded QA Report (DOCX + PDF)");
+
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          qa_review_id: "qa-rev-22",
+          project_id: "p-22",
+          language: "ar",
+          version: 1,
+          docx_deliverable_id: "d-1",
+          docx_file_name: "SYN_qa_review_qa-rev-2_ar_v1.docx",
+          docx_relative_path: "08_Reports/SYN_qa_review_qa-rev-2_ar_v1.docx",
+          docx_sha256: "a".repeat(64),
+          pdf_deliverable_id: "d-2",
+          pdf_file_name: "SYN_qa_review_qa-rev-2_ar_v1.pdf",
+          pdf_relative_path: "08_Reports/SYN_qa_review_qa-rev-2_ar_v1.pdf",
+          pdf_sha256: "b".repeat(64),
+          classification: "Preliminary",
+          tokens_used: 0,
+        }),
+        { status: 201 }
+      )
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const out = await exportQaReviewReport("qa-rev-22", "ar");
+    expect(out.tokens_used).toBe(0);
+    expect(out.docx_relative_path).toBe("08_Reports/SYN_qa_review_qa-rev-2_ar_v1.docx");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/qa-reviews/qa-rev-22/export",
+      expect.objectContaining({ method: "POST" })
+    );
   });
 });

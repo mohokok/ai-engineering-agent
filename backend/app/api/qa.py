@@ -11,6 +11,8 @@ from app.schemas.qa import (
     IssueOut,
     IssueUpdateRequest,
     QaReviewDetailOut,
+    QaReviewExportOut,
+    QaReviewExportRequest,
     QaReviewListResponse,
     QaReviewRunRequest,
     TaskVerifyOut,
@@ -22,6 +24,7 @@ from app.services.qa import (
     QaValidationError,
     QaVerificationBlockedError,
     create_manual_issue,
+    export_qa_review_report,
     get_qa_review_detail,
     list_project_issues,
     list_project_qa_reviews,
@@ -163,4 +166,30 @@ def update_issue_endpoint(
     except QaNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except QaValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+
+
+@router.post(
+    "/qa-reviews/{review_id}/export",
+    response_model=QaReviewExportOut,
+    status_code=status.HTTP_201_CREATED,
+)
+def export_qa_review_report_endpoint(
+    review_id: str,
+    request: Request,
+    payload: QaReviewExportRequest | None = None,
+    db: Session = Depends(get_db),
+) -> QaReviewExportOut:
+    """Export an immutable branded DOCX + PDF report for an independent QA review into 08_Reports/."""
+    lang = payload.language if payload is not None else "ar"
+    try:
+        return export_qa_review_report(
+            db,
+            _get_settings(request),
+            review_id,
+            language=lang,
+        )
+    except (QaNotFoundError, ProjectNotFoundError) as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc

@@ -17,6 +17,7 @@ from app.schemas.planning import (
     WbsItemIn,
 )
 from app.schemas.reports import ReportLanguage
+from app.services.branding_exports import apply_xlsx_branding, write_branded_story_pdf
 from app.services.calc_export import _safe_xlsx_text
 from app.services.report_generator import (
     _WINDOWS_FONTS_DIR,
@@ -331,22 +332,18 @@ tr.warnrow td {{ background-color: #fffbeb; }}
 </body>
 </html>"""
 
-    archive = pymupdf.Archive(str(_WINDOWS_FONTS_DIR)) if has_win_tahoma else None
-    story = pymupdf.Story(html=html_doc, archive=archive)
-    writer = pymupdf.DocumentWriter(str(out_path))
-    mediabox = pymupdf.Rect(0, 0, 842, 595)  # A4 Landscape
-    where = mediabox + (26, 26, -26, -26)
-    try:
-        more = True
-        guard = 0
-        while more and guard < 120:
-            dev = writer.begin_page(mediabox)
-            more, _ = story.place(where)
-            story.draw(dev)
-            writer.end_page()
-            guard += 1
-    finally:
-        writer.close()
+    write_branded_story_pdf(
+        out_path,
+        html_doc=html_doc,
+        fonts_dir=_WINDOWS_FONTS_DIR,
+        landscape=True,
+        classification=data.classification,
+        language=data.language,
+        side_margin=24.0,
+        top_margin=60.0,
+        bottom_margin=40.0,
+        max_pages=120,
+    )
 
 
 def generate_schedule_xlsx(out_path: Path, data: ScheduleRenderData) -> None:
@@ -503,4 +500,12 @@ def generate_schedule_xlsx(out_path: Path, data: ScheduleRenderData) -> None:
     for col_i in range(1, len(wbs_hdrs) + 1):
         ws2.column_dimensions[get_column_letter(col_i)].width = 28 if col_i in {2, 6, 10, 15} else 16
 
+    apply_xlsx_branding(
+        wb,
+        document_title=data.title,
+        project_code=data.project_code,
+        project_name=data.project_name,
+        classification=data.classification,
+        language=data.language,
+    )
     wb.save(str(out_path))

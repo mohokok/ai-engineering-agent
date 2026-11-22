@@ -1,6 +1,7 @@
 """Step 12 QA Agent orchestration, issue register lifecycle, and task verification gate (0 AI tokens)."""
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 import re
 
 from sqlalchemy import func, select
@@ -14,7 +15,7 @@ from app.agents.qa_agent import (
 )
 from app.core.config import Settings
 from app.db.base import new_uuid, utc_now
-from app.db.models import AuditLog, Issue, Project, QaReview, Task
+from app.db.models import AuditLog, Deliverable, Issue, Project, QaReview, Task
 from app.schemas.qa import (
     IssueCreateRequest,
     IssueListResponse,
@@ -23,12 +24,22 @@ from app.schemas.qa import (
     QaCheckMetricOut,
     QaContextIsolationReport,
     QaReviewDetailOut,
+    QaReviewExportOut,
     QaReviewListResponse,
     QaReviewRunRequest,
     TaskVerifyOut,
     TaskVerifyRequest,
 )
 from app.services.projects import ProjectNotFoundError
+from app.services.qa_export import (
+    QaReportRenderData,
+    ReportLang,
+    file_sha256_and_size,
+    generate_qa_report_docx,
+    generate_qa_report_pdf,
+    utc_issued_iso,
+)
+from app.services.workspace import resolve_project_file_path
 
 _QA_NUM_RE = re.compile(r"^QA-(\d+)$", re.IGNORECASE)
 
@@ -602,3 +613,138 @@ def update_issue(
     db.commit()
     db.refresh(row)
     return _to_issue_out(row)
+
+
+def export_qa_review_report(
+    db: Session,
+    settings: Settings,
+    review_id: str,
+    *,
+    language: ReportLang = "ar",
+) -> QaReviewExportOut:
+    """Export an immutable branded DOCX + PDF QA Review report into 08_Reports with SHA-256 tracking."""
+    detail = get_qa_review_detail(db, review_id)
+    review_row = db.get(QaReview, review_id)
+    if review_row is None:
+        raise QaNotFoundError(f"QA review '{review_id}' was not found.")
+    project = db.get(Project, review_row.project_id)
+    if project is None:
+        raise ProjectNotFoundError(f"Project '{review_row.project_id}' was not found.")
+
+    short_id = review_id[:8]
+    existing_vers = db.scalars(
+        select(Deliverable.version).where(
+            Deliverable.project_id == project.id,
+            Deliverable.deliverable_type == "qa_report",
+            Deliverable.filename.like(f"%qa_review_{short_id}%"),
+        )
+    ).all()
+    next_ver = (max(existing_vers) if existing_vers else 0) + 1
+
+    safe_code = re.sub(r"[^A-Za-z0-9_-]+", "_", project.code).strip("_") or "PRJ"
+    base_name = f"{safe_code}_qa_review_{short_id}_{language}_v{next_ver}"
+    ws_root = settings.workspaces_dir.resolve()
+    reports_rel = "08_Reports"
+    docx_name = f"{base_name}.docx"
+    pdf_name = f"{base_name}.pdf"
+    docx_rel = f"{reports_rel}/{docx_name}"
+    pdf_rel = f"{reports_rel}/{pdf_name}"
+    docx_abs = resolve_project_file_path(ws_root, project.workspace_slug, docx_rel)
+    pdf_abs = resolve_project_file_path(ws_root, project.workspace_slug, pdf_rel)
+
+    render = QaReportRenderData(
+        review_id=review_id,
+        project_code=project.code,
+        project_name=project.name,
+        classification=detail.classification,
+        review_status=detail.status,
+        open_issues_count=detail.open_issues_count,
+        issues_opened_count=detail.issues_opened_count,
+        tokens_used=detail.tokens_used,
+        language=language,
+        version=next_ver,
+        issued_at_iso=utc_issued_iso(),
+        context_summary=detail.qa_context_summary,
+        checks=detail.checks,
+        issues=detail.issues,
+    )
+    generate_qa_report_docx(docx_abs, render)
+    generate_qa_report_pdf(pdf_abs, render)
+
+    docx_sha, docx_size = file_sha256_and_size(docx_abs)
+    pdf_sha, pdf_size = file_sha256_and_size(pdf_abs)
+
+    docx_deliv = Deliverable(
+        id=new_uuid(),
+        project_id=project.id,
+        task_id=review_row.task_id,
+        title=f"QA Review Report ({short_id}) [{language.upper()}] v{next_ver} (DOCX)",
+        deliverable_type="qa_report",
+        discipline="multidisciplinary",
+        format="docx",
+        classification=review_row.classification,
+        status="draft",
+        version=next_ver,
+        folder_name=reports_rel,
+        filename=docx_name,
+        relative_path=docx_rel,
+        mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        size_bytes=docx_size,
+        sha256=docx_sha,
+        summary=f"Independent QA Review {review_id} ({detail.status})",
+    )
+    pdf_deliv = Deliverable(
+        id=new_uuid(),
+        project_id=project.id,
+        task_id=review_row.task_id,
+        title=f"QA Review Report ({short_id}) [{language.upper()}] v{next_ver} (PDF)",
+        deliverable_type="qa_report",
+        discipline="multidisciplinary",
+        format="pdf",
+        classification=review_row.classification,
+        status="draft",
+        version=next_ver,
+        folder_name=reports_rel,
+        filename=pdf_name,
+        relative_path=pdf_rel,
+        mime_type="application/pdf",
+        size_bytes=pdf_size,
+        sha256=pdf_sha,
+        summary=f"Independent QA Review {review_id} ({detail.status})",
+    )
+    db.add(docx_deliv)
+    db.add(pdf_deliv)
+    db.add(
+        AuditLog(
+            project_id=project.id,
+            action="qa_review.exported",
+            entity_type="qa_review",
+            entity_id=review_id,
+            actor="owner",
+            details_json={
+                "language": language,
+                "version": next_ver,
+                "docx_deliverable_id": docx_deliv.id,
+                "pdf_deliverable_id": pdf_deliv.id,
+                "docx_sha256": docx_sha,
+                "pdf_sha256": pdf_sha,
+            },
+        )
+    )
+    db.commit()
+    return QaReviewExportOut(
+        qa_review_id=review_id,
+        project_id=project.id,
+        language=language,
+        version=next_ver,
+        docx_deliverable_id=docx_deliv.id,
+        docx_file_name=docx_name,
+        docx_relative_path=docx_rel,
+        docx_sha256=docx_sha,
+        pdf_deliverable_id=pdf_deliv.id,
+        pdf_file_name=pdf_name,
+        pdf_relative_path=pdf_rel,
+        pdf_sha256=pdf_sha,
+        classification=detail.classification,
+        tokens_used=detail.tokens_used,
+    )

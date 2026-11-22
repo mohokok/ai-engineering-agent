@@ -340,5 +340,27 @@ Classification: For Review
 - **Alternatives:** Keeping documentation minimal in `README.md` only or modifying application behavior late in Step 21.
 - **Reason:** Freezing tested behavior and pairing automated full-stack smoke tests with clean-account EN/AR manuals prevents late regressions while giving the owner reproducible verification instructions.
 
+---
+
+## ADR-031: Step 22 Company Branding Source of Truth, UI Redesign & Shared Export Branding Helpers
+- **Date:** 2026-11-22
+- **Status:** Accepted
+- **Context:** Step 22 applies the owner-supplied corporate visual identity (`ALHARAM ALDAHABY` / `Engineering Consultancy` and `الهرم الذهبي` / `للاستشارات الهندسية`, using logo palette `#5A3A1A` dark brown, `#E0AE1B` gold, and `#FAF7F0` warm cream) across the web workspace and every exported engineering document while keeping all existing functionality, test contracts, database schemas, and arithmetic checks intact.
+- **Decision:**
+  1. **Single Branding Source of Truth & Byte-Identical Logo:**
+     - Create `backend/app/core/branding.py` (`COMPANY_NAME_EN`, `COMPANY_NAME_AR`, `COMPANY_SUBTITLE_EN`, `COMPANY_SUBTITLE_AR`, `BRAND_COLORS`, `BACKEND_LOGO_PATH`, `logo_sha256`, `build_classification_footer`, `build_backup_branding_metadata`) and `frontend/src/branding.ts` (`BRAND_IDENTITY`, `BRAND_LOGO_URL`, `BRAND_COLORS`, `CLASSIFICATION_DISCLAIMER`).
+     - Keep `frontend/public/branding/logo.jpg` (`1193x210`, `53,527` bytes) unmodified and copy it byte-for-byte to `backend/app/assets/branding/logo.jpg` so exports do not depend on `frontend/public/`; enforce SHA-256 identity in automated tests.
+  2. **One Shared Branding Helper Per Output Format (`backend/app/services/branding_exports.py`):**
+     - **DOCX (`apply_docx_branding`):** Attaches directional corporate header table (start-aligned logo — right edge in Arabic RTL via `<w:bidiVisual>`, left edge in English LTR — plus bilingual company names and gold bottom accent `#E0AE1B`) and classification footer across sections without adding `<w:bidi>` to English LTR documents.
+     - **PDF (`write_branded_story_pdf` & `stamp_pdf_branding`):** Renders `pymupdf.Story` payloads with expanded top/bottom margins (`60-62pt` top, `40-42pt` bottom) and stamps logo image XObject reuse + Tahoma/HarfBuzz-shaped bilingual header strip + classification & Page X/Y footer on every page (plus `compact=True` outer-margin stamping for `parametric_cad.py` true-scale 2-page PDFs).
+     - **XLSX (`apply_xlsx_branding`):** Preserves **exact** existing worksheet counts, merged blocks, row anchors (`A1..H4`), and live Excel formulas by keeping existing rows unshifted; attaches corporate logo on Row 1 right of used columns, sets `oddHeader`/`oddFooter` on every worksheet, places bilingual name on Row 2 right column, and appends the classification footer banner in column 1 ONLY at `ws.max_row + 2` so `qa_agent.py` arithmetic scans skip it cleanly.
+     - **DXF & Backups:** Prepends bilingual company identity to ModelSpace and PaperSpace (`ISO_SHEET_PLAN`) title blocks in `parametric_cad.py`, and records `"branding"` metadata + logo SHA-256 inside `manifest.json` in `services/backup.py`.
+  3. **Branded Independent QA Report Export (Zero DB Migration):**
+     - Add `backend/app/services/qa_export.py` and `POST /api/qa-reviews/{review_id}/export` (`export_qa_review_report` in `services/qa.py`) outputting branded bilingual `DOCX` + `PDF` QA Review & Issue Register bundles into `08_Reports/` using the existing `Deliverable` table (`deliverable_type="qa_report"`) with zero Alembic migration.
+  4. **Cohesive Offline-Safe UI Redesign (`frontend/index.html`, `frontend/src/index.css`, `frontend/src/App.tsx`):**
+     - Define centralized CSS design tokens (`--brand-brown: #5a3a1a`, `--brand-gold: #e0ae1b`, `--brand-bg: #faf7f0`, warm borders/surfaces, accessible gold focus outlines), local/system Arabic-readable font stack (zero remote CDN font imports), logo favicon + dynamic `<title>`, grouped horizontally scrollable navigation bar, `Preliminary` header badge, directional logo lockup, executive footer, and QA report export controls while preserving every existing test label and API contract.
+- **Alternatives:** Duplicating header/footer layout code per exporter, shifting existing XLSX header rows downward (which would invalidate existing cell references and live Excel formulas), linking Google Fonts CDN stylesheets, or adding a new database migration solely for QA report metadata.
+- **Reason:** Centralized format helpers eliminate drift across Steps 09–19 + QA exports, unshifted XLSX branding guarantees formula compatibility, local/system font stacks preserve offline reliability, and reusing `Deliverable` keeps schema risk at zero.
+
 
 

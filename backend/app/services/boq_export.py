@@ -10,6 +10,7 @@ from openpyxl.styles import Alignment, Font, PatternFill
 
 from app.schemas.boq import BoqChecksSummaryOut
 from app.schemas.reports import ReportLanguage
+from app.services.branding_exports import apply_xlsx_branding
 
 _FORMULA_INJECTION_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
 
@@ -315,6 +316,14 @@ def generate_boq_xlsx(
         for col_letter, width in {"A": 28, "B": 30, "C": 16, "D": 36, "E": 48, "F": 44}.items():
             ws_chk.column_dimensions[col_letter].width = width
 
+    apply_xlsx_branding(
+        wb,
+        document_title=title,
+        project_code=project_code,
+        project_name=project_name,
+        classification=classification,
+        language=language,
+    )
     wb.save(str(out_path))
 
 

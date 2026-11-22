@@ -22,6 +22,7 @@ from app.schemas.reports import (
     RevisionBlockOut,
     SourceLocationRef,
 )
+from app.services.branding_exports import apply_docx_branding, write_branded_story_pdf
 
 _WINDOWS_FONTS_DIR = Path("C:/Windows/Fonts")
 
@@ -294,6 +295,13 @@ def generate_review_report_docx(out_path: Path, data: ReviewReportRenderData) ->
     normal_style = doc.styles["Normal"]
     normal_style.font.name = "Tahoma" if is_ar else "Calibri"
     normal_style.font.size = Pt(10)
+
+    apply_docx_branding(
+        doc,
+        language=data.language,
+        classification=data.classification,
+        document_title=data.title,
+    )
 
     # 1. Title & Classification Banner
     h = doc.add_heading(f"{data.title} — [{lbl['classification_prefix']}: {data.classification}]", level=1)
@@ -808,19 +816,16 @@ li {{ margin-bottom: 3pt; }}
 </body>
 </html>"""
 
-    archive = pymupdf.Archive(str(_WINDOWS_FONTS_DIR)) if has_win_tahoma else None
-    story = pymupdf.Story(html=html_doc, archive=archive)
-    writer = pymupdf.DocumentWriter(str(out_path))
-    mediabox = pymupdf.paper_rect("a4")
-    where = mediabox + (36, 36, -36, -36)
-    try:
-        more = True
-        page_guard = 0
-        while more and page_guard < 100:
-            dev = writer.begin_page(mediabox)
-            more, _ = story.place(where)
-            story.draw(dev)
-            writer.end_page()
-            page_guard += 1
-    finally:
-        writer.close()
+    write_branded_story_pdf(
+        out_path,
+        html_doc=html_doc,
+        fonts_dir=_WINDOWS_FONTS_DIR,
+        page_size="a4",
+        landscape=False,
+        classification=data.classification,
+        language=data.language,
+        side_margin=32.0,
+        top_margin=62.0,
+        bottom_margin=42.0,
+        max_pages=100,
+    )

@@ -14,6 +14,11 @@ import pymupdf
 
 from app.schemas.reports import ReportLanguage
 from app.schemas.standards import StandardDocumentOut
+from app.services.branding_exports import (
+    apply_docx_branding,
+    apply_xlsx_branding,
+    write_branded_story_pdf,
+)
 from app.services.calc_export import _safe_xlsx_text
 from app.services.report_generator import (
     _WINDOWS_FONTS_DIR,
@@ -97,6 +102,13 @@ def generate_standards_register_docx(out_path: Path, data: StandardsRegisterRend
     normal_style = doc.styles["Normal"]
     normal_style.font.name = "Tahoma"
     normal_style.font.size = Pt(9.0)
+
+    apply_docx_branding(
+        doc,
+        language=data.language,
+        classification=data.classification,
+        document_title=lbl["title"],
+    )
 
     p_t = doc.add_heading(f"{lbl['title']} [{data.classification}]", level=1)
     _style_paragraph(p_t, is_ar=is_ar, bold=True, font_size=13, color=RGBColor(0x1E, 0x3A, 0x5F))
@@ -288,22 +300,18 @@ td.bad {{ background-color: #fee2e2; color: #991b1b; }}
 </body>
 </html>"""
 
-    archive = pymupdf.Archive(str(_WINDOWS_FONTS_DIR)) if has_win_tahoma else None
-    story = pymupdf.Story(html=html_doc, archive=archive)
-    writer = pymupdf.DocumentWriter(str(out_path))
-    mediabox = pymupdf.Rect(0, 0, 842, 595)
-    where = mediabox + (26, 26, -26, -26)
-    try:
-        more = True
-        guard = 0
-        while more and guard < 120:
-            dev = writer.begin_page(mediabox)
-            more, _ = story.place(where)
-            story.draw(dev)
-            writer.end_page()
-            guard += 1
-    finally:
-        writer.close()
+    write_branded_story_pdf(
+        out_path,
+        html_doc=html_doc,
+        fonts_dir=_WINDOWS_FONTS_DIR,
+        landscape=True,
+        classification=data.classification,
+        language=data.language,
+        side_margin=24.0,
+        top_margin=60.0,
+        bottom_margin=40.0,
+        max_pages=120,
+    )
 
 
 def generate_standards_register_xlsx(out_path: Path, data: StandardsRegisterRenderData) -> None:
@@ -438,4 +446,12 @@ def generate_standards_register_xlsx(out_path: Path, data: StandardsRegisterRend
     for col_i in range(1, len(s2_hdrs) + 1):
         ws2.column_dimensions[get_column_letter(col_i)].width = 42 if col_i == 4 else 20
 
+    apply_xlsx_branding(
+        wb,
+        document_title="Standards Library Register",
+        project_code=data.scope_label,
+        project_name=data.scope_label,
+        classification=data.classification,
+        language=data.language,
+    )
     wb.save(str(out_path))

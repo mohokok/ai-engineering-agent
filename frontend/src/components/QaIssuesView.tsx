@@ -1,6 +1,8 @@
 import { type FormEvent, useCallback, useEffect, useState } from "react";
 import {
   createManualIssue,
+  exportQaReviewReport,
+  getDeliverableDownloadUrl,
   listProjectIssues,
   listProjectQaReviews,
   listProjects,
@@ -15,6 +17,7 @@ import type {
   Lang,
   ProjectSummary,
   QaReviewDetailOut,
+  QaReviewExportOut,
   TaskSummaryOut,
 } from "../types";
 
@@ -30,6 +33,8 @@ interface QaCopy {
   runningQaBtn: string;
   verifyTaskBtn: string;
   verifyingTaskBtn: string;
+  exportQaBtn: string;
+  exportingQaBtn: string;
   isolationBanner: string;
   noEvidenceNotice: string;
   rerunRequiredNotice: string;
@@ -80,6 +85,8 @@ const COPY: Record<Lang, QaCopy> = {
     runningQaBtn: "جاري تشغيل الفحص المستقل...",
     verifyTaskBtn: "اعتماد تحقق التكليف (يتطلب نجاح QA وإغلاق كل القضايا)",
     verifyingTaskBtn: "جاري التحقق...",
+    exportQaBtn: "تصدير تقرير الجودة (DOCX + PDF)",
+    exportingQaBtn: "جاري التصدير...",
     isolationBanner:
       "عزل سياق الجودة المستقل مُفعَّل: تم استبعاد خطط وافتراضات ونتائج المُنتِج تماماً عن فحص QA.",
     noEvidenceNotice:
@@ -133,6 +140,8 @@ const COPY: Record<Lang, QaCopy> = {
     runningQaBtn: "Running Independent QA...",
     verifyTaskBtn: "Verify Task (Requires Passing QA & 0 Open Issues)",
     verifyingTaskBtn: "Verifying...",
+    exportQaBtn: "Export Branded QA Report (DOCX + PDF)",
+    exportingQaBtn: "Exporting...",
     isolationBanner:
       "Independent QA Isolation Verified: producer plan_summary, result_summary, and step reasoning excluded.",
     noEvidenceNotice:
@@ -218,6 +227,8 @@ export function QaIssuesView({
 
   const [runningQa, setRunningQa] = useState(false);
   const [verifying, setVerifying] = useState(false);
+  const [exportingQa, setExportingQa] = useState(false);
+  const [qaExportResult, setQaExportResult] = useState<QaReviewExportOut | null>(null);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -309,6 +320,24 @@ export function QaIssuesView({
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setVerifying(false);
+    }
+  }
+
+  async function handleExportQaReport() {
+    if (!latestReview) return;
+    setExportingQa(true);
+    setError(null);
+    setStatusMsg(null);
+    try {
+      const exported = await exportQaReviewReport(latestReview.id, lang);
+      setQaExportResult(exported);
+      setStatusMsg(
+        `QA v${exported.version}: ${exported.docx_file_name} & ${exported.pdf_file_name}`
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setExportingQa(false);
     }
   }
 
@@ -486,8 +515,37 @@ export function QaIssuesView({
               >
                 {runningQa ? copy.runningQaBtn : copy.rerunQaShortBtn}
               </button>
+              <button
+                type="button"
+                className="btn btn-compact btn-gold"
+                disabled={exportingQa}
+                onClick={() => void handleExportQaReport()}
+              >
+                {exportingQa ? copy.exportingQaBtn : copy.exportQaBtn}
+              </button>
             </div>
           </div>
+
+          {qaExportResult && qaExportResult.qa_review_id === latestReview.id && (
+            <div className="status-box status-ok" style={{ marginBottom: "0.75rem" }}>
+              <strong>v{qaExportResult.version} [{qaExportResult.classification}]:</strong>{" "}
+              <a
+                href={getDeliverableDownloadUrl(qaExportResult.docx_deliverable_id)}
+                className="btn btn-compact btn-secondary"
+              >
+                DOCX ({qaExportResult.docx_file_name})
+              </a>{" "}
+              <a
+                href={getDeliverableDownloadUrl(qaExportResult.pdf_deliverable_id)}
+                className="btn btn-compact btn-secondary"
+              >
+                PDF ({qaExportResult.pdf_file_name})
+              </a>{" "}
+              <span className="mono-hash">
+                SHA-256: {qaExportResult.pdf_sha256.slice(0, 12)}
+              </span>
+            </div>
+          )}
 
           {latestReview.status === "no_evidence" && (
             <div className="status-box status-err" role="alert" style={{ marginBottom: "0.75rem" }}>

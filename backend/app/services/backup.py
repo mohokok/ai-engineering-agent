@@ -19,6 +19,7 @@ from sqlalchemy import Engine
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 
+from app.core.branding import build_backup_branding_metadata
 from app.core.config import Settings
 from app.core.logging import LOG_BACKUP_COUNT, LOG_MAX_BYTES, get_log_file_path
 from app.core.security import find_key_like_strings
@@ -218,6 +219,7 @@ def create_workspace_backup(
                 "schema_version": 1,
                 "created_at": now.isoformat(),
                 "app_version": settings.app_version,
+                "branding": build_backup_branding_metadata(),
                 "excludes_keyring": True,
                 "includes_database": db_archive_path is not None,
                 "database_archive_path": db_archive_path,
