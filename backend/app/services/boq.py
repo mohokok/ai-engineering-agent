@@ -1351,6 +1351,7 @@ def _to_deliverable_out(row: Deliverable) -> DeliverableOut:
         specification_id=row.specification_id,
         comparison_id=row.comparison_id,
         schedule_id=row.schedule_id,
+        assessment_id=row.assessment_id,
         task_id=row.task_id,
         file_id=row.file_id,
         title=row.title,

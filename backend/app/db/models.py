@@ -94,6 +94,9 @@ class Project(Base):
     standards: Mapped[list["StandardDocument"]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )
+    specialist_assessments: Mapped[list["SpecialistAssessment"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
     audit_logs: Mapped[list["AuditLog"]] = relationship(back_populates="project")
 
 
@@ -274,6 +277,9 @@ class Deliverable(Base):
     schedule_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("project_schedules.id", ondelete="SET NULL"), index=True, nullable=True
     )
+    assessment_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("specialist_assessments.id", ondelete="SET NULL"), index=True, nullable=True
+    )
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     deliverable_type: Mapped[str] = mapped_column(String(64), nullable=False)
     discipline: Mapped[str] = mapped_column(
@@ -307,6 +313,9 @@ class Deliverable(Base):
     specification: Mapped["Specification | None"] = relationship(back_populates="deliverables")
     technical_comparison: Mapped["TechnicalComparison | None"] = relationship(back_populates="deliverables")
     project_schedule: Mapped["ProjectSchedule | None"] = relationship(back_populates="deliverables")
+    specialist_assessment: Mapped["SpecialistAssessment | None"] = relationship(
+        back_populates="deliverables"
+    )
 
 
 class ParametricDrawing(Base):
@@ -903,6 +912,71 @@ class StandardDocument(Base):
     superseded_by: Mapped["StandardDocument | None"] = relationship(
         remote_side=[id], foreign_keys=[superseded_by_id]
     )
+
+
+class SpecialistAssessment(Base):
+    """Step 18 deterministic HVAC, Fire & Healthcare preflight assessment (input preparation + output checking only)."""
+
+    __tablename__ = "specialist_assessments"
+    __table_args__ = (
+        classification_check_constraint(),
+        CheckConstraint(
+            "domain IN ('hvac', 'fire', 'healthcare')",
+            name="ck_specialist_domain_valid",
+        ),
+        CheckConstraint(
+            "workflow_mode IN ('input_preparation', 'output_check', 'full_preflight')",
+            name="ck_specialist_mode_valid",
+        ),
+        CheckConstraint(
+            "ai_draft_status IN ('not_used', 'unverified_ai_draft', 'owner_approved')",
+            name="ck_specialist_ai_draft_status_valid",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    project_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("projects.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    task_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("tasks.id", ondelete="SET NULL"), index=True, nullable=True
+    )
+    domain: Mapped[str] = mapped_column(String(32), index=True, nullable=False)
+    workflow_mode: Mapped[str] = mapped_column(String(32), default="full_preflight", nullable=False)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    language: Mapped[str] = mapped_column(String(16), default="ar", nullable=False)
+    classification: Mapped[str] = mapped_column(String(32), default="Preliminary", nullable=False)
+    revision: Mapped[str] = mapped_column(String(32), default="Rev 01", nullable=False)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    export_version: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="evaluated", nullable=False)
+    checks_passed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    blocked_missing_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    failed_checks_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    standards_status: Mapped[str] = mapped_column(
+        String(64), default="no_verified_standard_on_file", nullable=False
+    )
+    use_ai: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    ai_draft_status: Mapped[str] = mapped_column(String(32), default="not_used", nullable=False)
+    owner_approved_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    owner_approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    tokens_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    token_usage_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    inputs_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    results_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    references_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
+    preliminary_assumptions_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    software_recommendation: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, index=True, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+    project: Mapped["Project"] = relationship(back_populates="specialist_assessments")
+    deliverables: Mapped[list["Deliverable"]] = relationship(back_populates="specialist_assessment")
 
 
 class FileExtraction(Base):

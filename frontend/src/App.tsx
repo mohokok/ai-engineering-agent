@@ -11,6 +11,7 @@ import { ProviderSettingsView } from "./components/ProviderSettingsView";
 import { QaIssuesView } from "./components/QaIssuesView";
 import { ResearchView } from "./components/ResearchView";
 import { SpecificationsView } from "./components/SpecificationsView";
+import { SpecialistEngineeringView } from "./components/SpecialistEngineeringView";
 import { StandardsLibraryView } from "./components/StandardsLibraryView";
 import { TechnicalComparisonsView } from "./components/TechnicalComparisonsView";
 import type { HealthPayload, Lang } from "./types";
@@ -20,6 +21,7 @@ type ActiveTab =
   | "assignments"
   | "research"
   | "standards"
+  | "specialist"
   | "deliverables"
   | "boq"
   | "drawings"
@@ -46,6 +48,7 @@ const COPY: Record<
     assignmentsTab: string;
     researchTab: string;
     standardsTab: string;
+    specialistTab: string;
     deliverablesTab: string;
     boqTab: string;
     drawingsTab: string;
@@ -60,7 +63,7 @@ const COPY: Record<
   ar: {
     title: "الوكيل الهندسي الاستشاري المحلي",
     subtitle:
-      "الخطوة 17 — مكتبة المعايير القياسية (المزودة من المالك) + التخطيط + المقارنات + المواصفات + الحسابات + الجودة",
+      "الخطوة 18 — تحضير وفحص التكييف والحريق والرعاية الصحية (أولي — المهندس المرخص) + مكتبة المعايير + التخطيط + الجودة",
     classificationLabel: "التصنيف: أولي (Preliminary)",
     toggleLang: "Switch to English (LTR)",
     refreshHealth: "تحديث فحص الخادم",
@@ -72,6 +75,7 @@ const COPY: Record<
     assignmentsTab: "المهام والتكليفات",
     researchTab: "البحث وسجل المصادر",
     standardsTab: "مكتبة المعايير (Standards)",
+    specialistTab: "تكييف / حريق / صحة (Preflight)",
     deliverablesTab: "التقارير والمخرجات",
     boqTab: "جداول الكميات (BOQ)",
     drawingsTab: "الرسم الهندسي (CAD)",
@@ -85,7 +89,7 @@ const COPY: Record<
   en: {
     title: "Local AI Engineering Consultancy Agent",
     subtitle:
-      "Step 17 — Standards Library (Owner-Supplied Only), Planning, Technical Comparisons, Specs, MEP Calcs & QA",
+      "Step 18 — HVAC, Fire & Healthcare (Prepare & Check Only) + Standards Library + Planning + Compare + Specs + QA",
     classificationLabel: "Classification: Preliminary",
     toggleLang: "التبديل إلى العربية (RTL)",
     refreshHealth: "Refresh Health Check",
@@ -97,6 +101,7 @@ const COPY: Record<
     assignmentsTab: "New Assignment & History",
     researchTab: "Research & Source Log",
     standardsTab: "Standards Library",
+    specialistTab: "HVAC / Fire / Healthcare",
     deliverablesTab: "Deliverables & Reports",
     boqTab: "BOQ & Quantities",
     drawingsTab: "Parametric CAD",
@@ -230,6 +235,13 @@ export function App({
           </button>
           <button
             type="button"
+            className={`btn ${activeTab === "specialist" ? "" : "btn-secondary"}`}
+            onClick={() => setActiveTab("specialist")}
+          >
+            {text.specialistTab}
+          </button>
+          <button
+            type="button"
             className={`btn ${activeTab === "deliverables" ? "" : "btn-secondary"}`}
             onClick={() => setActiveTab("deliverables")}
           >
@@ -301,6 +313,8 @@ export function App({
           <ResearchView lang={lang} />
         ) : activeTab === "standards" ? (
           <StandardsLibraryView lang={lang} />
+        ) : activeTab === "specialist" ? (
+          <SpecialistEngineeringView lang={lang} />
         ) : activeTab === "deliverables" ? (
           <DeliverablesView lang={lang} />
         ) : activeTab === "boq" ? (

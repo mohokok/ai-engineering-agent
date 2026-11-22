@@ -775,6 +775,7 @@ export interface DeliverableOut {
   specification_id?: string | null;
   comparison_id?: string | null;
   schedule_id?: string | null;
+  assessment_id?: string | null;
   task_id?: string | null;
   file_id?: string | null;
   title: string;
@@ -1237,6 +1238,7 @@ export interface QaContextIsolationReport {
   inspected_comparison_ids?: string[];
   inspected_schedule_ids?: string[];
   inspected_standard_ids?: string[];
+  inspected_assessment_ids?: string[];
   inspected_deliverable_ids: string[];
   inspected_extraction_ids: string[];
   inspected_research_source_count: number;
@@ -1986,4 +1988,115 @@ export interface StandardPresetOut {
 
 export interface StandardPresetListResponse {
   presets: StandardPresetOut[];
+}
+
+export type SpecialistDomain = "hvac" | "fire" | "healthcare";
+export type SpecialistWorkflowMode = "input_preparation" | "output_check" | "full_preflight";
+export type SpecialistReferenceKind =
+  | "standard_library"
+  | "verified_source_log"
+  | "no_verified_standard_on_file";
+
+export interface SpecialistReferenceIn {
+  source_kind: SpecialistReferenceKind;
+  standard_library_id?: string | null;
+  research_source_id?: string | null;
+  citation_note?: string | null;
+}
+
+export interface SpecialistReferenceOut {
+  source_kind: SpecialistReferenceKind | string;
+  standard_library_id?: string | null;
+  research_source_id?: string | null;
+  code_or_source_name: string;
+  edition_or_date: string;
+  status: string;
+  citation_note?: string | null;
+  verification_label: string;
+}
+
+export interface SpecialistCheckRowOut {
+  item_id: string;
+  label: string;
+  expected: string;
+  actual: string;
+  unit: string;
+  status: string;
+  notes: string;
+}
+
+export interface SpecialistResultsOut {
+  equations: string[];
+  methodology: string;
+  prepared_items: Array<Record<string, unknown>>;
+  check_rows: SpecialistCheckRowOut[];
+  blocked_flags: string[];
+  metrics: Record<string, unknown>;
+}
+
+export interface SpecialistSummaryOut {
+  id: string;
+  project_id: string;
+  project_code: string;
+  project_name: string;
+  task_id?: string | null;
+  domain: SpecialistDomain | string;
+  workflow_mode: SpecialistWorkflowMode | string;
+  title: string;
+  language: ReportLanguage | string;
+  classification: ProjectClassification | string;
+  revision: string;
+  version: number;
+  export_version: number;
+  status: string;
+  checks_passed: boolean;
+  blocked_missing_count: number;
+  failed_checks_count: number;
+  standards_status: string;
+  use_ai: boolean;
+  ai_draft_status: "not_used" | "unverified_ai_draft" | "owner_approved" | string;
+  ai_draft_label: string;
+  owner_approved_by?: string | null;
+  owner_approved_at?: string | null;
+  tokens_used: number;
+  preliminary_label: string;
+  software_recommendation: string;
+  summary?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SpecialistDetailOut extends SpecialistSummaryOut {
+  inputs: Record<string, unknown>;
+  results: SpecialistResultsOut;
+  references: SpecialistReferenceOut[];
+  preliminary_assumptions: string[];
+  token_usage: TaskTokenUsageOut;
+  deliverables: DeliverableOut[];
+}
+
+export interface SpecialistListResponse {
+  assessments: SpecialistSummaryOut[];
+  total: number;
+}
+
+export interface SpecialistExportOut {
+  assessment: SpecialistDetailOut;
+  docx_deliverable: DeliverableOut;
+  pdf_deliverable: DeliverableOut;
+  xlsx_deliverable: DeliverableOut;
+}
+
+export interface SpecialistPresetOut {
+  key: string;
+  domain: SpecialistDomain;
+  workflow_mode: SpecialistWorkflowMode;
+  label_en: string;
+  label_ar: string;
+  preliminary_warning: string;
+  inputs: Record<string, unknown>;
+}
+
+export interface SpecialistPresetListResponse {
+  presets: SpecialistPresetOut[];
 }
