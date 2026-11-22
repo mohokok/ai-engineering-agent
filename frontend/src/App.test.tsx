@@ -4021,3 +4021,34 @@ describe("Step 20 SystemHardeningPanel, bilingual errors & backup/restore API", 
     );
   });
 });
+
+describe("Step 21 End-to-End 15-Tab UI Smoke Render (EN LTR + AR RTL)", () => {
+  it("renders all 15 application tabs cleanly in Arabic RTL and English LTR without runtime errors", () => {
+    const allTabs = [
+      "projects",
+      "assignments",
+      "research",
+      "standards",
+      "specialist",
+      "structural",
+      "deliverables",
+      "boq",
+      "drawings",
+      "calculations",
+      "specifications",
+      "comparisons",
+      "planning",
+      "qa",
+      "settings",
+    ] as const;
+
+    for (const tab of allTabs) {
+      const arHtml = renderToStaticMarkup(<App initialLang="ar" initialTab={tab} />);
+      expect(arHtml).toContain('dir="rtl"');
+      expect(arHtml).toContain("الخطوة 20");
+      const enHtml = renderToStaticMarkup(<App initialLang="en" initialTab={tab} />);
+      expect(enHtml).toContain('dir="ltr"');
+      expect(enHtml).toContain("Step 20");
+    }
+  });
+});
