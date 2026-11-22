@@ -899,3 +899,91 @@ export function exportTechnicalComparison(
     }
   );
 }
+
+export function listPlanningPresets(): Promise<import("./types").PlanningPresetListResponse> {
+  return requestJson<import("./types").PlanningPresetListResponse>("/api/planning/presets");
+}
+
+export function createProjectSchedule(
+  projectId: string,
+  payload: {
+    task_id?: string | null;
+    title?: string | null;
+    discipline?: string;
+    language?: import("./types").ReportLanguage;
+    classification?: ProjectClassification;
+    revision?: string;
+    start_date: string;
+    calendar: import("./types").WorkCalendarIn;
+    wbs_items: import("./types").WbsItemIn[];
+    activities: import("./types").ScheduleActivityIn[];
+    baseline_schedule_id?: string | null;
+    set_as_baseline?: boolean;
+    use_ai?: boolean;
+    complexity?: TaskComplexity;
+  }
+): Promise<import("./types").ProjectScheduleDetailOut> {
+  return requestJson<import("./types").ProjectScheduleDetailOut>(
+    `/api/projects/${encodeURIComponent(projectId)}/schedules`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }
+  );
+}
+
+export function listProjectSchedules(
+  projectId: string
+): Promise<import("./types").ProjectScheduleListResponse> {
+  return requestJson<import("./types").ProjectScheduleListResponse>(
+    `/api/projects/${encodeURIComponent(projectId)}/schedules`
+  );
+}
+
+export function getScheduleDetail(
+  scheduleId: string
+): Promise<import("./types").ProjectScheduleDetailOut> {
+  return requestJson<import("./types").ProjectScheduleDetailOut>(
+    `/api/schedules/${encodeURIComponent(scheduleId)}`
+  );
+}
+
+export function setScheduleAsBaseline(
+  scheduleId: string
+): Promise<import("./types").ProjectScheduleDetailOut> {
+  return requestJson<import("./types").ProjectScheduleDetailOut>(
+    `/api/schedules/${encodeURIComponent(scheduleId)}/set-baseline`,
+    {
+      method: "POST",
+    }
+  );
+}
+
+export function approveScheduleDraft(
+  scheduleId: string,
+  payload: { approved_by?: string; approval_note?: string | null; export_after_approval?: boolean }
+): Promise<import("./types").ProjectScheduleDetailOut> {
+  return requestJson<import("./types").ProjectScheduleDetailOut>(
+    `/api/schedules/${encodeURIComponent(scheduleId)}/approve`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }
+  );
+}
+
+export function exportScheduleDeliverables(
+  scheduleId: string,
+  payload?: { language?: import("./types").ReportLanguage }
+): Promise<import("./types").ProjectScheduleExportOut> {
+  return requestJson<import("./types").ProjectScheduleExportOut>(
+    `/api/schedules/${encodeURIComponent(scheduleId)}/export`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload ?? {}),
+    }
+  );
+}
