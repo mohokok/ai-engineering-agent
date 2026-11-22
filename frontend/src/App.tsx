@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { fetchHealth } from "./api";
+import { BRAND_IDENTITY, BRAND_LOGO_URL, CLASSIFICATION_DISCLAIMER } from "./branding";
 import { AssignmentsView } from "./components/AssignmentsView";
 import { BoqView } from "./components/BoqView";
 import { CalculationsView } from "./components/CalculationsView";
@@ -46,6 +47,10 @@ const COPY: Record<
     backendStatusTitle: string;
     backendHealthy: string;
     offlinePrefix: string;
+    groupWorkspace: string;
+    groupEngineering: string;
+    groupGovernance: string;
+    groupSystem: string;
     projectsTab: string;
     assignmentsTab: string;
     researchTab: string;
@@ -68,12 +73,16 @@ const COPY: Record<
     subtitle:
       "الخطوة 20 — الأمان ومعالجة الأخطاء والسجلات والنسخ الاحتياطي + كافة الوحدات الهندسية وضبط الجودة",
     classificationLabel: "التصنيف: أولي (Preliminary)",
-    toggleLang: "Switch to English (LTR)",
+    toggleLang: "English (LTR)",
     refreshHealth: "تحديث فحص الخادم",
     checking: "جاري التحقق من الخادم...",
     backendStatusTitle: "حالة الخادم الخلفي (/api/health)",
     backendHealthy: "متصل",
     offlinePrefix: "تعذر الاتصال بالخادم الخلفي: ",
+    groupWorkspace: "مساحة العمل",
+    groupEngineering: "الوحدات الهندسية",
+    groupGovernance: "المعايير والجودة",
+    groupSystem: "النظام",
     projectsTab: "المشاريع والملفات",
     assignmentsTab: "المهام والتكليفات",
     researchTab: "البحث وسجل المصادر",
@@ -95,12 +104,16 @@ const COPY: Record<
     subtitle:
       "Step 20 — Security Hardening, Logging & Backup/Restore + All Engineering Modules & QA",
     classificationLabel: "Classification: Preliminary",
-    toggleLang: "التبديل إلى العربية (RTL)",
+    toggleLang: "العربية (RTL)",
     refreshHealth: "Refresh Health Check",
     checking: "Checking backend health...",
     backendStatusTitle: "Backend Health (/api/health)",
     backendHealthy: "Connected",
     offlinePrefix: "Backend unreachable: ",
+    groupWorkspace: "Workspace",
+    groupEngineering: "Engineering",
+    groupGovernance: "QA & Governance",
+    groupSystem: "System",
     projectsTab: "Projects & Files",
     assignmentsTab: "New Assignment & History",
     researchTab: "Research & Source Log",
@@ -134,13 +147,16 @@ export function App({
 
   const dir = lang === "ar" ? "rtl" : "ltr";
   const text = COPY[lang];
+  const primaryCompany = BRAND_IDENTITY[lang];
+  const secondaryCompany = BRAND_IDENTITY[lang === "ar" ? "en" : "ar"];
 
   useEffect(() => {
     if (typeof document !== "undefined") {
       document.documentElement.lang = lang;
       document.documentElement.dir = dir;
+      document.title = `${primaryCompany.fullName} — ${text.title}`;
     }
-  }, [lang, dir]);
+  }, [lang, dir, primaryCompany.fullName, text.title]);
 
   const loadHealth = useCallback(async () => {
     setLoading(true);
@@ -160,161 +176,135 @@ export function App({
     void loadHealth();
   }, [loadHealth]);
 
+  const tabGroups: Array<{ label: string; tabs: Array<{ id: ActiveTab; label: string }> }> = [
+    {
+      label: text.groupWorkspace,
+      tabs: [
+        { id: "projects", label: text.projectsTab },
+        { id: "assignments", label: text.assignmentsTab },
+        { id: "deliverables", label: text.deliverablesTab },
+        { id: "research", label: text.researchTab },
+      ],
+    },
+    {
+      label: text.groupEngineering,
+      tabs: [
+        { id: "boq", label: text.boqTab },
+        { id: "drawings", label: text.drawingsTab },
+        { id: "calculations", label: text.calculationsTab },
+        { id: "specifications", label: text.specificationsTab },
+        { id: "specialist", label: text.specialistTab },
+        { id: "structural", label: text.structuralTab },
+        { id: "comparisons", label: text.comparisonsTab },
+        { id: "planning", label: text.planningTab },
+      ],
+    },
+    {
+      label: text.groupGovernance,
+      tabs: [
+        { id: "standards", label: text.standardsTab },
+        { id: "qa", label: text.qaTab },
+      ],
+    },
+    {
+      label: text.groupSystem,
+      tabs: [{ id: "settings", label: text.settingsTab }],
+    },
+  ];
+
   return (
     <main className="app-shell" dir={dir} lang={lang}>
       <section className="app-card">
         <header className="app-header">
-          <div>
-            <h1 style={{ margin: 0 }}>{text.title}</h1>
-            <p style={{ margin: "0.35rem 0 0", color: "#475569" }}>{text.subtitle}</p>
+          <div className="brand-lockup">
+            <div className="brand-logo-frame">
+              <img
+                src={BRAND_LOGO_URL}
+                alt={`${BRAND_IDENTITY.en.fullName} | ${BRAND_IDENTITY.ar.fullName}`}
+                className="brand-logo"
+              />
+            </div>
+            <div className="brand-identity">
+              <div className="brand-company-row">
+                <span className="brand-company-primary">{primaryCompany.fullName}</span>
+                <span className="brand-sep" aria-hidden="true">
+                  |
+                </span>
+                <span className="brand-company-secondary">{secondaryCompany.fullName}</span>
+              </div>
+              <h1 className="app-title">{text.title}</h1>
+              <p className="app-subtitle">{text.subtitle}</p>
+            </div>
           </div>
-          <span className="badge">{text.classificationLabel}</span>
-        </header>
 
-        <div className="actions">
-          <button
-            type="button"
-            className="btn btn-secondary"
-            onClick={() => setLang((prev) => (prev === "ar" ? "en" : "ar"))}
-          >
-            {text.toggleLang}
-          </button>
-          <button
-            type="button"
-            className="btn btn-secondary"
-            onClick={() => void loadHealth()}
-            disabled={loading}
-          >
-            {loading ? text.checking : text.refreshHealth}
-          </button>
-        </div>
+          <div className="header-controls">
+            <span className="badge badge-prelim">{text.classificationLabel}</span>
+            <div className="header-utility-row">
+              <button
+                type="button"
+                className="btn btn-secondary btn-compact"
+                onClick={() => setLang((prev) => (prev === "ar" ? "en" : "ar"))}
+              >
+                {text.toggleLang}
+              </button>
+              <button
+                type="button"
+                className="btn btn-secondary btn-compact"
+                onClick={() => void loadHealth()}
+                disabled={loading}
+              >
+                {loading ? text.checking : text.refreshHealth}
+              </button>
+            </div>
+          </div>
+        </header>
 
         <div
           className={`status-box compact-status ${
             health?.status === "ok" ? "status-ok" : error ? "status-err" : ""
           }`}
         >
-          <strong>{text.backendStatusTitle}:</strong>{" "}
-          {loading && !health && !error && <span>{text.checking}</span>}
-          {error && (
-            <span>
-              {text.offlinePrefix}
-              <code>{error}</code>
-            </span>
-          )}
-          {health && (
-            <span>
-              {text.backendHealthy} ({health.service} v{health.version} — {health.classification})
-            </span>
-          )}
+          <div>
+            <strong>{text.backendStatusTitle}:</strong>{" "}
+            {loading && !health && !error && <span>{text.checking}</span>}
+            {error && (
+              <span>
+                {text.offlinePrefix}
+                <code>{error}</code>
+              </span>
+            )}
+            {health && (
+              <span>
+                {text.backendHealthy} ({health.service} v{health.version} — {health.classification})
+              </span>
+            )}
+          </div>
+          <span className="badge badge-readonly">
+            {health?.status === "ok" ? text.backendHealthy : loading ? text.checking : "Localhost"}
+          </span>
         </div>
 
-        <nav className="nav-tabs" aria-label="Main workspace navigation">
-          <button
-            type="button"
-            className={`btn ${activeTab === "projects" ? "" : "btn-secondary"}`}
-            onClick={() => setActiveTab("projects")}
-          >
-            {text.projectsTab}
-          </button>
-          <button
-            type="button"
-            className={`btn ${activeTab === "assignments" ? "" : "btn-secondary"}`}
-            onClick={() => setActiveTab("assignments")}
-          >
-            {text.assignmentsTab}
-          </button>
-          <button
-            type="button"
-            className={`btn ${activeTab === "research" ? "" : "btn-secondary"}`}
-            onClick={() => setActiveTab("research")}
-          >
-            {text.researchTab}
-          </button>
-          <button
-            type="button"
-            className={`btn ${activeTab === "standards" ? "" : "btn-secondary"}`}
-            onClick={() => setActiveTab("standards")}
-          >
-            {text.standardsTab}
-          </button>
-          <button
-            type="button"
-            className={`btn ${activeTab === "specialist" ? "" : "btn-secondary"}`}
-            onClick={() => setActiveTab("specialist")}
-          >
-            {text.specialistTab}
-          </button>
-          <button
-            type="button"
-            className={`btn ${activeTab === "structural" ? "" : "btn-secondary"}`}
-            onClick={() => setActiveTab("structural")}
-          >
-            {text.structuralTab}
-          </button>
-          <button
-            type="button"
-            className={`btn ${activeTab === "deliverables" ? "" : "btn-secondary"}`}
-            onClick={() => setActiveTab("deliverables")}
-          >
-            {text.deliverablesTab}
-          </button>
-          <button
-            type="button"
-            className={`btn ${activeTab === "boq" ? "" : "btn-secondary"}`}
-            onClick={() => setActiveTab("boq")}
-          >
-            {text.boqTab}
-          </button>
-          <button
-            type="button"
-            className={`btn ${activeTab === "drawings" ? "" : "btn-secondary"}`}
-            onClick={() => setActiveTab("drawings")}
-          >
-            {text.drawingsTab}
-          </button>
-          <button
-            type="button"
-            className={`btn ${activeTab === "calculations" ? "" : "btn-secondary"}`}
-            onClick={() => setActiveTab("calculations")}
-          >
-            {text.calculationsTab}
-          </button>
-          <button
-            type="button"
-            className={`btn ${activeTab === "specifications" ? "" : "btn-secondary"}`}
-            onClick={() => setActiveTab("specifications")}
-          >
-            {text.specificationsTab}
-          </button>
-          <button
-            type="button"
-            className={`btn ${activeTab === "comparisons" ? "" : "btn-secondary"}`}
-            onClick={() => setActiveTab("comparisons")}
-          >
-            {text.comparisonsTab}
-          </button>
-          <button
-            type="button"
-            className={`btn ${activeTab === "planning" ? "" : "btn-secondary"}`}
-            onClick={() => setActiveTab("planning")}
-          >
-            {text.planningTab}
-          </button>
-          <button
-            type="button"
-            className={`btn ${activeTab === "qa" ? "" : "btn-secondary"}`}
-            onClick={() => setActiveTab("qa")}
-          >
-            {text.qaTab}
-          </button>
-          <button
-            type="button"
-            className={`btn ${activeTab === "settings" ? "" : "btn-secondary"}`}
-            onClick={() => setActiveTab("settings")}
-          >
-            {text.settingsTab}
-          </button>
+        <nav className="nav-tabs" aria-label="Main workspace navigation" role="tablist">
+          {tabGroups.map((group) => (
+            <div key={group.label} className="nav-group" aria-label={group.label}>
+              <span className="nav-group-label">{group.label}</span>
+              {group.tabs.map((tab) => {
+                const isActive = activeTab === tab.id;
+                return (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={isActive}
+                    className={`btn nav-tab-btn ${isActive ? "is-active" : "btn-secondary"}`}
+                    onClick={() => setActiveTab(tab.id)}
+                  >
+                    {tab.label}
+                  </button>
+                );
+              })}
+            </div>
+          ))}
         </nav>
 
         {activeTab === "projects" ? (
@@ -348,6 +338,13 @@ export function App({
         ) : (
           <ProviderSettingsView lang={lang} />
         )}
+
+        <footer className="app-footer">
+          <span className="app-footer-brand">
+            {BRAND_IDENTITY.en.fullName} | {BRAND_IDENTITY.ar.fullName}
+          </span>
+          <span>{CLASSIFICATION_DISCLAIMER[lang]}</span>
+        </footer>
       </section>
     </main>
   );

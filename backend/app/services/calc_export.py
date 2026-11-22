@@ -13,6 +13,11 @@ from openpyxl.styles import Alignment, Font, PatternFill
 import pymupdf
 
 from app.schemas.calculations import CalculationLanguage, VERIFY_CODE_LABEL
+from app.services.branding_exports import (
+    apply_docx_branding,
+    apply_xlsx_branding,
+    write_branded_story_pdf,
+)
 from app.services.report_generator import (
     _configure_rtl_table,
     _set_element_tag,
@@ -512,6 +517,14 @@ def generate_calculation_xlsx(out_path: Path, data: CalculationRenderData) -> No
             col_letter = chr(ord("A") + idx - 1)
             sheet_obj.column_dimensions[col_letter].width = width
 
+    apply_xlsx_branding(
+        wb,
+        document_title=data.title,
+        project_code=data.project_code,
+        project_name=data.project_name,
+        classification=data.classification,
+        language=data.language,
+    )
     wb.save(str(out_path))
 
 
@@ -536,6 +549,13 @@ def generate_calculation_docx(out_path: Path, data: CalculationRenderData) -> No
     normal_style = doc.styles["Normal"]
     normal_style.font.name = "Tahoma" if is_ar else "Calibri"
     normal_style.font.size = Pt(10)
+
+    apply_docx_branding(
+        doc,
+        language=data.language,
+        classification=data.classification,
+        document_title=data.title,
+    )
 
     h = doc.add_heading(f"{data.title} — [{lbl['classification_prefix']}: {data.classification}]", level=1)
     _style_paragraph(h, is_ar=is_ar, bold=True, font_size=15, color=RGBColor(0x1E, 0x3A, 0x5F))
@@ -764,19 +784,16 @@ th {{ background-color: #1e3a5f; color: #ffffff; font-weight: bold; }}
 </body>
 </html>"""
 
-    archive = pymupdf.Archive(str(_WINDOWS_FONTS_DIR)) if has_win_tahoma else None
-    story = pymupdf.Story(html=html_doc, archive=archive)
-    writer = pymupdf.DocumentWriter(str(out_path))
-    mediabox = pymupdf.paper_rect("a4")
-    where = mediabox + (36, 36, -36, -36)
-    try:
-        more = True
-        guard = 0
-        while more and guard < 100:
-            dev = writer.begin_page(mediabox)
-            more, _ = story.place(where)
-            story.draw(dev)
-            writer.end_page()
-            guard += 1
-    finally:
-        writer.close()
+    write_branded_story_pdf(
+        out_path,
+        html_doc=html_doc,
+        fonts_dir=_WINDOWS_FONTS_DIR,
+        page_size="a4",
+        landscape=False,
+        classification=data.classification,
+        language=data.language,
+        side_margin=32.0,
+        top_margin=62.0,
+        bottom_margin=42.0,
+        max_pages=100,
+    )

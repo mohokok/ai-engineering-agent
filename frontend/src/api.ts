@@ -1456,3 +1456,17 @@ export function restoreSystemBackup(payload: {
 export function getBackupDownloadUrl(filename: string): string {
   return `/api/system/backups/${encodeURIComponent(filename)}/download`;
 }
+
+export function exportQaReviewReport(
+  reviewId: string,
+  language: import("./types").Lang
+): Promise<import("./types").QaReviewExportOut> {
+  return requestJson<import("./types").QaReviewExportOut>(
+    `/api/qa-reviews/${encodeURIComponent(reviewId)}/export`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ language }),
+    }
+  );
+}

@@ -22,6 +22,11 @@ from app.schemas.comparisons import (
     NOT_PROVIDED_LABEL,
 )
 from app.schemas.reports import ReportLanguage
+from app.services.branding_exports import (
+    apply_docx_branding,
+    apply_xlsx_branding,
+    write_branded_story_pdf,
+)
 from app.services.calc_export import _safe_xlsx_text
 from app.services.report_generator import (
     _WINDOWS_FONTS_DIR,
@@ -190,6 +195,13 @@ def generate_comparison_docx(out_path: Path, data: ComparisonRenderData) -> None
     normal_style = doc.styles["Normal"]
     normal_style.font.name = "Tahoma"
     normal_style.font.size = Pt(9.5)
+
+    apply_docx_branding(
+        doc,
+        language=data.language,
+        classification=data.classification,
+        document_title=data.title,
+    )
 
     p_title = doc.add_heading(f"{data.title} [{lbl['classification_prefix']}: {data.classification}]", level=1)
     _style_paragraph(p_title, is_ar=is_ar, bold=True, font_size=14, color=RGBColor(0x1E, 0x3A, 0x5F))
@@ -482,22 +494,18 @@ td.bad {{ background-color: #fee2e2; }}
 </body>
 </html>"""
 
-    archive = pymupdf.Archive(str(_WINDOWS_FONTS_DIR)) if has_win_tahoma else None
-    story = pymupdf.Story(html=html_doc, archive=archive)
-    writer = pymupdf.DocumentWriter(str(out_path))
-    mediabox = pymupdf.Rect(0, 0, 842, 595)  # A4 Landscape
-    where = mediabox + (28, 28, -28, -28)
-    try:
-        more = True
-        guard = 0
-        while more and guard < 100:
-            dev = writer.begin_page(mediabox)
-            more, _ = story.place(where)
-            story.draw(dev)
-            writer.end_page()
-            guard += 1
-    finally:
-        writer.close()
+    write_branded_story_pdf(
+        out_path,
+        html_doc=html_doc,
+        fonts_dir=_WINDOWS_FONTS_DIR,
+        landscape=True,
+        classification=data.classification,
+        language=data.language,
+        side_margin=26.0,
+        top_margin=60.0,
+        bottom_margin=40.0,
+        max_pages=100,
+    )
 
 
 def generate_comparison_xlsx(out_path: Path, data: ComparisonRenderData) -> None:
@@ -723,4 +731,12 @@ def generate_comparison_xlsx(out_path: Path, data: ComparisonRenderData) -> None
         ltr = get_column_letter(col_i)
         ws2.column_dimensions[ltr].width = 30 if col_i in {10, 12, 17} else 16
 
+    apply_xlsx_branding(
+        wb,
+        document_title=data.title,
+        project_code=data.project_code,
+        project_name=data.project_name,
+        classification=data.classification,
+        language=data.language,
+    )
     wb.save(str(out_path))

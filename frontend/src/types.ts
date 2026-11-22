@@ -2225,3 +2225,20 @@ export interface SystemInfoOut {
   database_kind: "sqlite" | "postgresql" | "memory" | "other";
   backups: BackupItemOut[];
 }
+
+export interface QaReviewExportOut {
+  qa_review_id: string;
+  project_id: string;
+  language: Lang;
+  version: number;
+  docx_deliverable_id: string;
+  docx_file_name: string;
+  docx_relative_path: string;
+  docx_sha256: string;
+  pdf_deliverable_id: string;
+  pdf_file_name: string;
+  pdf_relative_path: string;
+  pdf_sha256: string;
+  classification: string;
+  tokens_used: number;
+}

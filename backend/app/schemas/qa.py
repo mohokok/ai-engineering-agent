@@ -172,3 +172,28 @@ class TaskVerifyOut(BaseModel):
     qa_review_id: str
     open_issues_count: int
     message: str
+
+
+class QaReviewExportRequest(BaseModel):
+    """Request to export a branded bilingual QA Review DOCX + PDF deliverable pair."""
+
+    language: Literal["ar", "en"] = "ar"
+
+
+class QaReviewExportOut(BaseModel):
+    """Exported immutable DOCX + PDF deliverable metadata for a QA Review."""
+
+    qa_review_id: str
+    project_id: str
+    language: Literal["ar", "en"]
+    version: int
+    docx_deliverable_id: str
+    docx_file_name: str
+    docx_relative_path: str
+    docx_sha256: str
+    pdf_deliverable_id: str
+    pdf_file_name: str
+    pdf_relative_path: str
+    pdf_sha256: str
+    classification: str
+    tokens_used: int = 0

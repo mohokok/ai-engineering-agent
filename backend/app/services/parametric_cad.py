@@ -13,6 +13,7 @@ import ezdxf
 from ezdxf.enums import TextEntityAlignment
 import pymupdf
 
+from app.core.branding import COMPANY_FULL_AR, COMPANY_FULL_EN
 from app.schemas.drawings import (
     ComputedRoomMetric,
     DoorScheduleRow,
@@ -25,6 +26,7 @@ from app.schemas.drawings import (
     WindowScheduleRow,
     WindowSpec,
 )
+from app.services.branding_exports import stamp_pdf_branding
 from app.services.extractors.cad import extract_dxf
 
 _WINDOWS_FONTS_DIR = Path("C:/Windows/Fonts")
@@ -584,6 +586,7 @@ def generate_parametric_dxf(
 
     issued_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     ttlb_str = (
+        f"{COMPANY_FULL_EN} | {COMPANY_FULL_AR}\\P"
         f"DWG NO: {drawing_no} | REV: {revision} | DATE: {issued_date}\\P"
         f"TITLE: {title}\\P"
         f"SCALE: 1:{scale_denominator} ({paper_size}) | UNITS: mm ($INSUNITS=4)\\P"
@@ -987,6 +990,13 @@ def generate_true_scale_parametric_pdf(
         css_extra="td, th { border: 1px solid #cbd5e1; padding: 2.5pt 4pt; text-align: left; }",
     )
 
+    stamp_pdf_branding(
+        doc,
+        classification=classification,
+        language="en",
+        fonts_dir=_WINDOWS_FONTS_DIR,
+        compact=True,
+    )
     doc.save(str(out_path))
     doc.close()
     return {

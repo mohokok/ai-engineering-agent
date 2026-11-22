@@ -21,6 +21,11 @@ from app.schemas.specialist import (
     PRELIMINARY_ENGINEER_LABEL_EN,
     SpecialistReferenceOut,
 )
+from app.services.branding_exports import (
+    apply_docx_branding,
+    apply_xlsx_branding,
+    write_branded_story_pdf,
+)
 from app.services.calc_export import _safe_xlsx_text
 from app.services.report_generator import (
     _WINDOWS_FONTS_DIR,
@@ -128,6 +133,13 @@ def generate_specialist_docx(out_path: Path, data: SpecialistRenderData) -> None
 
     doc.styles["Normal"].font.name = "Tahoma"
     doc.styles["Normal"].font.size = Pt(9.0)
+
+    apply_docx_branding(
+        doc,
+        language=data.language,
+        classification=data.classification,
+        document_title=data.title,
+    )
 
     heading_txt = data.report_heading or lbl["heading"]
     prelim_txt = data.preliminary_notice or lbl["prelim"]
@@ -322,22 +334,18 @@ td.bad {{ background-color: #fee2e2; color: #991b1b; }}
 </body>
 </html>"""
 
-    archive = pymupdf.Archive(str(_WINDOWS_FONTS_DIR)) if has_win_tahoma else None
-    story = pymupdf.Story(html=html_doc, archive=archive)
-    writer = pymupdf.DocumentWriter(str(out_path))
-    mediabox = pymupdf.Rect(0, 0, 842, 595)
-    where = mediabox + (24, 24, -24, -24)
-    try:
-        more = True
-        guard = 0
-        while more and guard < 120:
-            dev = writer.begin_page(mediabox)
-            more, _ = story.place(where)
-            story.draw(dev)
-            writer.end_page()
-            guard += 1
-    finally:
-        writer.close()
+    write_branded_story_pdf(
+        out_path,
+        html_doc=html_doc,
+        fonts_dir=_WINDOWS_FONTS_DIR,
+        landscape=True,
+        classification=data.classification,
+        language=data.language,
+        side_margin=24.0,
+        top_margin=60.0,
+        bottom_margin=40.0,
+        max_pages=120,
+    )
 
 
 def generate_specialist_xlsx(out_path: Path, data: SpecialistRenderData) -> None:
@@ -479,4 +487,12 @@ def generate_specialist_xlsx(out_path: Path, data: SpecialistRenderData) -> None
         ws2.cell(row=r2, column=2, value=_safe_xlsx_text(asm)).font = reg_font
         r2 += 1
 
+    apply_xlsx_branding(
+        wb,
+        document_title=data.title,
+        project_code=data.project_code,
+        project_name=data.project_name,
+        classification=data.classification,
+        language=data.language,
+    )
     wb.save(str(out_path))
