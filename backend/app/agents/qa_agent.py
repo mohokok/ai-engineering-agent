@@ -8,7 +8,7 @@ import re
 from typing import Any
 
 from openpyxl import load_workbook
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.config import Settings
@@ -24,6 +24,7 @@ from app.db.models import (
     ResearchSource,
     ReviewReport,
     Specification,
+    StandardDocument,
     Task,
     TechnicalComparison,
 )
@@ -43,6 +44,7 @@ from app.services.workspace import resolve_project_file_path
 from app.skills.calculations import evaluate_calculation
 from app.skills.comparisons import recompute_comparison_matrix
 from app.skills.planning import _detect_graph_issues, evaluate_project_schedule
+from app.skills.standards import STANDARD_CODE_DETECT_RE, find_citations_for_standard, resolve_supersession_chain
 
 PRODUCER_REASONING_EXCLUDED_FIELDS: tuple[str, ...] = (
     "Task.plan_summary",
@@ -101,6 +103,7 @@ class QaContextData:
     specifications: list[dict[str, Any]] = field(default_factory=list)
     comparisons: list[dict[str, Any]] = field(default_factory=list)
     schedules: list[dict[str, Any]] = field(default_factory=list)
+    standards_library: list[dict[str, Any]] = field(default_factory=list)
     extractions: list[dict[str, Any]] = field(default_factory=list)
     project_files: list[dict[str, Any]] = field(default_factory=list)
     reviewed_research_urls: set[str] = field(default_factory=set)
@@ -378,6 +381,47 @@ def build_isolated_qa_context(
             }
         )
 
+    std_rows = db.scalars(
+        select(StandardDocument)
+        .where(or_(StandardDocument.project_id == project.id, StandardDocument.project_id.is_(None)))
+        .order_by(StandardDocument.standard_number.asc())
+    ).all()
+    std_raw_by_id = {
+        s.id: {
+            "id": s.id,
+            "standard_number": s.standard_number,
+            "title": s.title,
+            "edition_year": s.edition_year,
+            "status": s.status,
+            "superseded_by_id": s.superseded_by_id,
+        }
+        for s in std_rows
+    }
+    for s in std_rows:
+        sup_num, sup_title, chain_summary = resolve_supersession_chain(
+            std_id=s.id,
+            docs_by_id=std_raw_by_id,
+        )
+        ctx.standards_library.append(
+            {
+                "id": s.id,
+                "project_id": s.project_id,
+                "standard_number": s.standard_number,
+                "title": s.title,
+                "issuing_body": s.issuing_body,
+                "edition_year": s.edition_year,
+                "status": s.status,
+                "superseded_by_id": s.superseded_by_id,
+                "superseded_by_number": sup_num,
+                "superseded_by_title": sup_title,
+                "supersession_chain": chain_summary,
+                "metadata_status": s.metadata_status,
+                "ai_suggestion_status": s.ai_suggestion_status,
+                "adopted_locally": bool(s.adopted_locally),
+                "jurisdiction": s.jurisdiction,
+            }
+        )
+
     files = db.scalars(select(ProjectFile).where(ProjectFile.project_id == project.id)).all()
     file_name_by_id = {f.id: f.original_filename for f in files}
     for f in files:
@@ -501,6 +545,7 @@ def build_qa_context_isolation_report(ctx: QaContextData) -> QaContextIsolationR
         inspected_specification_ids=[s["id"] for s in ctx.specifications],
         inspected_comparison_ids=[c["id"] for c in ctx.comparisons],
         inspected_schedule_ids=[s["id"] for s in ctx.schedules],
+        inspected_standard_ids=[s["id"] for s in ctx.standards_library],
         inspected_deliverable_ids=[d["id"] for d in ctx.deliverables],
         inspected_extraction_ids=[e["id"] for e in ctx.extractions],
         inspected_research_source_count=len(ctx.all_research_sources),
@@ -584,6 +629,18 @@ def serialize_isolated_qa_prompt_context(ctx: QaContextData) -> str:
                 "activities_count": len(s.get("activities_json") or []),
             }
             for s in ctx.schedules
+        ],
+        "standards_library": [
+            {
+                "id": s["id"],
+                "standard_number": s["standard_number"],
+                "edition_year": s["edition_year"],
+                "status": s["status"],
+                "metadata_status": s["metadata_status"],
+                "ai_suggestion_status": s["ai_suggestion_status"],
+                "superseded_by_number": s.get("superseded_by_number"),
+            }
+            for s in ctx.standards_library
         ],
         "deliverables": ctx.deliverables,
         "reviewed_research_urls": sorted(ctx.reviewed_research_urls),
@@ -1746,14 +1803,14 @@ def _check_references(ctx: QaContextData) -> tuple[QaCheckMetricOut, list[QaCand
         for b in ctx.boq_sheets
         for it in b["items"]
     ).lower()
-    reviewed_corpus = (
-        " ".join(
-            f"{rs.get('source_name') or ''} {rs.get('url') or ''} {rs.get('relevant_info') or ''}"
-            for rs in reviewed_rs_by_id.values()
-        ).lower()
-        + " "
-        + boq_ref_corpus
-    )
+    reviewed_rs_text = " ".join(
+        f"{rs.get('source_name') or ''} {rs.get('url') or ''} {rs.get('relevant_info') or ''}"
+        for rs in reviewed_rs_by_id.values()
+    ).lower()
+    lib_std_corpus = " ".join(
+        str(s.get("standard_number") or "").strip() for s in ctx.standards_library
+    ).lower()
+    reviewed_corpus = f"{reviewed_rs_text} {boq_ref_corpus} {lib_std_corpus}".strip()
     ungrounded_std_re = re.compile(
         r"\b(?:ASTM|ACI|BS|EN|IEC|IEEE|ISO|ASHRAE|NFPA|ASME|ANSI|SBC|LBC)\s*[A-Z]?\s*\d[\w./-]*\b",
         re.IGNORECASE,
@@ -2170,6 +2227,242 @@ def _check_references(ctx: QaContextData) -> tuple[QaCheckMetricOut, list[QaCand
                             task_id=s_row.get("task_id"),
                         )
                     )
+
+    # 7. Check Step 17 Standards Library: flag cited superseded/withdrawn/unknown/unconfirmed standards & codes outside Library + reviewed ResearchSource log
+    deliv_by_id_lookup = {
+        "specification": deliv_by_spec,
+        "calculation": deliv_by_calc,
+        "comparison": deliv_by_cmp_r,
+        "review_report": deliv_by_rep,
+        "schedule": deliv_by_sched_r,
+    }
+    task_id_by_art: dict[tuple[str, str], str | None] = {}
+    for _sp in ctx.specifications:
+        task_id_by_art[("specification", _sp["id"])] = _sp.get("task_id")
+    for _ca in ctx.calculations:
+        task_id_by_art[("calculation", _ca["id"])] = _ca.get("task_id")
+    for _cm in ctx.comparisons:
+        task_id_by_art[("comparison", _cm["id"])] = _cm.get("task_id")
+    for _rp in ctx.review_reports:
+        task_id_by_art[("review_report", _rp["id"])] = _rp.get("task_id")
+    for _sc in ctx.schedules:
+        task_id_by_art[("schedule", _sc["id"])] = _sc.get("task_id")
+
+    for std_doc in ctx.standards_library:
+        checked += 1
+        hits, _ = find_citations_for_standard(
+            std_doc=std_doc,
+            specifications=ctx.specifications,
+            calculations=ctx.calculations,
+            comparisons=ctx.comparisons,
+            review_reports=ctx.review_reports,
+            schedules=ctx.schedules,
+        )
+        if not hits:
+            continue
+        std_num = str(std_doc.get("standard_number") or "")
+        std_status = str(std_doc.get("status") or "unknown")
+        ed_year = str(std_doc.get("edition_year") or "unknown").strip().lower()
+        meta_status = str(std_doc.get("metadata_status") or "")
+        ai_status = str(std_doc.get("ai_suggestion_status") or "")
+
+        defective_reasons: list[str] = []
+        if std_status == "withdrawn":
+            defective_reasons.append("status is 'withdrawn'")
+        elif std_status == "superseded":
+            rep_info = (
+                f" (superseded by {std_doc['superseded_by_number']})"
+                if std_doc.get("superseded_by_number")
+                else ""
+            )
+            defective_reasons.append(f"status is 'superseded'{rep_info}")
+        elif std_status == "unknown" or not ed_year or ed_year == "unknown":
+            defective_reasons.append(
+                f"edition/status is unknown or unverified (status={std_status}, edition={std_doc.get('edition_year') or 'unknown'})"
+            )
+        if meta_status == "unconfirmed" or ai_status == "unverified":
+            defective_reasons.append(
+                f"uploaded/AI standard metadata awaits owner confirmation ({meta_status}/{ai_status})"
+            )
+
+        if defective_reasons:
+            severity_val: IssueSeverity = "critical" if std_status in {"withdrawn", "superseded"} else "high"
+            for hit in hits:
+                checked += 1
+                findings.append(
+                    QaCandidateFinding(
+                        check_category="reference",
+                        discipline="multidisciplinary",
+                        severity=severity_val,
+                        title=f"Deliverable cites {std_status} or unverified standard '{std_num}'",
+                        description=(
+                            f"{hit.module} '{hit.artifact_title}' ({hit.location}) cites standard '{std_num}', "
+                            f"which is flagged because: {'; '.join(defective_reasons)}."
+                        ),
+                        reference=f"{std_num} -> {hit.artifact_title} ({hit.location})",
+                        corrective_action=(
+                            f"Replace '{std_num}' with replacement standard '{std_doc['superseded_by_number']}'"
+                            if std_doc.get("superseded_by_number")
+                            else f"Replace or confirm '{std_num}' in the Standards Library before relying on this deliverable."
+                        ),
+                        deliverable_id=deliv_by_id_lookup.get(hit.module, {}).get(hit.artifact_id),
+                        task_id=task_id_by_art.get((hit.module, hit.artifact_id)),
+                    )
+                )
+
+    std_ground_corpus = f"{reviewed_rs_text} {lib_std_corpus}".strip()
+
+    def _std_code_is_grounded(code: str) -> bool:
+        code_norm = code.strip().lower()
+        if not code_norm:
+            return True
+        return bool(
+            std_ground_corpus
+            and re.search(rf"(?<![a-z0-9]){re.escape(code_norm)}(?![a-z0-9])", std_ground_corpus)
+        )
+
+    def _emit_unregistered_std_findings(
+        *,
+        text_blob: str,
+        module_name: str,
+        art_id: str,
+        art_title: str,
+        location: str,
+        discipline_val: str,
+        task_id_val: str | None,
+        extra_allow_corpus: str = "",
+    ) -> None:
+        nonlocal checked
+        if not text_blob:
+            return
+        seen_codes: set[str] = set()
+        for raw_code in STANDARD_CODE_DETECT_RE.findall(text_blob):
+            code_clean = " ".join(raw_code.split())
+            code_key = code_clean.lower()
+            if code_key in seen_codes:
+                continue
+            seen_codes.add(code_key)
+            checked += 1
+            if _std_code_is_grounded(code_clean):
+                continue
+            if extra_allow_corpus and re.search(
+                rf"(?<![a-z0-9]){re.escape(code_key)}(?![a-z0-9])",
+                extra_allow_corpus.lower(),
+            ):
+                continue
+            findings.append(
+                QaCandidateFinding(
+                    check_category="reference",
+                    discipline=discipline_val or "multidisciplinary",
+                    severity="high",
+                    title="Deliverable cites standard missing from Standards Library and reviewed source log",
+                    description=(
+                        f"{module_name} '{art_title}' ({location}) cites standard code '{code_clean}', "
+                        "which is neither registered in the project Standards Library nor verified in the ResearchSource log."
+                    ),
+                    reference=f"{art_title} ({location}) / {code_clean}",
+                    corrective_action=(
+                        f"Register/upload '{code_clean}' in the Standards Library (owner-supplied) or add a verified ResearchSource log entry."
+                    ),
+                    deliverable_id=deliv_by_id_lookup.get(module_name, {}).get(art_id),
+                    task_id=task_id_val,
+                )
+            )
+
+    for sp in ctx.specifications:
+        for sec in sp.get("sections") or []:
+            if not isinstance(sec, dict):
+                continue
+            sec_code = str(sec.get("section_code") or "SPEC")
+            stds_blob = " ".join(
+                f"{st.get('source_name', '')} {st.get('citation_text', '')}"
+                for st in (sec.get("standards") or [])
+                if isinstance(st, dict) and st.get("status") != "no_verified_standard_on_file"
+            )
+            _emit_unregistered_std_findings(
+                text_blob=stds_blob,
+                module_name="specification",
+                art_id=sp["id"],
+                art_title=sp["title"],
+                location=f"{sec_code} / standards",
+                discipline_val=str(sec.get("discipline") or sp.get("discipline") or "multidisciplinary"),
+                task_id_val=sp.get("task_id"),
+                extra_allow_corpus=boq_ref_corpus,
+            )
+
+    for calc in ctx.calculations:
+        c_blob = " ".join(
+            [str(calc.get("references_text") or "")]
+            + [
+                f"{r.get('source_name', '')} {r.get('source_ref', '')} {r.get('notes', '')}"
+                for r in (calc.get("references_json") or [])
+                if isinstance(r, dict)
+            ]
+        )
+        _emit_unregistered_std_findings(
+            text_blob=c_blob,
+            module_name="calculation",
+            art_id=calc["id"],
+            art_title=calc["title"],
+            location="references",
+            discipline_val=str(calc.get("discipline") or "multidisciplinary"),
+            task_id_val=calc.get("task_id"),
+        )
+
+    for cmp_row in ctx.comparisons:
+        cmp_blob = " ".join(
+            [str(cr.get("source_ref") or "") for cr in (cmp_row.get("criteria_json") or []) if isinstance(cr, dict)]
+            + [
+                str(cell.get("source_ref") or "")
+                for opt in (cmp_row.get("options_json") or [])
+                if isinstance(opt, dict)
+                for cell in (opt.get("cells") or [])
+                if isinstance(cell, dict)
+            ]
+        )
+        _emit_unregistered_std_findings(
+            text_blob=cmp_blob,
+            module_name="comparison",
+            art_id=cmp_row["id"],
+            art_title=cmp_row["title"],
+            location="criteria_and_cells",
+            discipline_val=str(cmp_row.get("discipline") or "multidisciplinary"),
+            task_id_val=cmp_row.get("task_id"),
+        )
+
+    for rep in ctx.review_reports:
+        rep_blob = json.dumps(
+            {
+                "findings": rep.get("findings") or [],
+                "verified_facts": rep.get("verified_facts") or [],
+                "source_registry": rep.get("source_registry") or [],
+            },
+            ensure_ascii=False,
+        )
+        _emit_unregistered_std_findings(
+            text_blob=rep_blob,
+            module_name="review_report",
+            art_id=rep["id"],
+            art_title=rep["title"],
+            location="report_body",
+            discipline_val=str(rep.get("discipline") or "multidisciplinary"),
+            task_id_val=rep.get("task_id"),
+        )
+
+    for s_row in ctx.schedules:
+        sc_blob = " ".join(
+            [str((s_row.get("calendar_json") or {}).get("source_ref") or "")]
+            + [str(a.get("source_ref") or "") for a in (s_row.get("activities_json") or []) if isinstance(a, dict)]
+        )
+        _emit_unregistered_std_findings(
+            text_blob=sc_blob,
+            module_name="schedule",
+            art_id=s_row["id"],
+            art_title=s_row["title"],
+            location="activities",
+            discipline_val=str(s_row.get("discipline") or "multidisciplinary"),
+            task_id_val=s_row.get("task_id"),
+        )
 
     failed_cnt = len(findings)
     return (

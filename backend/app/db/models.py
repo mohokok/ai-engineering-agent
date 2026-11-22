@@ -91,6 +91,9 @@ class Project(Base):
     project_schedules: Mapped[list["ProjectSchedule"]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )
+    standards: Mapped[list["StandardDocument"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
     audit_logs: Mapped[list["AuditLog"]] = relationship(back_populates="project")
 
 
@@ -838,6 +841,68 @@ class ProjectSchedule(Base):
 
     project: Mapped["Project"] = relationship(back_populates="project_schedules")
     deliverables: Mapped[list["Deliverable"]] = relationship(back_populates="project_schedule")
+
+
+class StandardDocument(Base):
+    """Step 17 owner-supplied / licensed standards library (zero shipped standard texts or invented clauses)."""
+
+    __tablename__ = "standards_library"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('current', 'superseded', 'withdrawn', 'unknown')",
+            name="ck_standards_status_valid",
+        ),
+        CheckConstraint(
+            "metadata_status IN ('owner_entered', 'unverified_suggestion', 'unverified_ai_suggestion', 'owner_confirmed')",
+            name="ck_standards_metadata_status_valid",
+        ),
+        CheckConstraint(
+            "ai_suggestion_status IN ('not_used', 'unverified_ai_suggestion', 'owner_confirmed')",
+            name="ck_standards_ai_suggestion_status_valid",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    project_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("projects.id", ondelete="CASCADE"), index=True, nullable=True
+    )
+    standard_number: Mapped[str] = mapped_column(String(128), index=True, nullable=False)
+    title: Mapped[str] = mapped_column(String(512), nullable=False)
+    issuing_body: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+    edition_year: Mapped[str] = mapped_column(String(64), default="unknown", nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="unknown", nullable=False)
+    superseded_by_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("standards_library.id", ondelete="SET NULL"), index=True, nullable=True
+    )
+    supersession_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    jurisdiction: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+    adopted_locally: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    owner_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    owner_excerpts_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
+    metadata_status: Mapped[str] = mapped_column(String(32), default="owner_entered", nullable=False)
+    suggested_metadata_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    use_ai: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    ai_suggestion_status: Mapped[str] = mapped_column(String(32), default="not_used", nullable=False)
+    tokens_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    token_usage_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    original_filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    file_relative_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    file_sha256: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    file_size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    mime_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    history_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, index=True, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+    project: Mapped["Project | None"] = relationship(back_populates="standards")
+    superseded_by: Mapped["StandardDocument | None"] = relationship(
+        remote_side=[id], foreign_keys=[superseded_by_id]
+    )
 
 
 class FileExtraction(Base):

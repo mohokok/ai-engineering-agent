@@ -1236,6 +1236,7 @@ export interface QaContextIsolationReport {
   inspected_specification_ids?: string[];
   inspected_comparison_ids?: string[];
   inspected_schedule_ids?: string[];
+  inspected_standard_ids?: string[];
   inspected_deliverable_ids: string[];
   inspected_extraction_ids: string[];
   inspected_research_source_count: number;
@@ -1868,4 +1869,121 @@ export interface PlanningPresetOut {
 
 export interface PlanningPresetListResponse {
   presets: PlanningPresetOut[];
+}
+
+export type StandardStatus = "current" | "superseded" | "withdrawn" | "unknown";
+export type StandardMetadataStatus =
+  | "owner_entered"
+  | "unverified_suggestion"
+  | "unverified_ai_suggestion"
+  | "owner_confirmed";
+export type StandardAiSuggestionStatus =
+  | "not_used"
+  | "unverified_ai_suggestion"
+  | "owner_confirmed";
+
+export interface OwnerExcerptIn {
+  excerpt_id?: string | null;
+  page_ref: string;
+  text: string;
+}
+
+export interface OwnerExcerptOut {
+  excerpt_id: string;
+  page_ref: string;
+  text: string;
+  added_at: string;
+}
+
+export interface StandardCitationHitOut {
+  module: string;
+  artifact_id: string;
+  artifact_title: string;
+  location: string;
+  flagged_status: string;
+}
+
+export interface StandardCreatePayload {
+  project_id?: string | null;
+  standard_number: string;
+  title: string;
+  issuing_body?: string;
+  edition_year?: string;
+  status?: StandardStatus;
+  superseded_by_id?: string | null;
+  supersession_note?: string | null;
+  jurisdiction?: string;
+  adopted_locally?: boolean;
+  owner_notes?: string | null;
+  owner_excerpts?: OwnerExcerptIn[];
+}
+
+export interface StandardDocumentOut {
+  id: string;
+  project_id?: string | null;
+  standard_number: string;
+  title: string;
+  issuing_body: string;
+  edition_year: string;
+  status: StandardStatus | string;
+  superseded_by_id?: string | null;
+  superseded_by_number?: string | null;
+  superseded_by_title?: string | null;
+  replacement_chain_summary?: string | null;
+  supersession_note?: string | null;
+  jurisdiction: string;
+  adopted_locally: boolean;
+  owner_notes?: string | null;
+  owner_excerpts: OwnerExcerptOut[];
+  metadata_status: StandardMetadataStatus | string;
+  metadata_label: string;
+  suggested_metadata?: Record<string, unknown> | null;
+  use_ai: boolean;
+  ai_suggestion_status: StandardAiSuggestionStatus | string;
+  tokens_used: number;
+  token_usage: TaskTokenUsageOut;
+  original_filename?: string | null;
+  file_relative_path?: string | null;
+  file_sha256?: string | null;
+  file_size_bytes?: number | null;
+  mime_type?: string | null;
+  version: number;
+  history: Array<Record<string, unknown>>;
+  where_cited: StandardCitationHitOut[];
+  citation_warnings: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface StandardListResponse {
+  standards: StandardDocumentOut[];
+  total: number;
+}
+
+export interface StandardRegisterExportFileOut {
+  format: "docx" | "pdf" | "xlsx";
+  filename: string;
+  relative_path: string;
+  sha256: string;
+  size_bytes: number;
+  download_url: string;
+}
+
+export interface StandardRegisterExportOut {
+  project_id?: string | null;
+  language: ReportLanguage | string;
+  standards_count: number;
+  cited_warnings_count: number;
+  files: StandardRegisterExportFileOut[];
+}
+
+export interface StandardPresetOut {
+  key: string;
+  label_en: string;
+  label_ar: string;
+  standard: StandardCreatePayload;
+}
+
+export interface StandardPresetListResponse {
+  presets: StandardPresetOut[];
 }

@@ -40,6 +40,7 @@ EXPECTED_TABLES = {
     "specifications",
     "technical_comparisons",
     "project_schedules",
+    "standards_library",
     "settings",
     "audit_log",
 }
@@ -100,6 +101,26 @@ def test_alembic_upgrade_and_downgrade_round_trip(tmp_path: Path) -> None:
             "activities_json",
             "schedule_result_json",
         }.issubset(sched_columns)
+        std_columns = {col["name"] for col in inspector.get_columns("standards_library")}
+        assert {
+            "id",
+            "project_id",
+            "standard_number",
+            "title",
+            "issuing_body",
+            "edition_year",
+            "status",
+            "superseded_by_id",
+            "supersession_note",
+            "jurisdiction",
+            "adopted_locally",
+            "owner_excerpts_json",
+            "metadata_status",
+            "ai_suggestion_status",
+            "file_sha256",
+            "version",
+            "history_json",
+        }.issubset(std_columns)
         comp_columns = {col["name"] for col in inspector.get_columns("technical_comparisons")}
         assert {
             "id",
