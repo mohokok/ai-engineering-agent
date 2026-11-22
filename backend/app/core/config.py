@@ -3,13 +3,14 @@
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import make_url
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+_LOCAL_CORS_HOSTS = frozenset({"127.0.0.1", "localhost"})
 
 
 class Settings(BaseSettings):
@@ -33,6 +34,37 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    @field_validator("backend_host", mode="before")
+    @classmethod
+    def validate_loopback_host(cls, value: Any) -> str:
+        """Restrict backend bind host strictly to 127.0.0.1 for local-only security."""
+        cleaned = str(value if value is not None else "127.0.0.1").strip() or "127.0.0.1"
+        if cleaned != "127.0.0.1":
+            raise ValueError(
+                f"backend_host must bind to '127.0.0.1' only (got {cleaned!r})."
+            )
+        return cleaned
+
+    @field_validator("cors_origins", mode="before")
+    @classmethod
+    def validate_strict_local_cors(cls, value: Any) -> str:
+        """Enforce strict local frontend origins only (reject wildcards and non-local hosts)."""
+        raw = str(value if value is not None else "").strip()
+        origins = [item.strip() for item in raw.split(",") if item.strip()]
+        if not origins:
+            raise ValueError("cors_origins must contain at least one explicit local origin.")
+        for origin in origins:
+            if "*" in origin:
+                raise ValueError(f"Wildcard CORS origin rejected: {origin!r}")
+            parsed = urlparse(origin)
+            if parsed.scheme != "http" or (parsed.hostname or "").lower() not in _LOCAL_CORS_HOSTS:
+                raise ValueError(
+                    f"CORS origin must target http://127.0.0.1 or http://localhost only (got {origin!r})."
+                )
+            if parsed.path not in ("", "/") or parsed.query or parsed.fragment:
+                raise ValueError(f"CORS origin must not contain path/query/fragment: {origin!r}")
+        return ",".join(origins)
 
     @field_validator("workspaces_dir", mode="before")
     @classmethod

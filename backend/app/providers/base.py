@@ -134,15 +134,7 @@ class ConnectionCheckResult:
     latency_ms: int
 
 
-_QUERY_KEY_RE = re.compile(r"([?&]key=)[^&\s\"']+", re.IGNORECASE)
-
-
-def sanitize_secret_text(text: str, secret: str | None = None) -> str:
-    """Scrub secret strings or key query parameters before surfacing error details."""
-    cleaned = _QUERY_KEY_RE.sub(r"\1[REDACTED]", text)
-    if secret and secret in cleaned:
-        cleaned = cleaned.replace(secret, "[REDACTED]")
-    return cleaned
+from app.core.security import sanitize_secret_text
 
 
 class LLMProvider(ABC):

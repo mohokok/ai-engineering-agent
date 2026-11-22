@@ -2173,3 +2173,55 @@ export interface StructuralPresetOut {
 export interface StructuralPresetListResponse {
   presets: StructuralPresetOut[];
 }
+
+export interface BackupItemOut {
+  filename: string;
+  relative_path: string;
+  size_bytes: number;
+  sha256: string;
+  created_at: string;
+}
+
+export interface BackupCreateOut {
+  backup: BackupItemOut;
+  files_count: number;
+  includes_database: boolean;
+  database_sha256?: string | null;
+  manifest_sha256: string;
+  excludes_keyring: boolean;
+  message: string;
+}
+
+export interface RestoreResultOut {
+  backup_filename: string;
+  dry_run: boolean;
+  valid: boolean;
+  restored: boolean;
+  excludes_keyring: boolean;
+  verified_files_count: number;
+  restored_files_count: number;
+  would_overwrite_count: number;
+  mismatched_files: string[];
+  missing_files: string[];
+  extra_files: string[];
+  database_verified: boolean;
+  database_restored: boolean;
+  target_workspaces_dir: string;
+  message: string;
+}
+
+export interface SystemInfoOut {
+  app_env: string;
+  backend_host: string;
+  cors_origins: string[];
+  workspaces_dir: string;
+  log_file_path: string;
+  log_rotation_policy: string;
+  log_viewer_enabled: boolean;
+  remote_log_shipping: boolean;
+  backup_dir: string;
+  backup_excludes_keyring: boolean;
+  credential_backend: string;
+  database_kind: "sqlite" | "postgresql" | "memory" | "other";
+  backups: BackupItemOut[];
+}

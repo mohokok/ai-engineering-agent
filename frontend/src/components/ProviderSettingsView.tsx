@@ -12,7 +12,9 @@ import type {
   Lang,
   ProviderModelOption,
   ProviderSettingsOut,
+  SystemInfoOut,
 } from "../types";
+import { SystemHardeningPanel } from "./SystemHardeningPanel";
 
 interface SettingsCopy {
   heading: string;
@@ -226,11 +228,13 @@ function ModelSelectorField({
 export interface ProviderSettingsViewProps {
   lang: Lang;
   initialSettings?: ProviderSettingsOut | null;
+  initialSystemInfo?: SystemInfoOut | null;
 }
 
 export function ProviderSettingsView({
   lang,
   initialSettings = null,
+  initialSystemInfo = null,
 }: ProviderSettingsViewProps) {
   const copy = SETTINGS_COPY[lang];
 
@@ -702,6 +706,8 @@ export function ProviderSettingsView({
           </div>
         </dl>
       </section>
+
+      <SystemHardeningPanel lang={lang} initialSystemInfo={initialSystemInfo} />
     </div>
   );
 }

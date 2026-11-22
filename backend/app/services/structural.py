@@ -336,6 +336,16 @@ def approve_structural_assessment(
     row.owner_approved_at = utc_now()
     row.updated_at = utc_now()
     db.add(row)
+    db.add(
+        AuditLog(
+            project_id=row.project_id,
+            actor=row.owner_approved_by or "owner",
+            action="structural_assessment_approved",
+            entity_type="structural_assessment",
+            entity_id=row.id,
+            details_json={"assessment_type": row.assessment_type, "version": row.version},
+        )
+    )
     db.commit()
     return get_structural_detail(db, row.id)
 
@@ -478,6 +488,16 @@ def export_structural_deliverables(
         row.status = "exported"
     row.updated_at = utc_now()
     db.add(row)
+    db.add(
+        AuditLog(
+            project_id=project.id,
+            actor="owner-export",
+            action="structural_assessment_exported",
+            entity_type="structural_assessment",
+            entity_id=row.id,
+            details_json={"assessment_type": row.assessment_type, "language": lang_val, "export_version": next_export},
+        )
+    )
     db.commit()
 
     return StructuralExportOut(

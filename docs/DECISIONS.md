@@ -303,3 +303,28 @@ Classification: For Review
 - **Alternatives:** Designing concrete/steel sections and reinforcement inside Python/LLM scripts, hardcoding ACI 318 / EN 1992 / AISC load combinations or stress limits, or silently filling missing structural inputs with typical defaults.
 - **Reason:** Strict separation between deterministic I/O & statics verification and licensed code design prevents unsafe design claims, guarantees zero fabricated code parameters, and keeps commercial structural FEA software as the authoritative design tool.
 
+---
+
+## ADR-029: Step 20 Security Hardening, Bilingual Error Envelope, Redacted Rotating Logs & SHA-256 Backup/Restore
+- **Date:** 2026-11-22
+- **Status:** Accepted
+- **Context:** Step 20 prepares the local consultancy application for safe everyday consultant operation on Windows across transport/CORS binding, upload validation, secret/client-data redaction, error handling, structured local logging, dependency vulnerability auditing, and disaster-recovery backup/restore.
+- **Decision:**
+  1. **No New DB Migration Required:** Step 20 reuses the existing `audit_log` schema and filesystem storage (`agent.log`, `_backups/`), keeping Alembic head cleanly at `0017`.
+  2. **Loopback Binding, Strict CORS, Headers & Upload Validation (`backend/app/core/config.py`, `backend/app/core/security.py`, `backend/app/main.py`, `backend/app/services/standards.py`):**
+     - Enforce `backend_host == "127.0.0.1"` ONLY and validate `cors_origins` strictly to explicit `http://127.0.0.1[:port]` / `http://localhost[:port]` local origins (rejecting `*` and remote origins) with non-wildcard `CORSMiddleware` methods/headers.
+     - Inject `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store`, `Permissions-Policy`, `Content-Security-Policy`, and `X-Correlation-ID` on every HTTP response including unhandled 500s and early 413 rejections.
+     - Guard `/api/standards/upload` in `UploadSizeLimitMiddleware` with bounded 64 KB chunk streaming, extension allowlisting, filename traversal rejection, and `Path.is_relative_to` containment on register/backup downloads.
+  3. **Bilingual Error Envelope & Secret Redaction (`backend/app/core/errors.py`, `backend/app/core/security.py`, `frontend/src/api.ts`):**
+     - Standardize FastAPI `HTTPException`, `RequestValidationError` (JSON-safe `ValueError` encoding), and unhandled `Exception` handlers to emit BOTH backward-compatible `detail` and `error: {code, message, message_ar, correlation_id, status}` + `correlation_id`, never returning Python tracebacks or file paths to the UI while logging full redacted diagnostics internally.
+     - Extend `sanitize_secret_text` (`AIza*`, `sk-*`, `tvly-*`, `ghp_*`, `github_pat_*`, PEM keys, auth headers, query keys) and add repo/log/export/DB detection in `backend/tests/test_hardening.py`; keep API credentials strictly inside `SecretStore` (`Windows Credential Manager`).
+  4. **Log-Viewer-Free Rotating Local Logging & Automatic Audit Bridge (`backend/app/core/logging.py`, `backend/app/db/session.py`):**
+     - Write structured UTF-8 JSONL logs (`5 MB x 5` rotation via `RotatingFileHandler`) strictly inside `<workspaces_dir>/agent.log` (beside `engineering_agent.db` so `workspaces_dir` project subdirectories remain undisturbed) with secret & client-text redaction (`SecretAndClientRedactionFilter`), zero remote log shipping, and zero HTTP raw log-viewer endpoints.
+     - Bridge committed SQLAlchemy `AuditLog` entries (`after_commit`) automatically into `app.audit` structured log records and add missing `AuditLog` records for BOQ deletion (`boq.item_deleted`), Step 18/19 approvals/exports, and backup/restore actions.
+  5. **SHA-256 Workspace + SQLite Backup/Restore & Settings/System Panel (`backend/app/services/backup.py`, `backend/app/cli_backup.py`, `backend/app/api/system.py`, `frontend/src/components/SystemHardeningPanel.tsx`):**
+     - Provide one-click UI + CLI (`python -m app.cli_backup backup|restore --dry-run`) archiving consistent SQLite snapshots (`sqlite3.Connection.backup`) + workspace files (excluding `_backups/`, `agent.log*`, `.env*`, and never touching OS keyring/API keys) with full SHA-256 `manifest.json` verification and Zip Slip blocking.
+  6. **Dependency Audit Without Breaking Upgrades:** Document OSV/PyPI and `npm audit` findings transparently in `docs/reports/step-20.md` without forcing semver-major dev-tool upgrades (`vitest@5`) or test regressions.
+- **Alternatives:** Shipping logs to an external syslog/SaaS aggregator or exposing raw logs over `/api/system/logs`, stripping `detail` from FastAPI error responses (breaking existing clients), or upgrading dev dependencies (`vitest`) across major versions blindly.
+- **Reason:** Local-only rotating redacted logs, backward-compatible bilingual error envelopes, verified ZIP+SHA-256 backup/restore, and preserved test stability deliver verifiable production hardening for an offline-capable consultancy workstation.
+
+

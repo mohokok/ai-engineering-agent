@@ -37,22 +37,100 @@ import type {
   TaskListResponse,
 } from "./types";
 
-async function extractErrorMessage(response: Response): Promise<string> {
-  const fallback = `HTTP ${response.status}`;
+const FRIENDLY_HTTP_ERRORS: Record<number, { en: string; ar: string }> = {
+  400: {
+    en: "Invalid request parameters.",
+    ar: "تعذر تنفيذ الطلب بسبب مدخلات غير صالحة.",
+  },
+  401: {
+    en: "API authentication failed. Check the key stored in OS Credential Manager.",
+    ar: "فشل التحقق من مفتاح الاعتماد. راجع المفتاح المحفوظ في مخزن النظام.",
+  },
+  404: {
+    en: "Requested record or file was not found.",
+    ar: "لم يتم العثور على السجل أو الملف المطلوب.",
+  },
+  409: {
+    en: "Blocked to protect existing immutable files or revisions.",
+    ar: "تم منع العملية لحماية الملفات أو الإصدارات غير القابلة للاستبدال.",
+  },
+  413: {
+    en: "Uploaded files exceed the configured local size limit.",
+    ar: "حجم الملفات المرفوعة يتجاوز الحد الأقصى المسموح به.",
+  },
+  422: {
+    en: "Validation check failed. Review missing or invalid inputs.",
+    ar: "فشل التحقق من صحة المدخلات. راجع الحقول الناقصة أو غير الصالحة.",
+  },
+  429: {
+    en: "Configured AI usage limit or provider quota reached.",
+    ar: "تم بلوغ حد الاستخدام المحدد أو حصة مزود الذكاء الاصطناعي.",
+  },
+  500: {
+    en: "Internal server error. Check local workspace logs using the correlation ID.",
+    ar: "حدث خطأ داخلي في الخادم. راجع سجل النظام المحلي برقم التتبع.",
+  },
+  503: {
+    en: "AI provider temporarily unavailable. Deterministic engineering workflows remain active.",
+    ar: "خدمة الذكاء الاصطناعي غير متاحة مؤقتاً. الأدوات الهندسية الحتمية مستمرة بالعمل.",
+  },
+};
+
+function sanitizeUiErrorText(raw: string): string {
+  return raw
+    .split(/\r?\n/)
+    .filter((ln) => !ln.includes("Traceback (most recent") && !ln.trim().startsWith('File "'))
+    .join(" ")
+    .trim();
+}
+
+export async function extractErrorMessage(response: Response): Promise<string> {
+  const uiLang =
+    typeof document !== "undefined" && document.documentElement.lang === "en" ? "en" : "ar";
+  const mapped = FRIENDLY_HTTP_ERRORS[response.status];
+  const fallback = mapped ? mapped[uiLang] : `HTTP ${response.status}`;
+
   try {
     const body = (await response.json()) as {
       detail?: string | Array<{ msg?: string; loc?: Array<string | number> }>;
+      correlation_id?: string;
+      error?: {
+        code?: string;
+        message?: string;
+        message_ar?: string;
+        correlation_id?: string;
+      };
     };
+    const cid = body.error?.correlation_id || body.correlation_id;
+    const cidSuffix = cid ? ` [ref: ${cid}]` : "";
+
+    let detailMsg = "";
     if (typeof body.detail === "string" && body.detail.trim()) {
-      return body.detail;
-    }
-    if (Array.isArray(body.detail) && body.detail.length > 0) {
+      detailMsg = sanitizeUiErrorText(body.detail);
+    } else if (Array.isArray(body.detail) && body.detail.length > 0) {
       const messages = body.detail
-        .map((item) => item.msg?.trim())
-        .filter((msg): msg is string => Boolean(msg));
+        .map((item) => sanitizeUiErrorText(item.msg || ""))
+        .filter((msg) => Boolean(msg));
       if (messages.length > 0) {
-        return messages.join("; ");
+        detailMsg = messages.join("; ");
       }
+    }
+
+    if (body.error) {
+      const baseEn = sanitizeUiErrorText(body.error.message || detailMsg || mapped?.en || "");
+      const baseAr = sanitizeUiErrorText(body.error.message_ar || mapped?.ar || "");
+      if (uiLang === "ar" && baseAr) {
+        if (detailMsg && detailMsg !== baseEn && response.status < 500) {
+          return `${baseAr} (${detailMsg})${cidSuffix}`;
+        }
+        return `${baseAr}${cidSuffix}`;
+      }
+      const chosen = baseEn || detailMsg || fallback;
+      return `${chosen}${cidSuffix}`;
+    }
+
+    if (detailMsg) {
+      return `${detailMsg}${cidSuffix}`;
     }
   } catch {
     return fallback;
@@ -1347,4 +1425,34 @@ export function exportStructuralDeliverables(
       body: JSON.stringify(payload ?? {}),
     }
   );
+}
+
+export function getSystemInfo(): Promise<import("./types").SystemInfoOut> {
+  return requestJson<import("./types").SystemInfoOut>("/api/system/info");
+}
+
+export function createSystemBackup(
+  payload?: { label?: string }
+): Promise<import("./types").BackupCreateOut> {
+  return requestJson<import("./types").BackupCreateOut>("/api/system/backup", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload ?? {}),
+  });
+}
+
+export function restoreSystemBackup(payload: {
+  backup_filename: string;
+  dry_run: boolean;
+  confirm_overwrite?: boolean;
+}): Promise<import("./types").RestoreResultOut> {
+  return requestJson<import("./types").RestoreResultOut>("/api/system/restore", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function getBackupDownloadUrl(filename: string): string {
+  return `/api/system/backups/${encodeURIComponent(filename)}/download`;
 }
