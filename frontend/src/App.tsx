@@ -5,6 +5,7 @@ import { BoqView } from "./components/BoqView";
 import { CalculationsView } from "./components/CalculationsView";
 import { DeliverablesView } from "./components/DeliverablesView";
 import { ParametricDrawingView } from "./components/ParametricDrawingView";
+import { ProjectPlanningView } from "./components/ProjectPlanningView";
 import { ProjectWorkspaceView } from "./components/ProjectWorkspaceView";
 import { ProviderSettingsView } from "./components/ProviderSettingsView";
 import { QaIssuesView } from "./components/QaIssuesView";
@@ -23,6 +24,7 @@ type ActiveTab =
   | "calculations"
   | "specifications"
   | "comparisons"
+  | "planning"
   | "qa"
   | "settings";
 
@@ -47,6 +49,7 @@ const COPY: Record<
     calculationsTab: string;
     specificationsTab: string;
     comparisonsTab: string;
+    planningTab: string;
     qaTab: string;
     settingsTab: string;
   }
@@ -54,7 +57,7 @@ const COPY: Record<
   ar: {
     title: "الوكيل الهندسي الاستشاري المحلي",
     subtitle:
-      "الخطوة 15 — مصفوفة المقارنة الفنية والتجارية + المواصفات + الحسابات + الجودة + الرسم البارامتري",
+      "الخطوة 16 — التخطيط والجدولة (WBS / CPM / Gantt / Libya Calendar) + المقارنات + المواصفات + الحسابات + الجودة",
     classificationLabel: "التصنيف: أولي (Preliminary)",
     toggleLang: "Switch to English (LTR)",
     refreshHealth: "تحديث فحص الخادم",
@@ -71,13 +74,14 @@ const COPY: Record<
     calculationsTab: "الحسابات الهندسية (MEP)",
     specificationsTab: "المواصفات الفنية (Specs)",
     comparisonsTab: "المقارنات الفنية (Compare)",
+    planningTab: "الجدولة والمسار الحرج (Plan)",
     qaTab: "الجودة وسجل القضايا (QA)",
     settingsTab: "إعدادات Gemini والمزودين",
   },
   en: {
     title: "Local AI Engineering Consultancy Agent",
     subtitle:
-      "Step 15 — Technical Comparison Matrix, BOQ & Drawing-Linked Specifications, Deterministic MEP Calcs, QA & Parametric CAD",
+      "Step 16 — WBS / CPM / Gantt Project Planning (Libya Calendar), Technical Comparisons, Specs, MEP Calcs & QA",
     classificationLabel: "Classification: Preliminary",
     toggleLang: "التبديل إلى العربية (RTL)",
     refreshHealth: "Refresh Health Check",
@@ -94,6 +98,7 @@ const COPY: Record<
     calculationsTab: "Calculations (MEP)",
     specificationsTab: "Technical Specs",
     comparisonsTab: "Technical Compare",
+    planningTab: "Planning & Gantt",
     qaTab: "QA & Issue Register",
     settingsTab: "AI Provider Settings",
   },
@@ -255,6 +260,13 @@ export function App({
           </button>
           <button
             type="button"
+            className={`btn ${activeTab === "planning" ? "" : "btn-secondary"}`}
+            onClick={() => setActiveTab("planning")}
+          >
+            {text.planningTab}
+          </button>
+          <button
+            type="button"
             className={`btn ${activeTab === "qa" ? "" : "btn-secondary"}`}
             onClick={() => setActiveTab("qa")}
           >
@@ -287,6 +299,8 @@ export function App({
           <SpecificationsView lang={lang} />
         ) : activeTab === "comparisons" ? (
           <TechnicalComparisonsView lang={lang} />
+        ) : activeTab === "planning" ? (
+          <ProjectPlanningView lang={lang} />
         ) : activeTab === "qa" ? (
           <QaIssuesView lang={lang} />
         ) : (

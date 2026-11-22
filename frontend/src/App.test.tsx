@@ -4,11 +4,13 @@ import { App } from "./App";
 import {
   addBoqItem,
   approveSpecificationDraft,
+  approveScheduleDraft,
   confirmExtractionDrawingUnit,
   createBoqSheet,
   createCalculation,
   createManualIssue,
   createProject,
+  createProjectSchedule,
   createTask,
   createTechnicalComparison,
   decideTechnicalComparison,
@@ -16,6 +18,7 @@ import {
   enhanceReviewReportAi,
   exportBoqDeliverables,
   exportCalculationDeliverables,
+  exportScheduleDeliverables,
   exportSpecificationDeliverables,
   exportTechnicalComparison,
   extractProjectFile,
@@ -26,16 +29,20 @@ import {
   getClinicPresetModel,
   getComparisonDetail,
   getParametricDrawingDetail,
+  getScheduleDetail,
   getSpecificationDetail,
   listCalculationPresets,
   listComparisonPresets,
+  listPlanningPresets,
   listProjectCalculations,
   listProjectComparisons,
   listProjectIssues,
   listProjectParametricDrawings,
   listProjectQaReviews,
+  listProjectSchedules,
   listProjectSpecifications,
   listSpecificationPresets,
+  setScheduleAsBaseline,
   runProjectQaReview,
   suggestParametricModel,
   updateCalculation,
@@ -73,6 +80,7 @@ import { BoqView } from "./components/BoqView";
 import { CalculationsView } from "./components/CalculationsView";
 import { DeliverablesView } from "./components/DeliverablesView";
 import { ParametricDrawingView } from "./components/ParametricDrawingView";
+import { ProjectPlanningView } from "./components/ProjectPlanningView";
 import { QaIssuesView } from "./components/QaIssuesView";
 import { ProjectFilesPanel } from "./components/ProjectFilesPanel";
 import { ProjectWorkspaceView } from "./components/ProjectWorkspaceView";
@@ -3124,5 +3132,261 @@ describe("App Step 10 BOQ & quantity UI", () => {
     expect(decided.owner_selected_option_id).toBe("opt_a");
     const exported = await exportTechnicalComparison("cmp-15", { language: "en" });
     expect(exported.xlsx_deliverable.folder_name).toBe("09_Comparisons");
+  });
+
+  it("renders Step 16 planning WBS/CPM/Gantt view in RTL Arabic & LTR English and calls schedule endpoints", async () => {
+    const sampleSchedule: import("./types").ProjectScheduleDetailOut = {
+      id: "sched-16",
+      project_id: "proj-16",
+      project_code: "CLN-PLAN",
+      project_name: "Clinic Renovation Schedule",
+      task_id: null,
+      baseline_schedule_id: "sched-base-1",
+      title: "Master Schedule Rev 01",
+      discipline: "multidisciplinary",
+      language: "en",
+      classification: "For Review",
+      revision: "Rev 01",
+      version: 2,
+      export_version: 1,
+      status: "scheduled",
+      is_baseline: false,
+      start_date: "2026-11-22",
+      use_ai: true,
+      ai_draft_status: "unverified_ai_draft",
+      ai_draft_label: "UNVERIFIED AI DRAFT",
+      owner_approved_by: null,
+      owner_approved_at: null,
+      wbs_count: 2,
+      activities_count: 3,
+      total_duration_wd: null,
+      critical_path_complete: false,
+      tokens_used: 210,
+      summary: "[UNVERIFIED AI DRAFT] Foundation branch computed; equipment branch pending duration.",
+      created_at: "2026-11-22T02:00:00Z",
+      updated_at: "2026-11-22T02:00:00Z",
+      calendar: {
+        preset: "libya_sun_thu",
+        weekend_days: [4, 5],
+        holidays: ["2026-12-24"],
+        hours_per_day: 8,
+        source_ref: "Libya Sun-Thu Workweek (Fri-Sat Weekend)",
+      },
+      wbs_items: [
+        { wbs_code: "1", title: "Clinic Master Program", discipline: "multidisciplinary" },
+        { wbs_code: "1.1", title: "Civil & MEP Branch", parent_code: "1", discipline: "civil" },
+      ],
+      schedule_result: {
+        project_start_date: "2026-11-22",
+        effective_start_date: "2026-11-22",
+        project_finish_date: null,
+        total_duration_wd: null,
+        calendar_preset: "libya_sun_thu",
+        calendar_summary: "Libya Sun–Thu Workweek (Weekend: Fri & Sat) | 8 h/day | 1 owner-supplied holiday(s)",
+        weekend_days: [4, 5],
+        holidays: ["2026-12-24"],
+        critical_path_complete: false,
+        critical_path_ids: ["M0", "A1"],
+        blocked_activity_ids: ["B1"],
+        blocked_branch_flags: ["Critical path blocked for branch [B1]: missing duration ('not provided') on B1."],
+        missing_duration_flags: ["B1 (Standby Genset Procurement): duration is 'not provided'"],
+        milestone_summary: [{ activity_id: "M0", name: "Kickoff", target_date: "2026-11-22", is_critical: true }],
+        baseline_schedule_id: "sched-base-1",
+        baseline_title: "Locked Baseline v1",
+        project_finish_variance_wd: null,
+        baseline_comparison_notes: [],
+        activities: [
+          {
+            activity_id: "M0",
+            wbs_code: "1",
+            name: "Kickoff Milestone",
+            is_milestone: true,
+            duration_days: 0,
+            display_duration: "0",
+            quantity: null,
+            unit: "",
+            predecessors: [],
+            early_start_wd: 0,
+            early_finish_wd: 0,
+            late_start_wd: 0,
+            late_finish_wd: 0,
+            total_float_wd: 0,
+            planned_start: "2026-11-22",
+            planned_finish: "2026-11-22",
+            late_start_date: "2026-11-22",
+            late_finish_date: "2026-11-22",
+            is_critical: true,
+            cpm_status: "computed",
+            branch_block_reason: null,
+            start_variance_wd: 0,
+            finish_variance_wd: 0,
+            float_variance_wd: 0,
+            variance_status: "on_baseline",
+            source_kind: "owner_entered",
+            source_ref: "Kickoff milestone",
+          },
+          {
+            activity_id: "A1",
+            wbs_code: "1.1",
+            name: "Concrete Slab Pour",
+            is_milestone: false,
+            duration_days: 5,
+            display_duration: "5",
+            quantity: 45,
+            unit: "m3",
+            predecessors: [{ predecessor_id: "M0", dep_type: "FS", lag_days: 0 }],
+            early_start_wd: 0,
+            early_finish_wd: 5,
+            late_start_wd: 0,
+            late_finish_wd: 5,
+            total_float_wd: 0,
+            planned_start: "2026-11-22",
+            planned_finish: "2026-11-26",
+            late_start_date: "2026-11-22",
+            late_finish_date: "2026-11-26",
+            is_critical: true,
+            cpm_status: "computed",
+            branch_block_reason: null,
+            start_variance_wd: 0,
+            finish_variance_wd: 2,
+            float_variance_wd: 0,
+            variance_status: "delayed",
+            source_kind: "boq_item",
+            source_ref: "BOQ C-01",
+            boq_item_id: "boq-item-1",
+          },
+          {
+            activity_id: "B1",
+            wbs_code: "1.1",
+            name: "Standby Genset Procurement",
+            is_milestone: false,
+            duration_days: null,
+            display_duration: "not provided",
+            quantity: 1,
+            unit: "nos",
+            predecessors: [],
+            early_start_wd: null,
+            early_finish_wd: null,
+            late_start_wd: null,
+            late_finish_wd: null,
+            total_float_wd: null,
+            planned_start: null,
+            planned_finish: null,
+            late_start_date: null,
+            late_finish_date: null,
+            is_critical: false,
+            cpm_status: "blocked_missing_duration",
+            branch_block_reason: "Duration not supplied by owner ('not provided')",
+            variance_status: "blocked",
+            source_kind: "owner_entered",
+            source_ref: "Awaiting supplier lead time",
+          },
+        ],
+      },
+      token_usage: {
+        prompt_tokens: 150,
+        output_tokens: 60,
+        total_tokens: 210,
+        thoughts_tokens: 0,
+        cached_tokens: 0,
+        latency_ms: 0,
+      },
+      deliverables: [
+        {
+          id: "del-sched-pdf-1",
+          project_id: "proj-16",
+          schedule_id: "sched-16",
+          title: "Master Schedule Rev 01 (Rev 01 v1 — Gantt PDF EN)",
+          deliverable_type: "project_schedule",
+          discipline: "multidisciplinary",
+          format: "pdf",
+          classification: "For Review",
+          status: "issued",
+          version: 1,
+          folder_name: "03_Analysis",
+          filename: "sched_v2_e1_en.pdf",
+          relative_path: "03_Analysis/sched_v2_e1_en.pdf",
+          sha256: "bada551234567890",
+          download_url: "/api/deliverables/del-sched-pdf-1/download",
+          created_at: "2026-11-22T02:00:00Z",
+          updated_at: "2026-11-22T02:00:00Z",
+        },
+      ],
+    };
+
+    const appPlanAr = renderToStaticMarkup(<App initialLang="ar" initialTab="planning" />);
+    expect(appPlanAr).toContain('dir="rtl"');
+    expect(appPlanAr).toContain("الجدولة والمسار الحرج (Plan)");
+    expect(appPlanAr).toContain("Libya Sun–Thu");
+
+    const appPlanEn = renderToStaticMarkup(<App initialLang="en" initialTab="planning" />);
+    expect(appPlanEn).toContain("Planning &amp; Gantt");
+
+    const viewEn = renderToStaticMarkup(
+      <ProjectPlanningView
+        lang="en"
+        initialPresets={[]}
+        initialSchedules={[sampleSchedule]}
+        initialSelectedSchedule={sampleSchedule}
+      />
+    );
+    expect(viewEn).toContain("Interactive Gantt Chart");
+    expect(viewEn).toContain("UNVERIFIED AI DRAFT");
+    expect(viewEn).toContain("BLOCKED (&#x27;not provided&#x27;)");
+    expect(viewEn).toContain("5d CRIT");
+    expect(viewEn).toContain("bada55123456");
+
+    const viewAr = renderToStaticMarkup(
+      <ProjectPlanningView
+        lang="ar"
+        initialPresets={[]}
+        initialSchedules={[sampleSchedule]}
+        initialSelectedSchedule={sampleSchedule}
+      />
+    );
+    expect(viewAr).toContain("مخطط جانت التفاعلي");
+    expect(viewAr).toContain("تثبيت كجدول مرجعي (Baseline)");
+
+    const approvedSched = { ...sampleSchedule, ai_draft_status: "owner_approved", is_baseline: true };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ presets: [] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(sampleSchedule), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ schedules: [sampleSchedule], total: 1 }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(sampleSchedule), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(approvedSched), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(approvedSched), { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            schedule: approvedSched,
+            pdf_deliverable: sampleSchedule.deliverables[0],
+            xlsx_deliverable: sampleSchedule.deliverables[0],
+          }),
+          { status: 201 }
+        )
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const pRes = await listPlanningPresets();
+    expect(pRes.presets).toEqual([]);
+    const createdS = await createProjectSchedule("proj-16", {
+      start_date: "2026-11-22",
+      calendar: sampleSchedule.calendar,
+      wbs_items: sampleSchedule.wbs_items,
+      activities: [],
+      use_ai: false,
+    });
+    expect(createdS.id).toBe("sched-16");
+    const listedS = await listProjectSchedules("proj-16");
+    expect(listedS.total).toBe(1);
+    const detS = await getScheduleDetail("sched-16");
+    expect(detS.activities_count).toBe(3);
+    const baseS = await setScheduleAsBaseline("sched-16");
+    expect(baseS.is_baseline).toBe(true);
+    const appS = await approveScheduleDraft("sched-16", { approved_by: "Owner" });
+    expect(appS.ai_draft_status).toBe("owner_approved");
+    const expS = await exportScheduleDeliverables("sched-16", { language: "en" });
+    expect(expS.pdf_deliverable.folder_name).toBe("03_Analysis");
   });
 });

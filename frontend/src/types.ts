@@ -774,6 +774,7 @@ export interface DeliverableOut {
   calculation_id?: string | null;
   specification_id?: string | null;
   comparison_id?: string | null;
+  schedule_id?: string | null;
   task_id?: string | null;
   file_id?: string | null;
   title: string;
@@ -1234,6 +1235,7 @@ export interface QaContextIsolationReport {
   inspected_calculation_ids?: string[];
   inspected_specification_ids?: string[];
   inspected_comparison_ids?: string[];
+  inspected_schedule_ids?: string[];
   inspected_deliverable_ids: string[];
   inspected_extraction_ids: string[];
   inspected_research_source_count: number;
@@ -1692,4 +1694,178 @@ export interface ComparisonPresetOut {
 
 export interface ComparisonPresetListResponse {
   presets: ComparisonPresetOut[];
+}
+
+export type ScheduleSourceKind =
+  | "boq_item"
+  | "specification"
+  | "calculation"
+  | "research_source"
+  | "owner_entered";
+export type CalendarPresetKey = "libya_sun_thu" | "mon_fri" | "six_day_sat_thu" | "custom";
+export type ScheduleDraftStatus = "not_used" | "unverified_ai_draft" | "owner_approved";
+
+export interface WorkCalendarIn {
+  preset: CalendarPresetKey;
+  weekend_days?: number[] | null;
+  holidays: string[];
+  hours_per_day: number;
+  source_ref: string;
+}
+
+export interface WbsItemIn {
+  wbs_code: string;
+  title: string;
+  parent_code?: string | null;
+  discipline: string;
+}
+
+export interface ActivityDependencyIn {
+  predecessor_id: string;
+  dep_type: "FS";
+  lag_days: number;
+}
+
+export interface ScheduleActivityIn {
+  activity_id: string;
+  wbs_code: string;
+  name: string;
+  is_milestone: boolean;
+  duration_days?: number | null;
+  quantity?: number | null;
+  unit?: string | null;
+  predecessors: ActivityDependencyIn[];
+  source_kind: ScheduleSourceKind;
+  source_ref: string;
+  boq_item_id?: string | null;
+  specification_id?: string | null;
+  calculation_id?: string | null;
+  research_source_id?: string | null;
+  notes?: string | null;
+}
+
+export interface EvaluatedActivityOut {
+  activity_id: string;
+  wbs_code: string;
+  name: string;
+  is_milestone: boolean;
+  duration_days?: number | null;
+  display_duration: string;
+  quantity?: number | null;
+  unit: string;
+  predecessors: ActivityDependencyIn[];
+  early_start_wd?: number | null;
+  early_finish_wd?: number | null;
+  late_start_wd?: number | null;
+  late_finish_wd?: number | null;
+  total_float_wd?: number | null;
+  planned_start?: string | null;
+  planned_finish?: string | null;
+  late_start_date?: string | null;
+  late_finish_date?: string | null;
+  is_critical: boolean;
+  cpm_status: "computed" | "blocked_missing_duration" | string;
+  branch_block_reason?: string | null;
+  baseline_duration_days?: number | null;
+  baseline_start?: string | null;
+  baseline_finish?: string | null;
+  start_variance_wd?: number | null;
+  finish_variance_wd?: number | null;
+  float_variance_wd?: number | null;
+  variance_status: string;
+  source_kind: ScheduleSourceKind | string;
+  source_ref: string;
+  boq_item_id?: string | null;
+  specification_id?: string | null;
+  calculation_id?: string | null;
+  research_source_id?: string | null;
+  notes?: string | null;
+}
+
+export interface ScheduleResultOut {
+  project_start_date: string;
+  effective_start_date: string;
+  project_finish_date?: string | null;
+  total_duration_wd?: number | null;
+  calendar_preset: CalendarPresetKey | string;
+  calendar_summary: string;
+  weekend_days: number[];
+  holidays: string[];
+  critical_path_complete: boolean;
+  critical_path_ids: string[];
+  blocked_activity_ids: string[];
+  blocked_branch_flags: string[];
+  missing_duration_flags: string[];
+  milestone_summary: Array<Record<string, unknown>>;
+  baseline_schedule_id?: string | null;
+  baseline_title?: string | null;
+  project_finish_variance_wd?: number | null;
+  baseline_comparison_notes: string[];
+  activities: EvaluatedActivityOut[];
+}
+
+export interface ProjectScheduleSummaryOut {
+  id: string;
+  project_id: string;
+  project_code: string;
+  project_name: string;
+  task_id?: string | null;
+  baseline_schedule_id?: string | null;
+  title: string;
+  discipline: string;
+  language: ReportLanguage | string;
+  classification: ProjectClassification | string;
+  revision: string;
+  version: number;
+  export_version: number;
+  status: string;
+  is_baseline: boolean;
+  start_date: string;
+  use_ai: boolean;
+  ai_draft_status: ScheduleDraftStatus | string;
+  ai_draft_label: string;
+  owner_approved_by?: string | null;
+  owner_approved_at?: string | null;
+  wbs_count: number;
+  activities_count: number;
+  total_duration_wd?: number | null;
+  critical_path_complete: boolean;
+  tokens_used: number;
+  summary?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProjectScheduleDetailOut extends ProjectScheduleSummaryOut {
+  calendar: WorkCalendarIn;
+  wbs_items: WbsItemIn[];
+  schedule_result: ScheduleResultOut;
+  token_usage: TaskTokenUsageOut;
+  deliverables: DeliverableOut[];
+}
+
+export interface ProjectScheduleListResponse {
+  schedules: ProjectScheduleSummaryOut[];
+  total: number;
+}
+
+export interface ProjectScheduleExportOut {
+  schedule: ProjectScheduleDetailOut;
+  pdf_deliverable: DeliverableOut;
+  xlsx_deliverable: DeliverableOut;
+}
+
+export interface PlanningPresetOut {
+  key: string;
+  title_en: string;
+  title_ar: string;
+  discipline: string;
+  start_date: string;
+  calendar: WorkCalendarIn;
+  wbs_items: WbsItemIn[];
+  activities: ScheduleActivityIn[];
+}
+
+export interface PlanningPresetListResponse {
+  presets: PlanningPresetOut[];
 }

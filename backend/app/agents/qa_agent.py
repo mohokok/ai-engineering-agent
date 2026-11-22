@@ -20,6 +20,7 @@ from app.db.models import (
     ParametricDrawing,
     Project,
     ProjectFile,
+    ProjectSchedule,
     ResearchSource,
     ReviewReport,
     Specification,
@@ -29,12 +30,19 @@ from app.db.models import (
 from app.schemas.calculations import VERIFY_CODE_LABEL
 from app.schemas.comparisons import ComparisonCriterionIn, ComparisonOptionIn, NOT_PROVIDED_LABEL
 from app.schemas.drawings import ParametricPlanModel
+from app.schemas.planning import (
+    ScheduleActivityIn,
+    ScheduleResultOut,
+    WbsItemIn,
+    WorkCalendarIn,
+)
 from app.schemas.qa import IssueCategory, IssueSeverity, QaCheckMetricOut, QaContextIsolationReport
 from app.schemas.specifications import NO_VERIFIED_STANDARD_LABEL, SPEC_SECTION_PARTS
 from app.services.parametric_cad import build_schedules_from_model, compute_room_metrics, sha256_file
 from app.services.workspace import resolve_project_file_path
 from app.skills.calculations import evaluate_calculation
 from app.skills.comparisons import recompute_comparison_matrix
+from app.skills.planning import _detect_graph_issues, evaluate_project_schedule
 
 PRODUCER_REASONING_EXCLUDED_FIELDS: tuple[str, ...] = (
     "Task.plan_summary",
@@ -92,6 +100,7 @@ class QaContextData:
     calculations: list[dict[str, Any]] = field(default_factory=list)
     specifications: list[dict[str, Any]] = field(default_factory=list)
     comparisons: list[dict[str, Any]] = field(default_factory=list)
+    schedules: list[dict[str, Any]] = field(default_factory=list)
     extractions: list[dict[str, Any]] = field(default_factory=list)
     project_files: list[dict[str, Any]] = field(default_factory=list)
     reviewed_research_urls: set[str] = field(default_factory=set)
@@ -141,6 +150,7 @@ def build_isolated_qa_context(
                 "calculation_id": d.calculation_id,
                 "specification_id": d.specification_id,
                 "comparison_id": d.comparison_id,
+                "schedule_id": d.schedule_id,
                 "title": d.title,
                 "deliverable_type": d.deliverable_type,
                 "discipline": d.discipline,
@@ -338,6 +348,36 @@ def build_isolated_qa_context(
             }
         )
 
+    sched_rows = db.scalars(
+        select(ProjectSchedule)
+        .where(ProjectSchedule.project_id == project.id)
+        .order_by(ProjectSchedule.created_at.desc())
+    ).all()
+    for s_row in sched_rows:
+        if task is not None and s_row.task_id and s_row.task_id != task.id:
+            continue
+        ctx.schedules.append(
+            {
+                "id": s_row.id,
+                "task_id": s_row.task_id,
+                "baseline_schedule_id": s_row.baseline_schedule_id,
+                "title": s_row.title,
+                "discipline": s_row.discipline,
+                "language": s_row.language,
+                "classification": s_row.classification,
+                "revision": s_row.revision,
+                "version": s_row.version,
+                "export_version": s_row.export_version,
+                "is_baseline": bool(s_row.is_baseline),
+                "start_date": s_row.start_date,
+                "ai_draft_status": s_row.ai_draft_status,
+                "calendar_json": dict(s_row.calendar_json or {}),
+                "wbs_items_json": list(s_row.wbs_items_json or []),
+                "activities_json": list(s_row.activities_json or []),
+                "schedule_result_json": dict(s_row.schedule_result_json or {}),
+            }
+        )
+
     files = db.scalars(select(ProjectFile).where(ProjectFile.project_id == project.id)).all()
     file_name_by_id = {f.id: f.original_filename for f in files}
     for f in files:
@@ -407,6 +447,7 @@ def count_inspected_artefacts(ctx: QaContextData) -> int:
         + len(ctx.calculations)
         + len(ctx.specifications)
         + len(ctx.comparisons)
+        + len(ctx.schedules)
         + len(ctx.deliverables)
     )
 
@@ -430,6 +471,9 @@ def _expected_deliverable_covered(exp: str, ctx: QaContextData) -> bool:
     ) + tuple(
         f"{c.get('title', '')} {c.get('discipline', '')} {c.get('comparison_scope', '')} comparison tradeoff trade-off matrix".lower()
         for c in ctx.comparisons
+    ) + tuple(
+        f"{sc.get('title', '')} {sc.get('discipline', '')} schedule wbs gantt critical path planning".lower()
+        for sc in ctx.schedules
     )
     if not haystacks:
         return False
@@ -456,6 +500,7 @@ def build_qa_context_isolation_report(ctx: QaContextData) -> QaContextIsolationR
         inspected_calculation_ids=[c["id"] for c in ctx.calculations],
         inspected_specification_ids=[s["id"] for s in ctx.specifications],
         inspected_comparison_ids=[c["id"] for c in ctx.comparisons],
+        inspected_schedule_ids=[s["id"] for s in ctx.schedules],
         inspected_deliverable_ids=[d["id"] for d in ctx.deliverables],
         inspected_extraction_ids=[e["id"] for e in ctx.extractions],
         inspected_research_source_count=len(ctx.all_research_sources),
@@ -528,6 +573,17 @@ def serialize_isolated_qa_prompt_context(ctx: QaContextData) -> str:
                 "criteria_count": len(c.get("criteria_json") or []),
             }
             for c in ctx.comparisons
+        ],
+        "schedules": [
+            {
+                "id": s["id"],
+                "title": s["title"],
+                "discipline": s["discipline"],
+                "is_baseline": s["is_baseline"],
+                "ai_draft_status": s["ai_draft_status"],
+                "activities_count": len(s.get("activities_json") or []),
+            }
+            for s in ctx.schedules
         ],
         "deliverables": ctx.deliverables,
         "reviewed_research_urls": sorted(ctx.reviewed_research_urls),
@@ -701,6 +757,29 @@ def _check_arithmetic(
                                     description=f"Comparison XLSX '{rel_xlsx}' contains no live =SUM/=ROUND formulas.",
                                     reference=str(rel_xlsx),
                                     corrective_action="Re-export comparison DOCX + PDF + live-formula XLSX via POST /api/comparisons/{id}/export.",
+                                    deliverable_id=d["id"],
+                                    task_id=d.get("task_id"),
+                                )
+                            )
+                    elif d.get("schedule_id"):
+                        sched_formula_hits = 0
+                        for r_i in range(1, ws.max_row + 1):
+                            for c_i in range(1, ws.max_column + 1):
+                                val = ws.cell(row=r_i, column=c_i).value
+                                if isinstance(val, str) and (
+                                    val.startswith("=IF(") or val.startswith("=MAX(") or val.startswith("=COUNTIF(")
+                                ):
+                                    sched_formula_hits += 1
+                        if sched_formula_hits == 0:
+                            findings.append(
+                                QaCandidateFinding(
+                                    check_category="arithmetic",
+                                    discipline=d.get("discipline") or "multidisciplinary",
+                                    severity="high",
+                                    title="Exported schedule XLSX missing live Excel formulas",
+                                    description=f"Schedule XLSX '{rel_xlsx}' contains no live =IF/=COUNTIF formulas.",
+                                    reference=str(rel_xlsx),
+                                    corrective_action="Re-export schedule PDF + live-formula XLSX via POST /api/schedules/{id}/export.",
                                     deliverable_id=d["id"],
                                     task_id=d.get("task_id"),
                                 )
@@ -970,6 +1049,141 @@ def _check_arithmetic(
                 )
             )
 
+    # Recompute Step 16 project schedules (date arithmetic, floats & critical path) independently
+    deliv_by_sched = {d["schedule_id"]: d["id"] for d in ctx.deliverables if d.get("schedule_id")}
+    sched_by_id = {s["id"]: s for s in ctx.schedules}
+    for s_row in ctx.schedules:
+        checked += 1
+        s_deliv_id = deliv_by_sched.get(s_row["id"])
+        s_ref = f"Schedule {s_row['title']} ({s_row['id'][:8]})"
+        try:
+            cal_in = WorkCalendarIn.model_validate(s_row.get("calendar_json") or {})
+            wbs_in = [WbsItemIn.model_validate(w) for w in (s_row.get("wbs_items_json") or [])]
+            acts_in = [
+                ScheduleActivityIn.model_validate(
+                    {
+                        **a,
+                        "source_ref": str(a.get("source_ref") or "").strip() or NOT_PROVIDED_LABEL,
+                    }
+                )
+                for a in (s_row.get("activities_json") or [])
+                if isinstance(a, dict)
+            ]
+            base_row = sched_by_id.get(s_row.get("baseline_schedule_id") or "")
+            base_res_obj = (
+                ScheduleResultOut.model_validate(base_row.get("schedule_result_json") or {})
+                if base_row and isinstance(base_row.get("schedule_result_json"), dict)
+                else None
+            )
+            recomp_sched = evaluate_project_schedule(
+                start_date=s_row.get("start_date") or "",
+                calendar=cal_in,
+                wbs_items=wbs_in,
+                activities=acts_in,
+                baseline_result=base_res_obj,
+                baseline_schedule_id=s_row.get("baseline_schedule_id"),
+                baseline_title=base_row.get("title") if base_row else None,
+                strict=False,
+            )
+            stored = s_row.get("schedule_result_json") or {}
+            date_mismatches: list[str] = []
+            cp_mismatches: list[str] = []
+
+            if stored.get("effective_start_date") != recomp_sched.effective_start_date:
+                date_mismatches.append(
+                    f"effective_start_date: {stored.get('effective_start_date')} vs {recomp_sched.effective_start_date}"
+                )
+            if stored.get("project_finish_date") != recomp_sched.project_finish_date:
+                date_mismatches.append(
+                    f"project_finish_date: {stored.get('project_finish_date')} vs {recomp_sched.project_finish_date}"
+                )
+            if stored.get("total_duration_wd") != recomp_sched.total_duration_wd:
+                date_mismatches.append(
+                    f"total_duration_wd: {stored.get('total_duration_wd')} vs {recomp_sched.total_duration_wd}"
+                )
+            if bool(stored.get("critical_path_complete")) != recomp_sched.critical_path_complete:
+                cp_mismatches.append(
+                    f"critical_path_complete: {stored.get('critical_path_complete')} vs {recomp_sched.critical_path_complete}"
+                )
+            if list(stored.get("critical_path_ids") or []) != recomp_sched.critical_path_ids:
+                cp_mismatches.append(
+                    f"critical_path_ids: {stored.get('critical_path_ids')} vs {recomp_sched.critical_path_ids}"
+                )
+
+            stored_acts = {
+                str(a.get("activity_id") or ""): a
+                for a in (stored.get("activities") or [])
+                if isinstance(a, dict)
+            }
+            for ra in recomp_sched.activities:
+                sa = stored_acts.get(ra.activity_id)
+                if not sa:
+                    date_mismatches.append(f"missing activity {ra.activity_id} in stored result")
+                    continue
+                for fld in (
+                    "early_start_wd",
+                    "early_finish_wd",
+                    "late_start_wd",
+                    "late_finish_wd",
+                    "total_float_wd",
+                    "planned_start",
+                    "planned_finish",
+                    "finish_variance_wd",
+                ):
+                    if sa.get(fld) != getattr(ra, fld):
+                        date_mismatches.append(f"{ra.activity_id}.{fld}: {sa.get(fld)} vs {getattr(ra, fld)}")
+                if bool(sa.get("is_critical")) != ra.is_critical:
+                    cp_mismatches.append(f"{ra.activity_id}.is_critical: {sa.get('is_critical')} vs {ra.is_critical}")
+
+            if date_mismatches:
+                findings.append(
+                    QaCandidateFinding(
+                        check_category="arithmetic",
+                        discipline=s_row.get("discipline") or "multidisciplinary",
+                        severity="high",
+                        title="Project schedule date or float arithmetic mismatch",
+                        description=(
+                            f"Schedule '{s_row['title']}' stored working dates or float values disagree with "
+                            f"independent CPM recomputation: {'; '.join(date_mismatches[:5])}."
+                        ),
+                        reference=s_ref,
+                        corrective_action="Re-evaluate schedule via POST /api/projects/{id}/schedules to restore exact CPM arithmetic.",
+                        deliverable_id=s_deliv_id,
+                        task_id=s_row.get("task_id"),
+                    )
+                )
+            if cp_mismatches:
+                findings.append(
+                    QaCandidateFinding(
+                        check_category="arithmetic",
+                        discipline=s_row.get("discipline") or "multidisciplinary",
+                        severity="high",
+                        title="Project schedule critical path mismatch",
+                        description=(
+                            f"Schedule '{s_row['title']}' stored critical path disagrees with independent CPM "
+                            f"recomputation: {'; '.join(cp_mismatches[:5])}."
+                        ),
+                        reference=s_ref,
+                        corrective_action="Re-evaluate critical path deterministically from owner-supplied durations.",
+                        deliverable_id=s_deliv_id,
+                        task_id=s_row.get("task_id"),
+                    )
+                )
+        except Exception as exc:
+            findings.append(
+                QaCandidateFinding(
+                    check_category="arithmetic",
+                    discipline=s_row.get("discipline") or "multidisciplinary",
+                    severity="high",
+                    title="Project schedule failed deterministic CPM re-evaluation",
+                    description=f"Schedule '{s_row['title']}' failed QA CPM recomputation: {exc}",
+                    reference=s_ref,
+                    corrective_action="Fix invalid calendar or activity structure and re-evaluate schedule.",
+                    deliverable_id=s_deliv_id,
+                    task_id=s_row.get("task_id"),
+                )
+            )
+
     failed_cnt = len(findings)
     return (
         QaCheckMetricOut(
@@ -977,7 +1191,7 @@ def _check_arithmetic(
             checked_count=checked,
             failed_count=failed_cnt,
             passed=(failed_cnt == 0),
-            details=f"Recomputed {checked} BOQ/XLSX/drawing/calculation/comparison arithmetic target(s); found {failed_cnt} issue(s).",
+            details=f"Recomputed {checked} BOQ/XLSX/drawing/calculation/comparison/schedule arithmetic target(s); found {failed_cnt} issue(s).",
         ),
         findings,
     )
@@ -1825,6 +2039,138 @@ def _check_references(ctx: QaContextData) -> tuple[QaCheckMetricOut, list[QaCand
                                 )
                             )
 
+    # 6. Check Step 16 project schedules: activities & calendars must trace to BOQ/Spec/Calc/Reviewed Source/Owner
+    deliv_by_sched_r = {d["schedule_id"]: d["id"] for d in ctx.deliverables if d.get("schedule_id")}
+    sched_url_re = re.compile(r"https?://[^\s,;\"')>\]]+", re.IGNORECASE)
+    for s_row in ctx.schedules:
+        s_deliv_id = deliv_by_sched_r.get(s_row["id"])
+        s_ref = f"Schedule {s_row['title']} ({s_row['id'][:8]})"
+        cal_dict = s_row.get("calendar_json") or {}
+        for url_hit in sched_url_re.findall(str(cal_dict.get("source_ref") or "")):
+            checked += 1
+            if not _url_is_reviewed(url_hit):
+                findings.append(
+                    QaCandidateFinding(
+                        check_category="reference",
+                        discipline=s_row.get("discipline") or "multidisciplinary",
+                        severity="high",
+                        title="Schedule calendar cites unreviewed URL",
+                        description=f"Schedule '{s_row['title']}' calendar source_ref cites unreviewed URL '{url_hit}'.",
+                        reference=s_ref,
+                        corrective_action="Verify source in ResearchSource log before citing URL in schedule.",
+                        deliverable_id=s_deliv_id,
+                        task_id=s_row.get("task_id"),
+                    )
+                )
+
+        for act in s_row.get("activities_json") or []:
+            if not isinstance(act, dict):
+                continue
+            checked += 1
+            aid = str(act.get("activity_id") or "")
+            src_kind = str(act.get("source_kind") or "")
+            src_ref = str(act.get("source_ref") or "").strip()
+            a_ref = f"{s_ref} / {aid}"
+
+            if not src_ref or src_ref.lower() == NOT_PROVIDED_LABEL:
+                findings.append(
+                    QaCandidateFinding(
+                        check_category="reference",
+                        discipline=s_row.get("discipline") or "multidisciplinary",
+                        severity="high",
+                        title="Project schedule activity missing source reference",
+                        description=(
+                            f"Schedule '{s_row['title']}' activity '{aid}' ('{act.get('name')}') has no "
+                            "BOQ/specification/calculation/owner source attribution."
+                        ),
+                        reference=a_ref,
+                        corrective_action="Link every activity duration/quantity to an active BOQ item, spec, calc, reviewed source, or explicit owner quote.",
+                        deliverable_id=s_deliv_id,
+                        task_id=s_row.get("task_id"),
+                    )
+                )
+
+            if src_kind == "boq_item":
+                bid = str(act.get("boq_item_id") or "")
+                if not bid or bid not in valid_cmp_boq_ids:
+                    findings.append(
+                        QaCandidateFinding(
+                            check_category="reference",
+                            discipline=s_row.get("discipline") or "multidisciplinary",
+                            severity="high",
+                            title="Schedule activity traces to missing BOQ item",
+                            description=f"Activity '{aid}' references invalid/missing BOQ item '{bid}'.",
+                            reference=a_ref,
+                            corrective_action="Link an active BOQ item from this project.",
+                            deliverable_id=s_deliv_id,
+                            task_id=s_row.get("task_id"),
+                        )
+                    )
+            elif src_kind == "specification":
+                spid = str(act.get("specification_id") or "")
+                if not spid or spid not in valid_cmp_spec_ids:
+                    findings.append(
+                        QaCandidateFinding(
+                            check_category="reference",
+                            discipline=s_row.get("discipline") or "multidisciplinary",
+                            severity="high",
+                            title="Schedule activity traces to missing Specification",
+                            description=f"Activity '{aid}' references missing Specification '{spid}'.",
+                            reference=a_ref,
+                            corrective_action="Link an active Specification from this project.",
+                            deliverable_id=s_deliv_id,
+                            task_id=s_row.get("task_id"),
+                        )
+                    )
+            elif src_kind == "calculation":
+                cid_s = str(act.get("calculation_id") or "")
+                if not cid_s or cid_s not in valid_cmp_calc_ids:
+                    findings.append(
+                        QaCandidateFinding(
+                            check_category="reference",
+                            discipline=s_row.get("discipline") or "multidisciplinary",
+                            severity="high",
+                            title="Schedule activity traces to missing Calculation",
+                            description=f"Activity '{aid}' references missing Calculation '{cid_s}'.",
+                            reference=a_ref,
+                            corrective_action="Link an active Step 13 Calculation from this project.",
+                            deliverable_id=s_deliv_id,
+                            task_id=s_row.get("task_id"),
+                        )
+                    )
+            elif src_kind == "research_source":
+                rsid = str(act.get("research_source_id") or "")
+                if not rsid or rsid not in reviewed_rs_by_id:
+                    findings.append(
+                        QaCandidateFinding(
+                            check_category="reference",
+                            discipline=s_row.get("discipline") or "multidisciplinary",
+                            severity="high",
+                            title="Schedule activity cites unreviewed or missing ResearchSource",
+                            description=f"Activity '{aid}' references unreviewed/missing ResearchSource '{rsid}'.",
+                            reference=a_ref,
+                            corrective_action="Verify source in ResearchSource log or replace with an owner-verified basis.",
+                            deliverable_id=s_deliv_id,
+                            task_id=s_row.get("task_id"),
+                        )
+                    )
+
+            for url_hit in sched_url_re.findall(src_ref):
+                if not _url_is_reviewed(url_hit):
+                    findings.append(
+                        QaCandidateFinding(
+                            check_category="reference",
+                            discipline=s_row.get("discipline") or "multidisciplinary",
+                            severity="high",
+                            title="Schedule activity cites unreviewed external URL",
+                            description=f"Activity '{aid}' embeds unreviewed URL '{url_hit}'.",
+                            reference=a_ref,
+                            corrective_action="Verify URL in ResearchSource log before referencing it in schedules.",
+                            deliverable_id=s_deliv_id,
+                            task_id=s_row.get("task_id"),
+                        )
+                    )
+
     failed_cnt = len(findings)
     return (
         QaCheckMetricOut(
@@ -1832,7 +2178,7 @@ def _check_references(ctx: QaContextData) -> tuple[QaCheckMetricOut, list[QaCand
             checked_count=checked,
             failed_count=failed_cnt,
             passed=(failed_cnt == 0),
-            details=f"Verified {checked} report/BOQ/calculation/specification/comparison source & drawing references against project logs; found {failed_cnt} issue(s).",
+            details=f"Verified {checked} report/BOQ/calculation/specification/comparison/schedule source & drawing references against project logs; found {failed_cnt} issue(s).",
         ),
         findings,
     )
@@ -2268,6 +2614,111 @@ def _check_cross_deliverable_consistency(ctx: QaContextData) -> tuple[QaCheckMet
                         )
                     )
 
+    # 6. Check Step 16 project schedules: dependency cycles, orphan tasks/WBS, missing durations ('not provided'), unapproved AI drafts
+    deliv_by_sched_c = {d["schedule_id"]: d["id"] for d in ctx.deliverables if d.get("schedule_id")}
+    for s_row in ctx.schedules:
+        checked += 1
+        s_deliv_id = deliv_by_sched_c.get(s_row["id"])
+        s_ref = f"Schedule {s_row['title']} ({s_row['id'][:8]})"
+
+        if s_row.get("ai_draft_status") == "unverified_ai_draft":
+            findings.append(
+                QaCandidateFinding(
+                    check_category="schedule_consistency",
+                    discipline=s_row.get("discipline") or "multidisciplinary",
+                    severity="medium",
+                    title="AI-drafted schedule summary pending owner approval",
+                    description=(
+                        f"Schedule '{s_row['title']}' includes a narrative tagged 'unverified_ai_draft' "
+                        "pending owner approval."
+                    ),
+                    reference=s_ref,
+                    corrective_action="Review schedule narrative and approve via POST /api/schedules/{id}/approve.",
+                    deliverable_id=s_deliv_id,
+                    task_id=s_row.get("task_id"),
+                )
+            )
+
+        try:
+            wbs_in = [WbsItemIn.model_validate(w) for w in (s_row.get("wbs_items_json") or [])]
+            acts_in = [
+                ScheduleActivityIn.model_validate(
+                    {
+                        **a,
+                        "source_ref": str(a.get("source_ref") or "").strip() or NOT_PROVIDED_LABEL,
+                    }
+                )
+                for a in (s_row.get("activities_json") or [])
+                if isinstance(a, dict)
+            ]
+            dup_errs, orphan_flags, cycle_nodes, _, _, _ = _detect_graph_issues(
+                wbs_items=wbs_in,
+                activities=acts_in,
+            )
+            if cycle_nodes:
+                findings.append(
+                    QaCandidateFinding(
+                        check_category="schedule_consistency",
+                        discipline=s_row.get("discipline") or "multidisciplinary",
+                        severity="critical",
+                        title="Dependency cycle detected in project schedule",
+                        description=(
+                            f"Schedule '{s_row['title']}' contains a predecessor cycle involving: "
+                            f"{', '.join(sorted(cycle_nodes))}."
+                        ),
+                        reference=s_ref,
+                        corrective_action="Remove circular Finish-to-Start dependency edges so network forms a DAG.",
+                        deliverable_id=s_deliv_id,
+                        task_id=s_row.get("task_id"),
+                    )
+                )
+            for orph in dup_errs + orphan_flags:
+                findings.append(
+                    QaCandidateFinding(
+                        check_category="schedule_consistency",
+                        discipline=s_row.get("discipline") or "multidisciplinary",
+                        severity="high",
+                        title="Orphan activity or broken WBS/dependency link in project schedule",
+                        description=f"Schedule '{s_row['title']}': {orph}",
+                        reference=s_ref,
+                        corrective_action="Fix missing WBS codes or broken predecessor IDs.",
+                        deliverable_id=s_deliv_id,
+                        task_id=s_row.get("task_id"),
+                    )
+                )
+            for a_obj in acts_in:
+                if not a_obj.is_milestone and a_obj.duration_days is None:
+                    findings.append(
+                        QaCandidateFinding(
+                            check_category="schedule_consistency",
+                            discipline=s_row.get("discipline") or "multidisciplinary",
+                            severity="high",
+                            title="Missing activity duration ('not provided') blocks critical path in project schedule",
+                            description=(
+                                f"Schedule '{s_row['title']}', activity '{a_obj.activity_id}' ('{a_obj.name}') "
+                                f"duration is '{NOT_PROVIDED_LABEL}', blocking critical-path computation for its branch."
+                            ),
+                            reference=f"{s_ref} / {a_obj.activity_id}",
+                            corrective_action="Supply owner-verified activity duration (working days) and re-evaluate CPM.",
+                            deliverable_id=s_deliv_id,
+                            task_id=s_row.get("task_id"),
+                        )
+                    )
+        except Exception as exc:
+            findings.append(
+                QaCandidateFinding(
+                    check_category="schedule_consistency",
+                    discipline=s_row.get("discipline") or "multidisciplinary",
+                    severity="high",
+                    title="Invalid WBS or schedule activity payload",
+                    description=f"Schedule '{s_row['title']}' failed schema inspection: {exc}",
+                    reference=s_ref,
+                    corrective_action="Repair malformed WBS/activity records and re-evaluate schedule.",
+                    deliverable_id=s_deliv_id,
+                    task_id=s_row.get("task_id"),
+                )
+            )
+
     failed_cnt = len(findings)
     return (
         QaCheckMetricOut(
@@ -2275,7 +2726,7 @@ def _check_cross_deliverable_consistency(ctx: QaContextData) -> tuple[QaCheckMet
             checked_count=checked,
             failed_count=failed_cnt,
             passed=(failed_cnt == 0),
-            details=f"Evaluated {checked} drawing/BOQ/calculation/specification/comparison consistency checks; found {failed_cnt} issue(s).",
+            details=f"Evaluated {checked} drawing/BOQ/calculation/specification/comparison/schedule consistency checks; found {failed_cnt} issue(s).",
         ),
         findings,
     )
@@ -2296,6 +2747,7 @@ def _check_missing_deliverables_and_integrity(
     delivs_by_calc: dict[str, set[str]] = {}
     delivs_by_spec: dict[str, set[str]] = {}
     delivs_by_cmp: dict[str, set[str]] = {}
+    delivs_by_sched: dict[str, set[str]] = {}
 
     for d in ctx.deliverables:
         checked += 1
@@ -2312,6 +2764,8 @@ def _check_missing_deliverables_and_integrity(
             delivs_by_spec.setdefault(d["specification_id"], set()).add(str(d.get("format") or "").lower())
         if d.get("comparison_id"):
             delivs_by_cmp.setdefault(d["comparison_id"], set()).add(str(d.get("format") or "").lower())
+        if d.get("schedule_id"):
+            delivs_by_sched.setdefault(d["schedule_id"], set()).add(str(d.get("format") or "").lower())
 
         if not rel:
             findings.append(
@@ -2487,6 +2941,28 @@ def _check_missing_deliverables_and_integrity(
                     )
                 )
 
+    for s_row in ctx.schedules:
+        if int(s_row.get("export_version") or 0) > 0:
+            checked += 1
+            fmts = delivs_by_sched.get(s_row["id"], set())
+            missing = sorted({"pdf", "xlsx"} - fmts)
+            if missing:
+                findings.append(
+                    QaCandidateFinding(
+                        check_category="missing_deliverable",
+                        discipline=s_row.get("discipline") or "multidisciplinary",
+                        severity="high",
+                        title="Exported project schedule deliverables incomplete",
+                        description=(
+                            f"Project schedule '{s_row['title']}' is missing {', '.join(missing).upper()} "
+                            "export file(s) in 03_Analysis."
+                        ),
+                        reference=f"Schedule {s_row['title']}",
+                        corrective_action="Re-export project schedule Gantt PDF + XLSX into 03_Analysis.",
+                        task_id=s_row.get("task_id"),
+                    )
+                )
+
     # 3. Task expected deliverables coverage check (without reading producer reasoning)
     if ctx.task_id and ctx.expected_task_deliverables:
         has_boq = bool(ctx.boq_sheets) or any(d.get("folder_name") == "06_BOQ" for d in ctx.deliverables)
@@ -2502,6 +2978,10 @@ def _check_missing_deliverables_and_integrity(
         )
         has_cmp = bool(ctx.comparisons) or any(
             d.get("folder_name") == "09_Comparisons" for d in ctx.deliverables
+        )
+        has_sched = bool(ctx.schedules) or any(
+            d.get("deliverable_type") == "project_schedule" or d.get("folder_name") == "03_Analysis"
+            for d in ctx.deliverables
         )
         for exp in ctx.expected_task_deliverables:
             checked += 1
@@ -2590,6 +3070,20 @@ def _check_missing_deliverables_and_integrity(
                             task_id=ctx.task_id,
                         )
                     )
+            elif any(k in low for k in ("schedule", "wbs", "gantt", "critical path", "planning", "جدول زمني", "مسار حرج", "جانت")):
+                if not has_sched:
+                    findings.append(
+                        QaCandidateFinding(
+                            check_category="missing_deliverable",
+                            discipline="multidisciplinary",
+                            severity="high",
+                            title="Missing expected project schedule deliverable for task",
+                            description=f"Task expects deliverable '{exp}', but no ProjectSchedule or 03_Analysis deliverable is linked.",
+                            reference=f"Task {ctx.task_id[:8]} / {exp}",
+                            corrective_action="Create and export WBS/CPM Gantt PDF + XLSX schedule for this task.",
+                            task_id=ctx.task_id,
+                        )
+                    )
             elif not _expected_deliverable_covered(exp, ctx):
                 findings.append(
                     QaCandidateFinding(
@@ -2606,7 +3100,7 @@ def _check_missing_deliverables_and_integrity(
 
     # Also catch zero-deliverable QA run on a task so an empty task never falsely passes verification
     if ctx.task_id and not (
-        ctx.deliverables or ctx.boq_sheets or ctx.drawings or ctx.review_reports or ctx.calculations or ctx.specifications or ctx.comparisons
+        ctx.deliverables or ctx.boq_sheets or ctx.drawings or ctx.review_reports or ctx.calculations or ctx.specifications or ctx.comparisons or ctx.schedules
     ):
         checked += 1
         findings.append(
