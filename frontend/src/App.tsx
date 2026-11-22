@@ -66,7 +66,7 @@ const COPY: Record<
   ar: {
     title: "الوكيل الهندسي الاستشاري المحلي",
     subtitle:
-      "الخطوة 19 — دعم التقييم الإنشائي (أولي — للمراجعة من مهندس إنشائي مرخص) + التكييف والحريق والصحة + المعايير + الجودة",
+      "الخطوة 20 — الأمان ومعالجة الأخطاء والسجلات والنسخ الاحتياطي + كافة الوحدات الهندسية وضبط الجودة",
     classificationLabel: "التصنيف: أولي (Preliminary)",
     toggleLang: "Switch to English (LTR)",
     refreshHealth: "تحديث فحص الخادم",
@@ -88,12 +88,12 @@ const COPY: Record<
     comparisonsTab: "المقارنات الفنية (Compare)",
     planningTab: "الجدولة والمسار الحرج (Plan)",
     qaTab: "الجودة وسجل القضايا (QA)",
-    settingsTab: "إعدادات Gemini والمزودين",
+    settingsTab: "إعدادات Gemini والمزودين والنظام",
   },
   en: {
     title: "Local AI Engineering Consultancy Agent",
     subtitle:
-      "Step 19 — Structural Assessment & I/O Check (PRELIMINARY) + HVAC/Fire/Healthcare + Standards + QA",
+      "Step 20 — Security Hardening, Logging & Backup/Restore + All Engineering Modules & QA",
     classificationLabel: "Classification: Preliminary",
     toggleLang: "التبديل إلى العربية (RTL)",
     refreshHealth: "Refresh Health Check",
@@ -115,7 +115,7 @@ const COPY: Record<
     comparisonsTab: "Technical Compare",
     planningTab: "Planning & Gantt",
     qaTab: "QA & Issue Register",
-    settingsTab: "AI Provider Settings",
+    settingsTab: "Settings & System",
   },
 };
 

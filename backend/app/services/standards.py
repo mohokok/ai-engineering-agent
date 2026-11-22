@@ -385,18 +385,12 @@ async def upload_standard_document(
 
     try:
         safe_name, spec = validate_upload_filename(upload.filename)
-    except UnsafeFilenameError as exc:
+    except (UnsafeFilenameError, UnsupportedFileTypeError) as exc:
         raise StandardValidationError(str(exc)) from exc
     if spec.extension not in _ALLOWED_STANDARD_EXTENSIONS:
         raise StandardValidationError(
             f"Unsupported standard document format '{spec.extension}'. Allowed: {sorted(_ALLOWED_STANDARD_EXTENSIONS)}"
         )
-
-    raw_bytes = await upload.read()
-    if not raw_bytes:
-        raise StandardValidationError("Uploaded standard file is empty (0 bytes).")
-    if len(raw_bytes) > settings.max_upload_size_bytes:
-        raise StandardValidationError("Uploaded standard file exceeds configured upload size limit.")
 
     std_id = new_uuid()
     short_id = std_id.replace("-", "")[:8]
@@ -407,7 +401,30 @@ async def upload_standard_document(
     disk_path = target_dir / stored_name
     if disk_path.exists():
         raise StandardValidationError(f"Collision writing read-only standard file '{stored_name}'.")
-    disk_path.write_bytes(raw_bytes)
+
+    total_bytes = 0
+    chunk_size = 64 * 1024
+    try:
+        with open(disk_path, "wb") as fh:
+            while True:
+                chunk = await upload.read(chunk_size)
+                if not chunk:
+                    break
+                total_bytes += len(chunk)
+                if total_bytes > settings.max_upload_size_bytes:
+                    raise FileTooLargeError(
+                        f"Uploaded standard file exceeds maximum allowed size ({settings.max_upload_size_bytes} bytes)."
+                    )
+                fh.write(chunk)
+        if total_bytes == 0:
+            raise EmptyFileError("Uploaded standard file is empty (0 bytes).")
+    except (FileTooLargeError, EmptyFileError) as exc:
+        disk_path.unlink(missing_ok=True)
+        raise StandardValidationError(str(exc)) from exc
+    except Exception:
+        disk_path.unlink(missing_ok=True)
+        raise
+
     _set_read_only(disk_path)
     digest = sha256_file(disk_path)
 
@@ -466,7 +483,7 @@ async def upload_standard_document(
         original_filename=safe_name,
         file_relative_path=rel_path,
         file_sha256=digest,
-        file_size_bytes=len(raw_bytes),
+        file_size_bytes=total_bytes,
         mime_type=spec.mime_hint,
         version=1,
         history_json=[],
@@ -822,7 +839,7 @@ def resolve_register_file_download(
     else:
         path = (settings.workspaces_dir / "_standards_library" / "registers" / clean_name).resolve()
         root = (settings.workspaces_dir / "_standards_library" / "registers").resolve()
-        if not str(path).startswith(str(root)):
+        if path == root or not path.is_relative_to(root):
             raise StandardValidationError("Path traversal blocked.")
     if not path.is_file():
         raise StandardNotFoundError(f"Exported register file '{clean_name}' was not found.")

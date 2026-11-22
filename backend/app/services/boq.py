@@ -1973,6 +1973,7 @@ def delete_boq_item(db: Session, boq_id: str, item_id: str) -> BoqDetailOut:
     item = next((it for it in (sheet.items or []) if it.id == item_id), None)
     if item is None:
         raise BoqNotFoundError(f"BOQ item '{item_id}' was not found.")
+    deleted_no = item.item_no
     db.delete(item)
     db.flush()
     remaining = _fetch_sheet_items(db, sheet.id)
@@ -1983,6 +1984,16 @@ def delete_boq_item(db: Session, boq_id: str, item_id: str) -> BoqDetailOut:
         expected_coverage=_load_expected_coverage_for_sheet(db, sheet),
     )
     _persist_checks_snapshot(sheet, checks)
+    db.add(
+        AuditLog(
+            project_id=sheet.project_id,
+            actor="owner",
+            action="boq.item_deleted",
+            entity_type="boq_item",
+            entity_id=item_id,
+            details_json={"boq_id": boq_id, "item_no": deleted_no},
+        )
+    )
     db.commit()
     return get_boq_detail(db, boq_id)
 

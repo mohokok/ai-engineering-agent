@@ -9,6 +9,8 @@ from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.core.logging import record_audit_log_event
+
 
 def create_db_engine(database_url: str) -> Engine:
     """Create a SQLAlchemy engine configured for SQLite or PostgreSQL."""
@@ -38,7 +40,46 @@ def create_db_engine(database_url: str) -> Engine:
 
 def create_session_factory(engine: Engine) -> sessionmaker[Session]:
     """Create a configured sessionmaker bound to the supplied engine."""
-    return sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+
+    @event.listens_for(factory, "before_commit")
+    def _capture_audit_logs(session: Session) -> None:
+        from app.db.models import AuditLog
+
+        pending: list[dict[str, Any]] = []
+        for obj in session.new:
+            if isinstance(obj, AuditLog):
+                pending.append(
+                    {
+                        "action": obj.action,
+                        "entity_type": obj.entity_type,
+                        "entity_id": obj.entity_id,
+                        "project_id": obj.project_id,
+                        "actor": obj.actor,
+                        "details": dict(obj.details_json or {}),
+                    }
+                )
+        if pending:
+            session.info.setdefault("_pending_audit_logs", []).extend(pending)
+
+    @event.listens_for(factory, "after_commit")
+    def _emit_audit_logs(session: Session) -> None:
+        items = session.info.pop("_pending_audit_logs", [])
+        for item in items:
+            record_audit_log_event(
+                action=str(item["action"]),
+                entity_type=str(item["entity_type"]),
+                entity_id=item.get("entity_id"),
+                project_id=item.get("project_id"),
+                actor=str(item.get("actor") or "owner"),
+                details=item.get("details"),
+            )
+
+    @event.listens_for(factory, "after_rollback")
+    def _discard_audit_logs(session: Session) -> None:
+        session.info.pop("_pending_audit_logs", None)
+
+    return factory
 
 
 def get_db(request: Request) -> Iterator[Session]:

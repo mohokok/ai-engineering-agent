@@ -449,6 +449,16 @@ def approve_specialist_assessment(
     row.owner_approved_at = utc_now()
     row.updated_at = utc_now()
     db.add(row)
+    db.add(
+        AuditLog(
+            project_id=row.project_id,
+            actor=row.owner_approved_by or "owner",
+            action="specialist_assessment_approved",
+            entity_type="specialist_assessment",
+            entity_id=row.id,
+            details_json={"domain": row.domain, "version": row.version},
+        )
+    )
     db.commit()
     return get_specialist_detail(db, row.id)
 
@@ -582,6 +592,16 @@ def export_specialist_deliverables(
         row.status = "exported"
     row.updated_at = utc_now()
     db.add(row)
+    db.add(
+        AuditLog(
+            project_id=project.id,
+            actor="owner-export",
+            action="specialist_assessment_exported",
+            entity_type="specialist_assessment",
+            entity_id=row.id,
+            details_json={"domain": row.domain, "language": lang_val, "export_version": next_export},
+        )
+    )
     db.commit()
 
     return SpecialistExportOut(

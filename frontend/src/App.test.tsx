@@ -17,6 +17,7 @@ import {
   createSpecialistAssessment,
   createStandard,
   createStructuralAssessment,
+  createSystemBackup,
   createTask,
   createTechnicalComparison,
   decideTechnicalComparison,
@@ -30,10 +31,12 @@ import {
   exportStandardsRegister,
   exportStructuralDeliverables,
   exportTechnicalComparison,
+  extractErrorMessage,
   extractProjectFile,
   generateParametricDrawing,
   generateProjectSpecification,
   generateReviewReport,
+  getBackupDownloadUrl,
   getCalculationDetail,
   getClinicPresetModel,
   getComparisonDetail,
@@ -43,6 +46,7 @@ import {
   getSpecificationDetail,
   getStandardDetail,
   getStandardsRegisterDownloadUrl,
+  getSystemInfo,
   getStructuralDetail,
   listCalculationPresets,
   listComparisonPresets,
@@ -89,6 +93,7 @@ import {
   listTasks,
   refreshProviderModels,
   rerunBoqChecks,
+  restoreSystemBackup,
   runControlledResearch,
   saveProviderApiKey,
   summarizeDrawingVision,
@@ -113,6 +118,7 @@ import { SpecificationsView } from "./components/SpecificationsView";
 import { SpecialistEngineeringView } from "./components/SpecialistEngineeringView";
 import { StandardsLibraryView } from "./components/StandardsLibraryView";
 import { StructuralView } from "./components/StructuralView";
+import { SystemHardeningPanel } from "./components/SystemHardeningPanel";
 import { TechnicalComparisonsView } from "./components/TechnicalComparisonsView";
 import type {
   BoqDetailOut,
@@ -129,6 +135,7 @@ import type {
   SpecialistDetailOut,
   StandardDocumentOut,
   StructuralDetailOut,
+  SystemInfoOut,
   TaskDetailOut,
   TaskSummaryOut,
 } from "./types";
@@ -3919,5 +3926,98 @@ describe("App Step 10 BOQ & quantity UI", () => {
     expect(appRes.ai_draft_status).toBe("owner_approved");
     const expRes = await exportStructuralDeliverables("str-19-1", { language: "en" });
     expect(expRes.pdf_deliverable.folder_name).toBe("04_Engineering_Calculations");
+  });
+});
+
+describe("Step 20 SystemHardeningPanel, bilingual errors & backup/restore API", () => {
+  it("renders bilingual EN/AR Settings/System panel showing log location, keyring isolation, and backup actions without a web log viewer", () => {
+    const sampleSys: SystemInfoOut = {
+      app_env: "development",
+      backend_host: "127.0.0.1",
+      cors_origins: ["http://127.0.0.1:5173", "http://localhost:5173"],
+      workspaces_dir: "C:/repo/workspaces",
+      log_file_path: "C:/repo/workspaces/agent.log",
+      log_rotation_policy: "Rotating JSONL (5 MB x 5 files)",
+      log_viewer_enabled: false,
+      remote_log_shipping: false,
+      backup_dir: "C:/repo/workspaces/_backups",
+      backup_excludes_keyring: true,
+      credential_backend: "WinVaultKeyring",
+      database_kind: "sqlite",
+      backups: [
+        {
+          filename: "backup_20261122_090000_ab12cd.zip",
+          relative_path: "_backups/backup_20261122_090000_ab12cd.zip",
+          size_bytes: 4096,
+          sha256: "a".repeat(64),
+          created_at: "2026-11-22T09:00:00Z",
+        },
+      ],
+    };
+
+    const arHtml = renderToStaticMarkup(<SystemHardeningPanel lang="ar" initialSystemInfo={sampleSys} />);
+    expect(arHtml).toContain("الخطوة 20: أمان النظام وموقع السجلات والنسخ الاحتياطي والاستعادة");
+    expect(arHtml).toContain("C:/repo/workspaces/agent.log");
+    expect(arHtml).toContain("backup_20261122_090000_ab12cd.zip");
+    expect(arHtml).toContain("تحقق جاف (Dry-Run)");
+    expect(arHtml).toContain("معطّل");
+
+    const enHtml = renderToStaticMarkup(<SystemHardeningPanel lang="en" initialSystemInfo={sampleSys} />);
+    expect(enHtml).toContain("Step 20: System Security, Local Log Location &amp; Backup/Restore");
+    expect(enHtml).toContain("Create Backup (ZIP + SHA-256)");
+    expect(enHtml).toContain("API keys remain in OS keyring ONLY");
+  });
+
+  it("extracts safe bilingual error envelope with correlation_id (no stack traces) and calls /api/system endpoints", async () => {
+    const arErrResp = new Response(
+      JSON.stringify({
+        detail: "Internal server error",
+        correlation_id: "cid-1234",
+        error: {
+          code: "INTERNAL_ERROR",
+          message: "Internal server error",
+          message_ar: "حدث خطأ داخلي في الخادم. راجع سجل النظام المحلي باستخدام رقم التتبع.",
+          correlation_id: "cid-1234",
+          status: 500,
+        },
+      }),
+      { status: 500 }
+    );
+    const parsedMsg = await extractErrorMessage(arErrResp);
+    expect(parsedMsg).toContain("حدث خطأ داخلي في الخادم");
+    expect(parsedMsg).toContain("cid-1234");
+    expect(parsedMsg).not.toContain("Traceback");
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ backend_host: "127.0.0.1", backups: [] }), { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            backup: { filename: "backup_20261122_120000_aa11bb.zip", sha256: "b".repeat(64) },
+            excludes_keyring: true,
+          }),
+          { status: 201 }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ valid: true, dry_run: true, restored: false, verified_files_count: 3 }), {
+          status: 200,
+        })
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const info = await getSystemInfo();
+    expect(info.backend_host).toBe("127.0.0.1");
+    const created = await createSystemBackup({ label: "ui" });
+    expect(created.excludes_keyring).toBe(true);
+    const dry = await restoreSystemBackup({
+      backup_filename: "backup_20261122_120000_aa11bb.zip",
+      dry_run: true,
+    });
+    expect(dry.valid).toBe(true);
+    expect(getBackupDownloadUrl("backup_20261122_120000_aa11bb.zip")).toBe(
+      "/api/system/backups/backup_20261122_120000_aa11bb.zip/download"
+    );
   });
 });
