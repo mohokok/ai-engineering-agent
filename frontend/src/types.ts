@@ -773,6 +773,7 @@ export interface DeliverableOut {
   drawing_id?: string | null;
   calculation_id?: string | null;
   specification_id?: string | null;
+  comparison_id?: string | null;
   task_id?: string | null;
   file_id?: string | null;
   title: string;
@@ -1232,6 +1233,7 @@ export interface QaContextIsolationReport {
   inspected_report_ids: string[];
   inspected_calculation_ids?: string[];
   inspected_specification_ids?: string[];
+  inspected_comparison_ids?: string[];
   inspected_deliverable_ids: string[];
   inspected_extraction_ids: string[];
   inspected_research_source_count: number;
@@ -1509,4 +1511,185 @@ export interface SpecificationPresetOut {
 
 export interface SpecificationPresetListResponse {
   presets: SpecificationPresetOut[];
+}
+
+export type ComparisonScope = "equipment" | "material" | "vendor_offer" | "system_alternative";
+export type ComparisonCategory =
+  | "compliance"
+  | "performance"
+  | "safety"
+  | "durability"
+  | "energy"
+  | "maintainability"
+  | "constructability"
+  | "initial_cost"
+  | "operating_cost"
+  | "lifecycle_cost"
+  | "risks";
+export type ScoringDirection = "higher_better" | "lower_better" | "boolean_pass" | "direct_score_0_100";
+export type ComparisonSourceKind =
+  | "boq_item"
+  | "specification"
+  | "calculation"
+  | "research_source"
+  | "owner_entered";
+export type ComparisonDraftStatus = "not_used" | "unverified_ai_draft" | "owner_approved";
+export type OwnerDecisionStatus = "pending_owner_decision" | "owner_selected";
+export type UnitCheckStatus = "exact" | "converted_explicitly" | "flagged_mismatch" | "not_applicable";
+
+export interface ComparisonCriterionIn {
+  criterion_id: string;
+  category: ComparisonCategory;
+  label: string;
+  weight: string | number;
+  is_mandatory: boolean;
+  direction: ScoringDirection;
+  target_unit: string;
+  mandatory_min?: number | null;
+  mandatory_max?: number | null;
+  mandatory_expected_bool?: boolean | null;
+  source_kind: ComparisonSourceKind;
+  source_ref: string;
+  boq_item_id?: string | null;
+  specification_id?: string | null;
+  calculation_id?: string | null;
+  research_source_id?: string | null;
+}
+
+export interface ComparisonCellIn {
+  criterion_id: string;
+  value?: number | string | boolean | null;
+  unit?: string | null;
+  source_kind: ComparisonSourceKind;
+  source_ref?: string | null;
+  boq_item_id?: string | null;
+  specification_id?: string | null;
+  calculation_id?: string | null;
+  research_source_id?: string | null;
+  notes?: string | null;
+}
+
+export interface ComparisonOptionIn {
+  option_id: string;
+  name: string;
+  vendor_or_source: string;
+  risks: string[];
+  cells: ComparisonCellIn[];
+}
+
+export interface EvaluatedCellOut {
+  criterion_id: string;
+  category: ComparisonCategory | string;
+  label: string;
+  weight: number;
+  is_mandatory: boolean;
+  raw_value?: number | string | boolean | null;
+  display_value: string;
+  raw_unit: string;
+  target_unit: string;
+  converted_value?: string | null;
+  unit_status: UnitCheckStatus | string;
+  conversion_note?: string | null;
+  is_missing: boolean;
+  mandatory_passed?: boolean | null;
+  normalized_score: number;
+  weighted_score: number;
+  source_kind: ComparisonSourceKind | string;
+  source_ref: string;
+  boq_item_id?: string | null;
+  specification_id?: string | null;
+  calculation_id?: string | null;
+  research_source_id?: string | null;
+  notes?: string | null;
+}
+
+export interface EvaluatedOptionOut {
+  option_id: string;
+  name: string;
+  vendor_or_source: string;
+  advisory_rank: number;
+  total_weighted_score: number;
+  mandatory_passed: boolean;
+  failed_mandatory_criteria: string[];
+  missing_values_count: number;
+  unit_mismatch_count: number;
+  risks: string[];
+  cells: EvaluatedCellOut[];
+}
+
+export interface ComparisonMatrixOut {
+  total_weight: number;
+  weights_sum_valid: boolean;
+  advisory_notice: string;
+  leading_option_id?: string | null;
+  leading_option_name?: string | null;
+  unit_mismatch_flags: string[];
+  missing_mandatory_flags: string[];
+  options: EvaluatedOptionOut[];
+}
+
+export interface TechnicalComparisonSummaryOut {
+  id: string;
+  project_id: string;
+  project_code: string;
+  project_name: string;
+  task_id?: string | null;
+  title: string;
+  comparison_scope: ComparisonScope | string;
+  discipline: string;
+  language: ReportLanguage | string;
+  classification: ProjectClassification | string;
+  revision: string;
+  version: number;
+  export_version: number;
+  status: string;
+  use_ai: boolean;
+  ai_draft_status: ComparisonDraftStatus | string;
+  ai_draft_label: string;
+  owner_decision_status: OwnerDecisionStatus | string;
+  owner_selected_option_id?: string | null;
+  owner_decision_note?: string | null;
+  owner_decided_by?: string | null;
+  owner_decided_at?: string | null;
+  total_weight: number;
+  criteria_count: number;
+  options_count: number;
+  tokens_used: number;
+  summary?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TechnicalComparisonDetailOut extends TechnicalComparisonSummaryOut {
+  criteria: ComparisonCriterionIn[];
+  matrix: ComparisonMatrixOut;
+  token_usage: TaskTokenUsageOut;
+  deliverables: DeliverableOut[];
+}
+
+export interface TechnicalComparisonListResponse {
+  comparisons: TechnicalComparisonSummaryOut[];
+  total: number;
+}
+
+export interface TechnicalComparisonExportOut {
+  comparison: TechnicalComparisonDetailOut;
+  docx_deliverable: DeliverableOut;
+  pdf_deliverable: DeliverableOut;
+  xlsx_deliverable: DeliverableOut;
+}
+
+export interface ComparisonPresetOut {
+  key: string;
+  title_en: string;
+  title_ar: string;
+  comparison_scope: ComparisonScope;
+  discipline: string;
+  lifecycle_years?: number | null;
+  criteria: ComparisonCriterionIn[];
+  options: ComparisonOptionIn[];
+}
+
+export interface ComparisonPresetListResponse {
+  presets: ComparisonPresetOut[];
 }

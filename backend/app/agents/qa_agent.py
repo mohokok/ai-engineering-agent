@@ -24,14 +24,17 @@ from app.db.models import (
     ReviewReport,
     Specification,
     Task,
+    TechnicalComparison,
 )
 from app.schemas.calculations import VERIFY_CODE_LABEL
+from app.schemas.comparisons import ComparisonCriterionIn, ComparisonOptionIn, NOT_PROVIDED_LABEL
 from app.schemas.drawings import ParametricPlanModel
 from app.schemas.qa import IssueCategory, IssueSeverity, QaCheckMetricOut, QaContextIsolationReport
 from app.schemas.specifications import NO_VERIFIED_STANDARD_LABEL, SPEC_SECTION_PARTS
 from app.services.parametric_cad import build_schedules_from_model, compute_room_metrics, sha256_file
 from app.services.workspace import resolve_project_file_path
 from app.skills.calculations import evaluate_calculation
+from app.skills.comparisons import recompute_comparison_matrix
 
 PRODUCER_REASONING_EXCLUDED_FIELDS: tuple[str, ...] = (
     "Task.plan_summary",
@@ -88,6 +91,7 @@ class QaContextData:
     review_reports: list[dict[str, Any]] = field(default_factory=list)
     calculations: list[dict[str, Any]] = field(default_factory=list)
     specifications: list[dict[str, Any]] = field(default_factory=list)
+    comparisons: list[dict[str, Any]] = field(default_factory=list)
     extractions: list[dict[str, Any]] = field(default_factory=list)
     project_files: list[dict[str, Any]] = field(default_factory=list)
     reviewed_research_urls: set[str] = field(default_factory=set)
@@ -136,6 +140,7 @@ def build_isolated_qa_context(
                 "drawing_id": d.drawing_id,
                 "calculation_id": d.calculation_id,
                 "specification_id": d.specification_id,
+                "comparison_id": d.comparison_id,
                 "title": d.title,
                 "deliverable_type": d.deliverable_type,
                 "discipline": d.discipline,
@@ -304,6 +309,35 @@ def build_isolated_qa_context(
             }
         )
 
+    cmp_rows = db.scalars(
+        select(TechnicalComparison)
+        .where(TechnicalComparison.project_id == project.id)
+        .order_by(TechnicalComparison.created_at.desc())
+    ).all()
+    for cmp_row in cmp_rows:
+        if task is not None and cmp_row.task_id and cmp_row.task_id != task.id:
+            continue
+        ctx.comparisons.append(
+            {
+                "id": cmp_row.id,
+                "task_id": cmp_row.task_id,
+                "title": cmp_row.title,
+                "comparison_scope": cmp_row.comparison_scope,
+                "discipline": cmp_row.discipline,
+                "language": cmp_row.language,
+                "classification": cmp_row.classification,
+                "revision": cmp_row.revision,
+                "version": cmp_row.version,
+                "export_version": cmp_row.export_version,
+                "ai_draft_status": cmp_row.ai_draft_status,
+                "owner_decision_status": cmp_row.owner_decision_status,
+                "owner_selected_option_id": cmp_row.owner_selected_option_id,
+                "criteria_json": list(cmp_row.criteria_json or []),
+                "options_json": list(cmp_row.options_json or []),
+                "matrix_result_json": dict(cmp_row.matrix_result_json or {}),
+            }
+        )
+
     files = db.scalars(select(ProjectFile).where(ProjectFile.project_id == project.id)).all()
     file_name_by_id = {f.id: f.original_filename for f in files}
     for f in files:
@@ -372,6 +406,7 @@ def count_inspected_artefacts(ctx: QaContextData) -> int:
         + len(ctx.review_reports)
         + len(ctx.calculations)
         + len(ctx.specifications)
+        + len(ctx.comparisons)
         + len(ctx.deliverables)
     )
 
@@ -392,6 +427,9 @@ def _expected_deliverable_covered(exp: str, ctx: QaContextData) -> bool:
     haystacks.extend(
         f"{s.get('title', '')} {s.get('discipline', '')} specification specifications".lower()
         for s in ctx.specifications
+    ) + tuple(
+        f"{c.get('title', '')} {c.get('discipline', '')} {c.get('comparison_scope', '')} comparison tradeoff trade-off matrix".lower()
+        for c in ctx.comparisons
     )
     if not haystacks:
         return False
@@ -417,6 +455,7 @@ def build_qa_context_isolation_report(ctx: QaContextData) -> QaContextIsolationR
         inspected_report_ids=[r["id"] for r in ctx.review_reports],
         inspected_calculation_ids=[c["id"] for c in ctx.calculations],
         inspected_specification_ids=[s["id"] for s in ctx.specifications],
+        inspected_comparison_ids=[c["id"] for c in ctx.comparisons],
         inspected_deliverable_ids=[d["id"] for d in ctx.deliverables],
         inspected_extraction_ids=[e["id"] for e in ctx.extractions],
         inspected_research_source_count=len(ctx.all_research_sources),
@@ -476,6 +515,19 @@ def serialize_isolated_qa_prompt_context(ctx: QaContextData) -> str:
                 "sections_count": len(s.get("sections") or []),
             }
             for s in ctx.specifications
+        ],
+        "comparisons": [
+            {
+                "id": c["id"],
+                "title": c["title"],
+                "comparison_scope": c["comparison_scope"],
+                "discipline": c["discipline"],
+                "ai_draft_status": c["ai_draft_status"],
+                "owner_decision_status": c["owner_decision_status"],
+                "options_count": len(c.get("options_json") or []),
+                "criteria_count": len(c.get("criteria_json") or []),
+            }
+            for c in ctx.comparisons
         ],
         "deliverables": ctx.deliverables,
         "reviewed_research_urls": sorted(ctx.reviewed_research_urls),
@@ -632,7 +684,28 @@ def _check_arithmetic(
                     ws = wb.active
                     if ws is None:
                         raise ValueError(f"Exported XLSX '{rel_xlsx}' has no active worksheet.")
-                    if not d.get("calculation_id"):
+                    if d.get("comparison_id"):
+                        formula_hits = 0
+                        for r_i in range(1, ws.max_row + 1):
+                            for c_i in range(1, ws.max_column + 1):
+                                val = ws.cell(row=r_i, column=c_i).value
+                                if isinstance(val, str) and (val.startswith("=ROUND(") or val.startswith("=SUM(")):
+                                    formula_hits += 1
+                        if formula_hits == 0:
+                            findings.append(
+                                QaCandidateFinding(
+                                    check_category="arithmetic",
+                                    discipline=d.get("discipline") or "multidisciplinary",
+                                    severity="high",
+                                    title="Exported comparison XLSX missing live Excel formulas",
+                                    description=f"Comparison XLSX '{rel_xlsx}' contains no live =SUM/=ROUND formulas.",
+                                    reference=str(rel_xlsx),
+                                    corrective_action="Re-export comparison DOCX + PDF + live-formula XLSX via POST /api/comparisons/{id}/export.",
+                                    deliverable_id=d["id"],
+                                    task_id=d.get("task_id"),
+                                )
+                            )
+                    elif not d.get("calculation_id"):
                         for row_idx in range(6, ws.max_row + 1):
                             qty_cell = ws.cell(row=row_idx, column=4).value
                             rate_cell = ws.cell(row=row_idx, column=5).value
@@ -781,6 +854,122 @@ def _check_arithmetic(
                 )
             )
 
+    # Recompute Step 15 technical comparison weighted Decimal matrices strictly from raw criteria/options
+    deliv_by_cmp = {d["comparison_id"]: d["id"] for d in ctx.deliverables if d.get("comparison_id")}
+    for cmp_row in ctx.comparisons:
+        checked += 1
+        cmp_deliv_id = deliv_by_cmp.get(cmp_row["id"])
+        ref = f"Comparison {cmp_row['title']} ({cmp_row['id'][:8]})"
+        try:
+            crit_objs = [ComparisonCriterionIn.model_validate(c) for c in (cmp_row.get("criteria_json") or [])]
+            opt_objs = [ComparisonOptionIn.model_validate(o) for o in (cmp_row.get("options_json") or [])]
+            stored_mat = cmp_row.get("matrix_result_json") or {}
+            life_yrs = stored_mat.get("lifecycle_years")
+            recomp = recompute_comparison_matrix(
+                criteria=crit_objs,
+                options=opt_objs,
+                language=cmp_row.get("language") or "en",
+                lifecycle_years=life_yrs if isinstance(life_yrs, (int, float)) else None,
+            )
+            if not recomp.weights_sum_valid:
+                findings.append(
+                    QaCandidateFinding(
+                        check_category="arithmetic",
+                        discipline=cmp_row.get("discipline") or "multidisciplinary",
+                        severity="high",
+                        title="Technical comparison criteria weights do not sum to 100",
+                        description=(
+                            f"Comparison '{cmp_row['title']}' criteria weights sum to {recomp.total_weight:.4f}% "
+                            "instead of strict 100.0000%."
+                        ),
+                        reference=ref,
+                        corrective_action="Adjust criterion weights so all active weights sum strictly to 100%.",
+                        deliverable_id=cmp_deliv_id,
+                        task_id=cmp_row.get("task_id"),
+                    )
+                )
+
+            mismatches: list[str] = []
+            stored_tot_w = _to_decimal(stored_mat.get("total_weight"))
+            recomp_tot_w = _to_decimal(recomp.total_weight)
+            if stored_tot_w is None or recomp_tot_w is None or abs(stored_tot_w - recomp_tot_w) > Decimal("0.01"):
+                mismatches.append(f"total_weight: stored={stored_mat.get('total_weight')}, expected={recomp.total_weight}")
+
+            stored_opts = {
+                str(o.get("option_id") or ""): o
+                for o in (stored_mat.get("options") or [])
+                if isinstance(o, dict)
+            }
+            for r_opt in recomp.options:
+                s_opt = stored_opts.get(r_opt.option_id)
+                if not s_opt:
+                    mismatches.append(f"missing option {r_opt.option_id} in stored matrix")
+                    continue
+                s_score = _to_decimal(s_opt.get("total_weighted_score"))
+                r_score = _to_decimal(r_opt.total_weighted_score)
+                if s_score is None or r_score is None or abs(s_score - r_score) > Decimal("0.01"):
+                    mismatches.append(
+                        f"option '{r_opt.option_id}' total_weighted_score: stored={s_score}, expected={r_score}"
+                    )
+                if bool(s_opt.get("mandatory_passed")) != r_opt.mandatory_passed:
+                    mismatches.append(
+                        f"option '{r_opt.option_id}' mandatory_passed: stored={s_opt.get('mandatory_passed')}, expected={r_opt.mandatory_passed}"
+                    )
+                if int(s_opt.get("advisory_rank") or 0) != r_opt.advisory_rank:
+                    mismatches.append(
+                        f"option '{r_opt.option_id}' advisory_rank: stored={s_opt.get('advisory_rank')}, expected={r_opt.advisory_rank}"
+                    )
+                s_cells = {
+                    str(c.get("criterion_id") or ""): c
+                    for c in (s_opt.get("cells") or [])
+                    if isinstance(c, dict)
+                }
+                for r_cell in r_opt.cells:
+                    s_cell = s_cells.get(r_cell.criterion_id)
+                    if not s_cell:
+                        mismatches.append(f"{r_opt.option_id}.{r_cell.criterion_id} missing cell")
+                        continue
+                    sn = _to_decimal(s_cell.get("normalized_score"))
+                    rn = _to_decimal(r_cell.normalized_score)
+                    sw = _to_decimal(s_cell.get("weighted_score"))
+                    rw = _to_decimal(r_cell.weighted_score)
+                    if sn is None or rn is None or abs(sn - rn) > Decimal("0.01"):
+                        mismatches.append(f"{r_opt.option_id}.{r_cell.criterion_id} norm={sn} vs {rn}")
+                    if sw is None or rw is None or abs(sw - rw) > Decimal("0.01"):
+                        mismatches.append(f"{r_opt.option_id}.{r_cell.criterion_id} weighted={sw} vs {rw}")
+
+            if mismatches:
+                findings.append(
+                    QaCandidateFinding(
+                        check_category="arithmetic",
+                        discipline=cmp_row.get("discipline") or "multidisciplinary",
+                        severity="high",
+                        title="Technical comparison score arithmetic mismatch",
+                        description=(
+                            f"Comparison '{cmp_row['title']}' stored scores disagree with independent Decimal "
+                            f"recomputation: {'; '.join(mismatches[:5])}."
+                        ),
+                        reference=ref,
+                        corrective_action="Re-evaluate comparison deterministically via POST /api/projects/{id}/comparisons.",
+                        deliverable_id=cmp_deliv_id,
+                        task_id=cmp_row.get("task_id"),
+                    )
+                )
+        except Exception as exc:
+            findings.append(
+                QaCandidateFinding(
+                    check_category="arithmetic",
+                    discipline=cmp_row.get("discipline") or "multidisciplinary",
+                    severity="high",
+                    title="Technical comparison failed deterministic Decimal re-evaluation",
+                    description=f"Comparison '{cmp_row['title']}' failed QA recomputation: {exc}",
+                    reference=ref,
+                    corrective_action="Fix invalid comparison inputs or units and re-evaluate.",
+                    deliverable_id=cmp_deliv_id,
+                    task_id=cmp_row.get("task_id"),
+                )
+            )
+
     failed_cnt = len(findings)
     return (
         QaCheckMetricOut(
@@ -788,7 +977,7 @@ def _check_arithmetic(
             checked_count=checked,
             failed_count=failed_cnt,
             passed=(failed_cnt == 0),
-            details=f"Recomputed {checked} BOQ/XLSX/drawing/calculation arithmetic target(s); found {failed_cnt} issue(s).",
+            details=f"Recomputed {checked} BOQ/XLSX/drawing/calculation/comparison arithmetic target(s); found {failed_cnt} issue(s).",
         ),
         findings,
     )
@@ -972,6 +1161,37 @@ def _check_units(ctx: QaContextData) -> tuple[QaCheckMetricOut, list[QaCandidate
                     )
                 )
 
+    # Step 15 technical comparison unit conversion & mismatch checks
+    deliv_by_cmp_u = {d["comparison_id"]: d["id"] for d in ctx.deliverables if d.get("comparison_id")}
+    for cmp_row in ctx.comparisons:
+        mat = cmp_row.get("matrix_result_json") or {}
+        cmp_deliv_id = deliv_by_cmp_u.get(cmp_row["id"])
+        for opt in mat.get("options") or []:
+            if not isinstance(opt, dict):
+                continue
+            for cell in opt.get("cells") or []:
+                if not isinstance(cell, dict):
+                    continue
+                checked += 1
+                if cell.get("unit_status") == "flagged_mismatch":
+                    findings.append(
+                        QaCandidateFinding(
+                            check_category="unit",
+                            discipline=cmp_row.get("discipline") or "multidisciplinary",
+                            severity="high",
+                            title="Mixed or incompatible units in technical comparison",
+                            description=(
+                                f"Comparison '{cmp_row['title']}', option '{opt.get('name')}', criterion "
+                                f"'{cell.get('label')}' flagged a unit/currency mismatch: "
+                                f"{cell.get('conversion_note') or (str(cell.get('raw_unit')) + ' vs ' + str(cell.get('target_unit')))}"
+                            ),
+                            reference=f"Comparison {cmp_row['title']} / {opt.get('option_id')}.{cell.get('criterion_id')}",
+                            corrective_action="Standardize option metrics to explicit compatible units or an owner-verified FX rate.",
+                            deliverable_id=cmp_deliv_id,
+                            task_id=cmp_row.get("task_id"),
+                        )
+                    )
+
     failed_cnt = len(findings)
     return (
         QaCheckMetricOut(
@@ -979,7 +1199,7 @@ def _check_units(ctx: QaContextData) -> tuple[QaCheckMetricOut, list[QaCandidate
             checked_count=checked,
             failed_count=failed_cnt,
             passed=(failed_cnt == 0),
-            details=f"Checked {checked} BOQ/drawing/CAD/calculation units; found {failed_cnt} unit issue(s).",
+            details=f"Checked {checked} BOQ/drawing/CAD/calculation/comparison units; found {failed_cnt} unit issue(s).",
         ),
         findings,
     )
@@ -1461,6 +1681,150 @@ def _check_references(ctx: QaContextData) -> tuple[QaCheckMetricOut, list[QaCand
                             )
                         )
 
+    # 5. Check Step 15 technical comparisons: every non-missing metric keeps valid provenance (BOQ/Spec/Calc/Reviewed Source/Owner)
+    deliv_by_cmp_r = {d["comparison_id"]: d["id"] for d in ctx.deliverables if d.get("comparison_id")}
+    valid_cmp_boq_ids = {str(it["id"]) for b in ctx.boq_sheets for it in b["items"]}
+    valid_cmp_spec_ids = {str(s["id"]) for s in ctx.specifications}
+    valid_cmp_calc_ids = {str(c["id"]) for c in ctx.calculations}
+    cmp_url_re = re.compile(r"https?://[^\s,;\"')>\]]+", re.IGNORECASE)
+
+    for cmp_row in ctx.comparisons:
+        cmp_deliv_id = deliv_by_cmp_r.get(cmp_row["id"])
+        cmp_ref = f"Comparison {cmp_row['title']} ({cmp_row['id'][:8]})"
+        crit_cat_by_id = {
+            str(c.get("criterion_id") or ""): str(c.get("category") or "")
+            for c in (cmp_row.get("criteria_json") or [])
+            if isinstance(c, dict)
+        }
+        mat = cmp_row.get("matrix_result_json") or {}
+        for opt in mat.get("options") or []:
+            if not isinstance(opt, dict):
+                continue
+            for cell in opt.get("cells") or []:
+                if not isinstance(cell, dict):
+                    continue
+                checked += 1
+                is_miss = bool(cell.get("is_missing"))
+                src_kind = str(cell.get("source_kind") or "")
+                src_ref = str(cell.get("source_ref") or "").strip()
+                cid = str(cell.get("criterion_id") or "")
+                c_ref = f"{cmp_ref} / {opt.get('option_id')}.{cid}"
+
+                if not is_miss and (not src_ref or src_ref.lower() == NOT_PROVIDED_LABEL):
+                    findings.append(
+                        QaCandidateFinding(
+                            check_category="reference",
+                            discipline=cmp_row.get("discipline") or "multidisciplinary",
+                            severity="high",
+                            title="Unsourced metric value in technical comparison",
+                            description=(
+                                f"Comparison '{cmp_row['title']}' option '{opt.get('name')}' metric "
+                                f"'{cell.get('label')}' carries value '{cell.get('display_value')}' without a source reference."
+                            ),
+                            reference=c_ref,
+                            corrective_action="Attach a traceable BOQ item, specification, calculation, reviewed source, or owner quote reference.",
+                            deliverable_id=cmp_deliv_id,
+                            task_id=cmp_row.get("task_id"),
+                        )
+                    )
+
+                if src_kind == "boq_item":
+                    bid = str(cell.get("boq_item_id") or "")
+                    if not bid or bid not in valid_cmp_boq_ids:
+                        findings.append(
+                            QaCandidateFinding(
+                                check_category="reference",
+                                discipline=cmp_row.get("discipline") or "multidisciplinary",
+                                severity="high",
+                                title="Comparison cell traces to missing BOQ item",
+                                description=f"Cell {opt.get('option_id')}.{cid} references invalid/missing BOQ item '{bid}'.",
+                                reference=c_ref,
+                                corrective_action="Link an active BOQ item belonging to this project.",
+                                deliverable_id=cmp_deliv_id,
+                                task_id=cmp_row.get("task_id"),
+                            )
+                        )
+                elif src_kind == "specification":
+                    sid = str(cell.get("specification_id") or "")
+                    if not sid or sid not in valid_cmp_spec_ids:
+                        findings.append(
+                            QaCandidateFinding(
+                                check_category="reference",
+                                discipline=cmp_row.get("discipline") or "multidisciplinary",
+                                severity="high",
+                                title="Comparison cell traces to missing Specification",
+                                description=f"Cell {opt.get('option_id')}.{cid} references missing Specification '{sid}'.",
+                                reference=c_ref,
+                                corrective_action="Link an active Technical Specification belonging to this project.",
+                                deliverable_id=cmp_deliv_id,
+                                task_id=cmp_row.get("task_id"),
+                            )
+                        )
+                elif src_kind == "calculation":
+                    calc_id = str(cell.get("calculation_id") or "")
+                    if calc_id:
+                        if calc_id not in valid_cmp_calc_ids:
+                            findings.append(
+                                QaCandidateFinding(
+                                    check_category="reference",
+                                    discipline=cmp_row.get("discipline") or "multidisciplinary",
+                                    severity="high",
+                                    title="Comparison cell traces to missing Calculation",
+                                    description=f"Cell {opt.get('option_id')}.{cid} references missing Calculation '{calc_id}'.",
+                                    reference=c_ref,
+                                    corrective_action="Link an active Step 13 Calculation belonging to this project.",
+                                    deliverable_id=cmp_deliv_id,
+                                    task_id=cmp_row.get("task_id"),
+                                )
+                            )
+                    elif crit_cat_by_id.get(cid) != "lifecycle_cost":
+                        findings.append(
+                            QaCandidateFinding(
+                                check_category="reference",
+                                discipline=cmp_row.get("discipline") or "multidisciplinary",
+                                severity="high",
+                                title="Comparison calculation reference missing calculation_id",
+                                description=f"Cell {opt.get('option_id')}.{cid} sets source_kind='calculation' without calculation_id.",
+                                reference=c_ref,
+                                corrective_action="Link the source Step 13 calculation ID.",
+                                deliverable_id=cmp_deliv_id,
+                                task_id=cmp_row.get("task_id"),
+                            )
+                        )
+                elif src_kind == "research_source":
+                    rsid = str(cell.get("research_source_id") or "")
+                    if not rsid or rsid not in reviewed_rs_by_id:
+                        findings.append(
+                            QaCandidateFinding(
+                                check_category="reference",
+                                discipline=cmp_row.get("discipline") or "multidisciplinary",
+                                severity="high",
+                                title="Comparison cell cites unreviewed or missing ResearchSource",
+                                description=f"Cell {opt.get('option_id')}.{cid} traces to unreviewed/missing source '{rsid}'.",
+                                reference=c_ref,
+                                corrective_action="Mark source reviewed in ResearchSource log or replace with a reviewed source.",
+                                deliverable_id=cmp_deliv_id,
+                                task_id=cmp_row.get("task_id"),
+                            )
+                        )
+
+                if not is_miss and src_ref:
+                    for url_hit in cmp_url_re.findall(src_ref):
+                        if not _url_is_reviewed(url_hit):
+                            findings.append(
+                                QaCandidateFinding(
+                                    check_category="reference",
+                                    discipline=cmp_row.get("discipline") or "multidisciplinary",
+                                    severity="high",
+                                    title="Comparison cell cites unreviewed external URL",
+                                    description=f"Cell {opt.get('option_id')}.{cid} embeds unreviewed URL '{url_hit}'.",
+                                    reference=c_ref,
+                                    corrective_action="Verify URL in ResearchSource log before citing it in technical comparisons.",
+                                    deliverable_id=cmp_deliv_id,
+                                    task_id=cmp_row.get("task_id"),
+                                )
+                            )
+
     failed_cnt = len(findings)
     return (
         QaCheckMetricOut(
@@ -1468,7 +1832,7 @@ def _check_references(ctx: QaContextData) -> tuple[QaCheckMetricOut, list[QaCand
             checked_count=checked,
             failed_count=failed_cnt,
             passed=(failed_cnt == 0),
-            details=f"Verified {checked} report/BOQ/calculation source & drawing references against project logs; found {failed_cnt} issue(s).",
+            details=f"Verified {checked} report/BOQ/calculation/specification/comparison source & drawing references against project logs; found {failed_cnt} issue(s).",
         ),
         findings,
     )
@@ -1853,6 +2217,57 @@ def _check_cross_deliverable_consistency(ctx: QaContextData) -> tuple[QaCheckMet
                             )
                         )
 
+    # 5. Check Step 15 technical comparisons: missing mandatory values ('not provided') & unapproved AI drafts
+    deliv_by_cmp_c = {d["comparison_id"]: d["id"] for d in ctx.deliverables if d.get("comparison_id")}
+    for cmp_row in ctx.comparisons:
+        checked += 1
+        cmp_deliv_id = deliv_by_cmp_c.get(cmp_row["id"])
+        cmp_ref = f"Comparison {cmp_row['title']} ({cmp_row['id'][:8]})"
+
+        if cmp_row.get("ai_draft_status") == "unverified_ai_draft":
+            findings.append(
+                QaCandidateFinding(
+                    check_category="schedule_consistency",
+                    discipline=cmp_row.get("discipline") or "multidisciplinary",
+                    severity="medium",
+                    title="AI-drafted comparison summary pending owner approval",
+                    description=(
+                        f"Technical comparison '{cmp_row['title']}' includes an executive summary tagged "
+                        "'unverified_ai_draft' that has not yet been approved by the owner."
+                    ),
+                    reference=cmp_ref,
+                    corrective_action="Review summary and record owner decision/approval via POST /api/comparisons/{id}/decide.",
+                    deliverable_id=cmp_deliv_id,
+                    task_id=cmp_row.get("task_id"),
+                )
+            )
+
+        mat = cmp_row.get("matrix_result_json") or {}
+        for opt in mat.get("options") or []:
+            if not isinstance(opt, dict):
+                continue
+            for cell in opt.get("cells") or []:
+                if not isinstance(cell, dict):
+                    continue
+                if bool(cell.get("is_mandatory")) and bool(cell.get("is_missing")):
+                    checked += 1
+                    findings.append(
+                        QaCandidateFinding(
+                            check_category="schedule_consistency",
+                            discipline=cmp_row.get("discipline") or "multidisciplinary",
+                            severity="high",
+                            title="Missing mandatory criterion value ('not provided') in technical comparison",
+                            description=(
+                                f"Comparison '{cmp_row['title']}', option '{opt.get('name')}', mandatory criterion "
+                                f"'{cell.get('label')}' is '{NOT_PROVIDED_LABEL}'."
+                            ),
+                            reference=f"{cmp_ref} / {opt.get('option_id')}.{cell.get('criterion_id')}",
+                            corrective_action="Obtain verified value from vendor submittal, BOQ, calculation, or owner input, or disqualify option explicitly.",
+                            deliverable_id=cmp_deliv_id,
+                            task_id=cmp_row.get("task_id"),
+                        )
+                    )
+
     failed_cnt = len(findings)
     return (
         QaCheckMetricOut(
@@ -1860,7 +2275,7 @@ def _check_cross_deliverable_consistency(ctx: QaContextData) -> tuple[QaCheckMet
             checked_count=checked,
             failed_count=failed_cnt,
             passed=(failed_cnt == 0),
-            details=f"Evaluated {checked} drawing/BOQ/calculation consistency & acceptance check(s); found {failed_cnt} issue(s).",
+            details=f"Evaluated {checked} drawing/BOQ/calculation/specification/comparison consistency checks; found {failed_cnt} issue(s).",
         ),
         findings,
     )
@@ -1880,6 +2295,7 @@ def _check_missing_deliverables_and_integrity(
     delivs_by_boq: dict[str, set[str]] = {}
     delivs_by_calc: dict[str, set[str]] = {}
     delivs_by_spec: dict[str, set[str]] = {}
+    delivs_by_cmp: dict[str, set[str]] = {}
 
     for d in ctx.deliverables:
         checked += 1
@@ -1894,6 +2310,8 @@ def _check_missing_deliverables_and_integrity(
             delivs_by_calc.setdefault(d["calculation_id"], set()).add(str(d.get("format") or "").lower())
         if d.get("specification_id"):
             delivs_by_spec.setdefault(d["specification_id"], set()).add(str(d.get("format") or "").lower())
+        if d.get("comparison_id"):
+            delivs_by_cmp.setdefault(d["comparison_id"], set()).add(str(d.get("format") or "").lower())
 
         if not rel:
             findings.append(
@@ -2047,6 +2465,28 @@ def _check_missing_deliverables_and_integrity(
                     )
                 )
 
+    for cmp_row in ctx.comparisons:
+        if int(cmp_row.get("export_version") or 0) > 0:
+            checked += 1
+            fmts = delivs_by_cmp.get(cmp_row["id"], set())
+            missing = sorted({"docx", "pdf", "xlsx"} - fmts)
+            if missing:
+                findings.append(
+                    QaCandidateFinding(
+                        check_category="missing_deliverable",
+                        discipline=cmp_row.get("discipline") or "multidisciplinary",
+                        severity="high",
+                        title="Exported technical comparison deliverables incomplete",
+                        description=(
+                            f"Technical comparison '{cmp_row['title']}' is missing {', '.join(missing).upper()} "
+                            "export file(s) in 09_Comparisons."
+                        ),
+                        reference=f"Comparison {cmp_row['title']}",
+                        corrective_action="Re-export technical comparison DOCX + PDF + XLSX into 09_Comparisons.",
+                        task_id=cmp_row.get("task_id"),
+                    )
+                )
+
     # 3. Task expected deliverables coverage check (without reading producer reasoning)
     if ctx.task_id and ctx.expected_task_deliverables:
         has_boq = bool(ctx.boq_sheets) or any(d.get("folder_name") == "06_BOQ" for d in ctx.deliverables)
@@ -2059,6 +2499,9 @@ def _check_missing_deliverables_and_integrity(
         )
         has_spec = bool(ctx.specifications) or any(
             d.get("folder_name") == "07_Technical_Specifications" for d in ctx.deliverables
+        )
+        has_cmp = bool(ctx.comparisons) or any(
+            d.get("folder_name") == "09_Comparisons" for d in ctx.deliverables
         )
         for exp in ctx.expected_task_deliverables:
             checked += 1
@@ -2133,6 +2576,20 @@ def _check_missing_deliverables_and_integrity(
                             task_id=ctx.task_id,
                         )
                     )
+            elif any(k in low for k in ("comparison", "trade-off", "tradeoff", "matrix", "مقارنة", "مفاضلة")):
+                if not has_cmp:
+                    findings.append(
+                        QaCandidateFinding(
+                            check_category="missing_deliverable",
+                            discipline="multidisciplinary",
+                            severity="high",
+                            title="Missing expected technical comparison deliverable for task",
+                            description=f"Task expects deliverable '{exp}', but no TechnicalComparison or 09_Comparisons deliverable is linked.",
+                            reference=f"Task {ctx.task_id[:8]} / {exp}",
+                            corrective_action="Evaluate and export technical comparison DOCX + PDF + XLSX for this task.",
+                            task_id=ctx.task_id,
+                        )
+                    )
             elif not _expected_deliverable_covered(exp, ctx):
                 findings.append(
                     QaCandidateFinding(
@@ -2149,7 +2606,7 @@ def _check_missing_deliverables_and_integrity(
 
     # Also catch zero-deliverable QA run on a task so an empty task never falsely passes verification
     if ctx.task_id and not (
-        ctx.deliverables or ctx.boq_sheets or ctx.drawings or ctx.review_reports or ctx.calculations or ctx.specifications
+        ctx.deliverables or ctx.boq_sheets or ctx.drawings or ctx.review_reports or ctx.calculations or ctx.specifications or ctx.comparisons
     ):
         checked += 1
         findings.append(

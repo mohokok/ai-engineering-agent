@@ -818,3 +818,84 @@ export function exportSpecificationDeliverables(
     }
   );
 }
+
+export function listComparisonPresets(): Promise<import("./types").ComparisonPresetListResponse> {
+  return requestJson<import("./types").ComparisonPresetListResponse>("/api/comparisons/presets");
+}
+
+export function createTechnicalComparison(
+  projectId: string,
+  payload: {
+    task_id?: string | null;
+    title?: string | null;
+    comparison_scope: import("./types").ComparisonScope;
+    discipline?: string;
+    language?: import("./types").ReportLanguage;
+    classification?: ProjectClassification;
+    revision?: string;
+    lifecycle_years?: number | null;
+    criteria: import("./types").ComparisonCriterionIn[];
+    options: import("./types").ComparisonOptionIn[];
+    use_ai?: boolean;
+    complexity?: TaskComplexity;
+  }
+): Promise<import("./types").TechnicalComparisonDetailOut> {
+  return requestJson<import("./types").TechnicalComparisonDetailOut>(
+    `/api/projects/${encodeURIComponent(projectId)}/comparisons`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }
+  );
+}
+
+export function listProjectComparisons(
+  projectId: string
+): Promise<import("./types").TechnicalComparisonListResponse> {
+  return requestJson<import("./types").TechnicalComparisonListResponse>(
+    `/api/projects/${encodeURIComponent(projectId)}/comparisons`
+  );
+}
+
+export function getComparisonDetail(
+  comparisonId: string
+): Promise<import("./types").TechnicalComparisonDetailOut> {
+  return requestJson<import("./types").TechnicalComparisonDetailOut>(
+    `/api/comparisons/${encodeURIComponent(comparisonId)}`
+  );
+}
+
+export function decideTechnicalComparison(
+  comparisonId: string,
+  payload: {
+    selected_option_id: string;
+    decided_by?: string;
+    decision_note: string;
+    approve_ai_draft?: boolean;
+    export_after_decision?: boolean;
+  }
+): Promise<import("./types").TechnicalComparisonDetailOut> {
+  return requestJson<import("./types").TechnicalComparisonDetailOut>(
+    `/api/comparisons/${encodeURIComponent(comparisonId)}/decide`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }
+  );
+}
+
+export function exportTechnicalComparison(
+  comparisonId: string,
+  payload?: { language?: import("./types").ReportLanguage }
+): Promise<import("./types").TechnicalComparisonExportOut> {
+  return requestJson<import("./types").TechnicalComparisonExportOut>(
+    `/api/comparisons/${encodeURIComponent(comparisonId)}/export`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload ?? {}),
+    }
+  );
+}

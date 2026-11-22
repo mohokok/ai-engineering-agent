@@ -10,6 +10,7 @@ import { ProviderSettingsView } from "./components/ProviderSettingsView";
 import { QaIssuesView } from "./components/QaIssuesView";
 import { ResearchView } from "./components/ResearchView";
 import { SpecificationsView } from "./components/SpecificationsView";
+import { TechnicalComparisonsView } from "./components/TechnicalComparisonsView";
 import type { HealthPayload, Lang } from "./types";
 
 type ActiveTab =
@@ -21,6 +22,7 @@ type ActiveTab =
   | "drawings"
   | "calculations"
   | "specifications"
+  | "comparisons"
   | "qa"
   | "settings";
 
@@ -44,6 +46,7 @@ const COPY: Record<
     drawingsTab: string;
     calculationsTab: string;
     specificationsTab: string;
+    comparisonsTab: string;
     qaTab: string;
     settingsTab: string;
   }
@@ -51,7 +54,7 @@ const COPY: Record<
   ar: {
     title: "الوكيل الهندسي الاستشاري المحلي",
     subtitle:
-      "الخطوة 14 — مولّد المواصفات الفنية المرتبط بجداول الكميات والمخططات + الحسابات + الجودة + الرسم البارامتري",
+      "الخطوة 15 — مصفوفة المقارنة الفنية والتجارية + المواصفات + الحسابات + الجودة + الرسم البارامتري",
     classificationLabel: "التصنيف: أولي (Preliminary)",
     toggleLang: "Switch to English (LTR)",
     refreshHealth: "تحديث فحص الخادم",
@@ -67,13 +70,14 @@ const COPY: Record<
     drawingsTab: "الرسم الهندسي (CAD)",
     calculationsTab: "الحسابات الهندسية (MEP)",
     specificationsTab: "المواصفات الفنية (Specs)",
+    comparisonsTab: "المقارنات الفنية (Compare)",
     qaTab: "الجودة وسجل القضايا (QA)",
     settingsTab: "إعدادات Gemini والمزودين",
   },
   en: {
     title: "Local AI Engineering Consultancy Agent",
     subtitle:
-      "Step 14 — BOQ & Drawing-Linked Technical Specifications, Deterministic MEP Calculations, QA Register & Parametric CAD",
+      "Step 15 — Technical Comparison Matrix, BOQ & Drawing-Linked Specifications, Deterministic MEP Calcs, QA & Parametric CAD",
     classificationLabel: "Classification: Preliminary",
     toggleLang: "التبديل إلى العربية (RTL)",
     refreshHealth: "Refresh Health Check",
@@ -89,6 +93,7 @@ const COPY: Record<
     drawingsTab: "Parametric CAD",
     calculationsTab: "Calculations (MEP)",
     specificationsTab: "Technical Specs",
+    comparisonsTab: "Technical Compare",
     qaTab: "QA & Issue Register",
     settingsTab: "AI Provider Settings",
   },
@@ -243,6 +248,13 @@ export function App({
           </button>
           <button
             type="button"
+            className={`btn ${activeTab === "comparisons" ? "" : "btn-secondary"}`}
+            onClick={() => setActiveTab("comparisons")}
+          >
+            {text.comparisonsTab}
+          </button>
+          <button
+            type="button"
             className={`btn ${activeTab === "qa" ? "" : "btn-secondary"}`}
             onClick={() => setActiveTab("qa")}
           >
@@ -273,6 +285,8 @@ export function App({
           <CalculationsView lang={lang} />
         ) : activeTab === "specifications" ? (
           <SpecificationsView lang={lang} />
+        ) : activeTab === "comparisons" ? (
+          <TechnicalComparisonsView lang={lang} />
         ) : activeTab === "qa" ? (
           <QaIssuesView lang={lang} />
         ) : (
