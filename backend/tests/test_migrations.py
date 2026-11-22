@@ -38,6 +38,7 @@ EXPECTED_TABLES = {
     "issues",
     "calculations",
     "specifications",
+    "technical_comparisons",
     "settings",
     "audit_log",
 }
@@ -78,6 +79,24 @@ def test_alembic_upgrade_and_downgrade_round_trip(tmp_path: Path) -> None:
         deliv_columns = {col["name"] for col in inspector.get_columns("deliverables")}
         assert "calculation_id" in deliv_columns
         assert "specification_id" in deliv_columns
+        assert "comparison_id" in deliv_columns
+        comp_columns = {col["name"] for col in inspector.get_columns("technical_comparisons")}
+        assert {
+            "id",
+            "project_id",
+            "task_id",
+            "title",
+            "comparison_scope",
+            "version",
+            "export_version",
+            "use_ai",
+            "ai_draft_status",
+            "owner_decision_status",
+            "owner_selected_option_id",
+            "criteria_json",
+            "options_json",
+            "matrix_result_json",
+        }.issubset(comp_columns)
         spec_columns = {col["name"] for col in inspector.get_columns("specifications")}
         assert {
             "id",

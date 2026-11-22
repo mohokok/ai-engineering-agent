@@ -10,21 +10,27 @@ import {
   createManualIssue,
   createProject,
   createTask,
+  createTechnicalComparison,
+  decideTechnicalComparison,
   deleteProviderApiKey,
   enhanceReviewReportAi,
   exportBoqDeliverables,
   exportCalculationDeliverables,
   exportSpecificationDeliverables,
+  exportTechnicalComparison,
   extractProjectFile,
   generateParametricDrawing,
   generateProjectSpecification,
   generateReviewReport,
   getCalculationDetail,
   getClinicPresetModel,
+  getComparisonDetail,
   getParametricDrawingDetail,
   getSpecificationDetail,
   listCalculationPresets,
+  listComparisonPresets,
   listProjectCalculations,
+  listProjectComparisons,
   listProjectIssues,
   listProjectParametricDrawings,
   listProjectQaReviews,
@@ -73,6 +79,7 @@ import { ProjectWorkspaceView } from "./components/ProjectWorkspaceView";
 import { ProviderSettingsView } from "./components/ProviderSettingsView";
 import { ResearchView } from "./components/ResearchView";
 import { SpecificationsView } from "./components/SpecificationsView";
+import { TechnicalComparisonsView } from "./components/TechnicalComparisonsView";
 import type {
   BoqDetailOut,
   DeliverableOut,
@@ -2770,5 +2777,352 @@ describe("App Step 10 BOQ & quantity UI", () => {
     expect(approved.ai_draft_status).toBe("owner_approved");
     const exported = await exportSpecificationDeliverables("spec-14", { language: "en" });
     expect(exported.pdf_deliverable.folder_name).toBe("07_Technical_Specifications");
+  });
+
+  it("renders Step 15 technical comparison view in RTL Arabic & LTR English and calls comparison endpoints", async () => {
+    const sampleComparison: import("./types").TechnicalComparisonDetailOut = {
+      id: "cmp-15",
+      project_id: "proj-15",
+      project_code: "CLN-15",
+      project_name: "Clinic Generator Upgrade",
+      task_id: null,
+      title: "150 kVA Standby Generator Comparison",
+      comparison_scope: "equipment",
+      discipline: "electrical",
+      language: "en",
+      classification: "Preliminary",
+      revision: "Rev 01",
+      version: 1,
+      export_version: 1,
+      status: "evaluated",
+      use_ai: true,
+      ai_draft_status: "unverified_ai_draft",
+      ai_draft_label: "UNVERIFIED AI DRAFT",
+      owner_decision_status: "pending_owner_decision",
+      owner_selected_option_id: null,
+      owner_decision_note: null,
+      owner_decided_by: null,
+      owner_decided_at: null,
+      total_weight: 100.0,
+      criteria_count: 3,
+      options_count: 2,
+      tokens_used: 320,
+      summary: "[UNVERIFIED AI DRAFT] Option A leads on standby output; Option B lower initial cost.",
+      created_at: "2026-11-22T00:00:00Z",
+      updated_at: "2026-11-22T00:00:00Z",
+      criteria: [
+        {
+          criterion_id: "compliance",
+          category: "compliance",
+          label: "Emergency Transfer Compliance",
+          weight: 40,
+          is_mandatory: true,
+          direction: "boolean_pass",
+          target_unit: "bool",
+          source_kind: "specification",
+          source_ref: "SPEC-05 Electrical",
+          specification_id: "spec-1",
+        },
+        {
+          criterion_id: "performance",
+          category: "performance",
+          label: "Continuous Output",
+          weight: 30,
+          is_mandatory: false,
+          direction: "higher_better",
+          target_unit: "kW",
+          source_kind: "calculation",
+          source_ref: "Load Schedule CALC-01",
+          calculation_id: "calc-1",
+        },
+        {
+          criterion_id: "initial_cost",
+          category: "initial_cost",
+          label: "Initial Cost",
+          weight: 30,
+          is_mandatory: false,
+          direction: "lower_better",
+          target_unit: "USD",
+          source_kind: "boq_item",
+          source_ref: "BOQ E-01",
+          boq_item_id: "boq-1",
+        },
+      ],
+      matrix: {
+        total_weight: 100.0,
+        weights_sum_valid: true,
+        advisory_notice:
+          "Advisory Comparison Matrix Only — No recommendation is final; final technical & commercial selection rests strictly with the Owner / Licensed Engineer.",
+        leading_option_id: "opt_a",
+        leading_option_name: "Offer A",
+        unit_mismatch_flags: ["Offer B / Initial Cost: Currency mismatch (LYD vs USD)"],
+        missing_mandatory_flags: [],
+        options: [
+          {
+            option_id: "opt_a",
+            name: "Offer A",
+            vendor_or_source: "Synthetic Vendor Alpha",
+            advisory_rank: 1,
+            total_weighted_score: 94.0,
+            mandatory_passed: true,
+            failed_mandatory_criteria: [],
+            missing_values_count: 1,
+            unit_mismatch_count: 0,
+            risks: ["12-week delivery"],
+            cells: [
+              {
+                criterion_id: "compliance",
+                category: "compliance",
+                label: "Emergency Transfer Compliance",
+                weight: 40,
+                is_mandatory: true,
+                raw_value: true,
+                display_value: "PASS",
+                raw_unit: "bool",
+                target_unit: "bool",
+                converted_value: null,
+                unit_status: "exact",
+                conversion_note: null,
+                is_missing: false,
+                mandatory_passed: true,
+                normalized_score: 100,
+                weighted_score: 40,
+                source_kind: "specification",
+                source_ref: "SPEC-05 Submittal",
+              },
+              {
+                criterion_id: "performance",
+                category: "performance",
+                label: "Continuous Output",
+                weight: 30,
+                is_mandatory: false,
+                raw_value: 150000,
+                display_value: "150000",
+                raw_unit: "W",
+                target_unit: "kW",
+                converted_value: "150.0000",
+                unit_status: "converted_explicitly",
+                conversion_note: "Converted explicitly: 150000 W -> 150.0000 kW",
+                is_missing: false,
+                mandatory_passed: null,
+                normalized_score: 100,
+                weighted_score: 30,
+                source_kind: "owner_entered",
+                source_ref: "Offer A datasheet",
+              },
+              {
+                criterion_id: "initial_cost",
+                category: "initial_cost",
+                label: "Initial Cost",
+                weight: 30,
+                is_mandatory: false,
+                raw_value: null,
+                display_value: "not provided",
+                raw_unit: "",
+                target_unit: "USD",
+                converted_value: null,
+                unit_status: "not_applicable",
+                conversion_note: null,
+                is_missing: true,
+                mandatory_passed: null,
+                normalized_score: 0,
+                weighted_score: 0,
+                source_kind: "owner_entered",
+                source_ref: "not provided",
+              },
+            ],
+          },
+          {
+            option_id: "opt_b",
+            name: "Offer B",
+            vendor_or_source: "Synthetic Vendor Beta",
+            advisory_rank: 2,
+            total_weighted_score: 40.0,
+            mandatory_passed: true,
+            failed_mandatory_criteria: [],
+            missing_values_count: 0,
+            unit_mismatch_count: 1,
+            risks: [],
+            cells: [
+              {
+                criterion_id: "compliance",
+                category: "compliance",
+                label: "Emergency Transfer Compliance",
+                weight: 40,
+                is_mandatory: true,
+                raw_value: true,
+                display_value: "PASS",
+                raw_unit: "bool",
+                target_unit: "bool",
+                converted_value: null,
+                unit_status: "exact",
+                conversion_note: null,
+                is_missing: false,
+                mandatory_passed: true,
+                normalized_score: 100,
+                weighted_score: 40,
+                source_kind: "owner_entered",
+                source_ref: "Offer B declaration",
+              },
+              {
+                criterion_id: "performance",
+                category: "performance",
+                label: "Continuous Output",
+                weight: 30,
+                is_mandatory: false,
+                raw_value: 120,
+                display_value: "120",
+                raw_unit: "kW",
+                target_unit: "kW",
+                converted_value: "120.0000",
+                unit_status: "exact",
+                conversion_note: null,
+                is_missing: false,
+                mandatory_passed: null,
+                normalized_score: 80,
+                weighted_score: 24,
+                source_kind: "owner_entered",
+                source_ref: "Offer B datasheet",
+              },
+              {
+                criterion_id: "initial_cost",
+                category: "initial_cost",
+                label: "Initial Cost",
+                weight: 30,
+                is_mandatory: false,
+                raw_value: 95000,
+                display_value: "95000",
+                raw_unit: "LYD",
+                target_unit: "USD",
+                converted_value: null,
+                unit_status: "flagged_mismatch",
+                conversion_note: "Currency mismatch (LYD vs USD)",
+                is_missing: false,
+                mandatory_passed: null,
+                normalized_score: 0,
+                weighted_score: 0,
+                source_kind: "owner_entered",
+                source_ref: "Offer B commercial quote",
+              },
+            ],
+          },
+        ],
+      },
+      token_usage: {
+        prompt_tokens: 220,
+        output_tokens: 100,
+        total_tokens: 320,
+        thoughts_tokens: 0,
+        cached_tokens: 0,
+        latency_ms: 0,
+      },
+      deliverables: [
+        {
+          id: "del-cmp-xlsx-1",
+          project_id: "proj-15",
+          comparison_id: "cmp-15",
+          title: "150 kVA Standby Generator Comparison (Rev 01 v1 — XLSX EN)",
+          deliverable_type: "technical_comparison",
+          discipline: "electrical",
+          format: "xlsx",
+          classification: "Preliminary",
+          status: "issued",
+          version: 1,
+          folder_name: "09_Comparisons",
+          filename: "cmp_v1.xlsx",
+          relative_path: "09_Comparisons/cmp_v1.xlsx",
+          sha256: "cafebabe9876543210",
+          download_url: "/api/deliverables/del-cmp-xlsx-1/download",
+          created_at: "2026-11-22T00:00:00Z",
+          updated_at: "2026-11-22T00:00:00Z",
+        },
+      ],
+    };
+
+    const appCmpAr = renderToStaticMarkup(<App initialLang="ar" initialTab="comparisons" />);
+    expect(appCmpAr).toContain('dir="rtl"');
+    expect(appCmpAr).toContain("المقارنات الفنية (Compare)");
+    expect(appCmpAr).toContain("مجموع الأوزان الحالي");
+
+    const appCmpEn = renderToStaticMarkup(<App initialLang="en" initialTab="comparisons" />);
+    expect(appCmpEn).toContain("Technical Compare");
+
+    const viewEn = renderToStaticMarkup(
+      <TechnicalComparisonsView
+        lang="en"
+        initialPresets={[]}
+        initialComparisons={[sampleComparison]}
+        initialSelectedComparison={sampleComparison}
+      />
+    );
+    expect(viewEn).toContain("UNVERIFIED AI DRAFT");
+    expect(viewEn).toContain("Advisory Comparison Matrix Only");
+    expect(viewEn).toContain("not provided");
+    expect(viewEn).toContain("UNIT MISMATCH");
+    expect(viewEn).toContain("CONVERTED: 150.0000 kW");
+    expect(viewEn).toContain("cafebabe9876");
+
+    const viewAr = renderToStaticMarkup(
+      <TechnicalComparisonsView
+        lang="ar"
+        initialPresets={[]}
+        initialComparisons={[sampleComparison]}
+        initialSelectedComparison={sampleComparison}
+      />
+    );
+    expect(viewAr).toContain("قرار المالك / المهندس المرخص النهائي");
+    expect(viewAr).toContain("تعارض وحدات");
+
+    const decidedCmp = {
+      ...sampleComparison,
+      ai_draft_status: "owner_approved",
+      owner_decision_status: "owner_selected",
+      owner_selected_option_id: "opt_a",
+      owner_decided_by: "Owner",
+    };
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ presets: [] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(sampleComparison), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ comparisons: [sampleComparison], total: 1 }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(sampleComparison), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(decidedCmp), { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            comparison: decidedCmp,
+            docx_deliverable: sampleComparison.deliverables[0],
+            pdf_deliverable: sampleComparison.deliverables[0],
+            xlsx_deliverable: sampleComparison.deliverables[0],
+          }),
+          { status: 201 }
+        )
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const presetsRes = await listComparisonPresets();
+    expect(presetsRes.presets).toEqual([]);
+    const createdCmp = await createTechnicalComparison("proj-15", {
+      comparison_scope: "equipment",
+      criteria: sampleComparison.criteria,
+      options: [
+        { option_id: "opt_a", name: "Offer A", vendor_or_source: "Alpha", risks: [], cells: [] },
+        { option_id: "opt_b", name: "Offer B", vendor_or_source: "Beta", risks: [], cells: [] },
+      ],
+      use_ai: false,
+    });
+    expect(createdCmp.id).toBe("cmp-15");
+    const listedCmp = await listProjectComparisons("proj-15");
+    expect(listedCmp.total).toBe(1);
+    const detCmp = await getComparisonDetail("cmp-15");
+    expect(detCmp.total_weight).toBe(100);
+    const decided = await decideTechnicalComparison("cmp-15", {
+      selected_option_id: "opt_a",
+      decision_note: "Approved Offer A after verification",
+    });
+    expect(decided.owner_selected_option_id).toBe("opt_a");
+    const exported = await exportTechnicalComparison("cmp-15", { language: "en" });
+    expect(exported.xlsx_deliverable.folder_name).toBe("09_Comparisons");
   });
 });

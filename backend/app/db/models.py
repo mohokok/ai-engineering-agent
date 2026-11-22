@@ -85,6 +85,9 @@ class Project(Base):
     specifications: Mapped[list["Specification"]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )
+    technical_comparisons: Mapped[list["TechnicalComparison"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
     audit_logs: Mapped[list["AuditLog"]] = relationship(back_populates="project")
 
 
@@ -259,6 +262,9 @@ class Deliverable(Base):
     specification_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("specifications.id", ondelete="SET NULL"), index=True, nullable=True
     )
+    comparison_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("technical_comparisons.id", ondelete="SET NULL"), index=True, nullable=True
+    )
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     deliverable_type: Mapped[str] = mapped_column(String(64), nullable=False)
     discipline: Mapped[str] = mapped_column(
@@ -290,6 +296,7 @@ class Deliverable(Base):
     parametric_drawing: Mapped["ParametricDrawing | None"] = relationship(back_populates="deliverables")
     calculation: Mapped["Calculation | None"] = relationship(back_populates="deliverables")
     specification: Mapped["Specification | None"] = relationship(back_populates="deliverables")
+    technical_comparison: Mapped["TechnicalComparison | None"] = relationship(back_populates="deliverables")
 
 
 class ParametricDrawing(Base):
@@ -712,6 +719,64 @@ class Specification(Base):
 
     project: Mapped["Project"] = relationship(back_populates="specifications")
     deliverables: Mapped[list["Deliverable"]] = relationship(back_populates="specification")
+
+
+class TechnicalComparison(Base):
+    """Step 15 multi-criteria equipment/material/offer comparison with Decimal scoring, source provenance, and advisory decision gate."""
+
+    __tablename__ = "technical_comparisons"
+    __table_args__ = (
+        classification_check_constraint(),
+        CheckConstraint(
+            "ai_draft_status IN ('not_used', 'unverified_ai_draft', 'owner_approved')",
+            name="ck_comparisons_ai_draft_status_valid",
+        ),
+        CheckConstraint(
+            "owner_decision_status IN ('pending_owner_decision', 'owner_selected')",
+            name="ck_comparisons_owner_decision_status_valid",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    project_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("projects.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    task_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("tasks.id", ondelete="SET NULL"), index=True, nullable=True
+    )
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    comparison_scope: Mapped[str] = mapped_column(String(64), default="equipment", nullable=False)
+    discipline: Mapped[str] = mapped_column(String(64), default="multidisciplinary", nullable=False)
+    language: Mapped[str] = mapped_column(String(16), default="ar", nullable=False)
+    classification: Mapped[str] = mapped_column(String(32), default="Preliminary", nullable=False)
+    revision: Mapped[str] = mapped_column(String(32), default="Rev 01", nullable=False)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    export_version: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="evaluated", nullable=False)
+    use_ai: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    ai_draft_status: Mapped[str] = mapped_column(String(32), default="not_used", nullable=False)
+    owner_decision_status: Mapped[str] = mapped_column(
+        String(32), default="pending_owner_decision", nullable=False
+    )
+    owner_selected_option_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    owner_decision_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    owner_decided_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    owner_decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    tokens_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    token_usage_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    criteria_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False)
+    options_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False)
+    matrix_result_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, index=True, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+    project: Mapped["Project"] = relationship(back_populates="technical_comparisons")
+    deliverables: Mapped[list["Deliverable"]] = relationship(back_populates="technical_comparison")
 
 
 class FileExtraction(Base):

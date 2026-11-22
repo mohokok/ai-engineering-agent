@@ -148,6 +148,7 @@ class DeliverableOut(BaseModel):
     drawing_id: str | None = None
     calculation_id: str | None = None
     specification_id: str | None = None
+    comparison_id: str | None = None
     task_id: str | None = None
     file_id: str | None = None
     title: str

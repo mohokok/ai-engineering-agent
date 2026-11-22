@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 
 from app.api.boq import router as boq_router
 from app.api.calculations import router as calculations_router
+from app.api.comparisons import router as comparisons_router
 from app.api.drawings import router as drawings_router
 from app.api.extraction import router as extraction_router
 from app.api.files import router as files_router
@@ -130,6 +131,7 @@ def create_app(
     application.include_router(calculations_router, prefix="/api")
     application.include_router(drawings_router, prefix="/api")
     application.include_router(specifications_router, prefix="/api")
+    application.include_router(comparisons_router, prefix="/api")
     application.include_router(qa_router, prefix="/api")
     application.include_router(settings_router, prefix="/api")
     return application
