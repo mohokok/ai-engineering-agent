@@ -6,6 +6,7 @@ import {
   approveSpecificationDraft,
   approveScheduleDraft,
   approveSpecialistAssessment,
+  approveStructuralAssessment,
   confirmExtractionDrawingUnit,
   confirmStandardMetadata,
   createBoqSheet,
@@ -15,6 +16,7 @@ import {
   createProjectSchedule,
   createSpecialistAssessment,
   createStandard,
+  createStructuralAssessment,
   createTask,
   createTechnicalComparison,
   decideTechnicalComparison,
@@ -26,6 +28,7 @@ import {
   exportSpecialistDeliverables,
   exportSpecificationDeliverables,
   exportStandardsRegister,
+  exportStructuralDeliverables,
   exportTechnicalComparison,
   extractProjectFile,
   generateParametricDrawing,
@@ -40,6 +43,7 @@ import {
   getSpecificationDetail,
   getStandardDetail,
   getStandardsRegisterDownloadUrl,
+  getStructuralDetail,
   listCalculationPresets,
   listComparisonPresets,
   listPlanningPresets,
@@ -51,10 +55,12 @@ import {
   listProjectSchedules,
   listProjectSpecialistAssessments,
   listProjectSpecifications,
+  listProjectStructuralAssessments,
   listSpecialistPresets,
   listSpecificationPresets,
   listStandardPresets,
   listStandards,
+  listStructuralPresets,
   setScheduleAsBaseline,
   supersedeStandard,
   runProjectQaReview,
@@ -63,6 +69,7 @@ import {
   updateQaIssue,
   updateSpecialistAssessment,
   updateStandard,
+  updateStructuralAssessment,
   verifyTaskWithQa,
   getDeliverableDownloadUrl,
   getExtractionCapabilities,
@@ -105,6 +112,7 @@ import { ResearchView } from "./components/ResearchView";
 import { SpecificationsView } from "./components/SpecificationsView";
 import { SpecialistEngineeringView } from "./components/SpecialistEngineeringView";
 import { StandardsLibraryView } from "./components/StandardsLibraryView";
+import { StructuralView } from "./components/StructuralView";
 import { TechnicalComparisonsView } from "./components/TechnicalComparisonsView";
 import type {
   BoqDetailOut,
@@ -120,6 +128,7 @@ import type {
   ReviewReportDetailOut,
   SpecialistDetailOut,
   StandardDocumentOut,
+  StructuralDetailOut,
   TaskDetailOut,
   TaskSummaryOut,
 } from "./types";
@@ -3742,6 +3751,173 @@ describe("App Step 10 BOQ & quantity UI", () => {
     const appRes = await approveSpecialistAssessment("spec-18-1", { approved_by: "Owner" });
     expect(appRes.ai_draft_status).toBe("owner_approved");
     const expRes = await exportSpecialistDeliverables("spec-18-1", { language: "en" });
+    expect(expRes.pdf_deliverable.folder_name).toBe("04_Engineering_Calculations");
+  });
+
+  it("renders Step 19 Structural Support view in RTL Arabic & LTR English and calls structural endpoints", async () => {
+    const sampleStructural: StructuralDetailOut = {
+      id: "str-19-1",
+      project_id: "proj-19",
+      project_code: "ST-19",
+      project_name: "Synthetic Frame Verification",
+      assessment_type: "full_structural_check",
+      title: "Synthetic Grid A1 Column & Beam Statics Check",
+      language: "en",
+      classification: "Preliminary",
+      revision: "Rev 01",
+      version: 1,
+      export_version: 1,
+      status: "evaluated",
+      checks_passed: true,
+      blocked_missing_count: 0,
+      failed_checks_count: 0,
+      standards_status: "no_verified_standard_on_file",
+      use_ai: true,
+      ai_draft_status: "unverified_ai_draft",
+      ai_draft_label: "UNVERIFIED AI DRAFT — prose not yet verified or approved by owner",
+      tokens_used: 90,
+      preliminary_label: "PRELIMINARY - for review by a licensed structural engineer",
+      software_recommendation:
+        "Assessment support & input/output checking ONLY (never designs members or certifies safety). Use validated commercial structural software (e.g., ETABS, SAP2000).",
+      summary: "Synthetic structural check summary",
+      created_at: "2026-11-22T00:00:00Z",
+      updated_at: "2026-11-22T00:00:00Z",
+      inputs: { beams: [{ beam_id: "BM-01", span_m: 6 }] },
+      results: {
+        equations: ["Simply Supported UDL: R = V_max = w*L/2 | M_max = w*L^2/8"],
+        methodology: "Deterministic statics check",
+        prepared_items: [
+          { kind: "beam_statics", item_id: "BM-01", max_moment_kn_m: 180.0, elastic_deflection_mm: 11.8125 },
+        ],
+        check_rows: [
+          {
+            item_id: "BM-01",
+            label: "Max Moment M vs Software",
+            expected: "180.0 kN·m (+/-2.0%)",
+            actual: "180.0 kN·m (diff 0.0%)",
+            unit: "kN·m",
+            status: "PASS (PRELIMINARY)",
+            notes: "Euler-Bernoulli",
+          },
+        ],
+        blocked_flags: [],
+        metrics: { passed_checks_count: 8 },
+      },
+      references: [
+        {
+          source_kind: "no_verified_standard_on_file",
+          code_or_source_name: "no verified standard on file - verify against the locally adopted code",
+          edition_or_date: "unknown",
+          status: "no_verified_standard_on_file",
+          verification_label: "no verified standard on file - verify against the locally adopted code",
+        },
+      ],
+      preliminary_assumptions: ["PRELIMINARY - for review by a licensed structural engineer"],
+      token_usage: {
+        prompt_tokens: 60,
+        output_tokens: 30,
+        total_tokens: 90,
+        thoughts_tokens: 0,
+        cached_tokens: 0,
+        latency_ms: 100,
+      },
+      deliverables: [
+        {
+          id: "deliv-19-1",
+          project_id: "proj-19",
+          structural_id: "str-19-1",
+          title: "Structural Statics PDF",
+          deliverable_type: "structural_assessment",
+          discipline: "structural",
+          format: "pdf",
+          classification: "Preliminary",
+          status: "exported",
+          version: 1,
+          folder_name: "04_Engineering_Calculations",
+          filename: "structural_str19_v1_e1_en.pdf",
+          relative_path: "04_Engineering_Calculations/structural_str19_v1_e1_en.pdf",
+          sha256: "bead12345678",
+          download_url: "/api/deliverables/deliv-19-1/download",
+          created_at: "2026-11-22T00:00:00Z",
+          updated_at: "2026-11-22T00:00:00Z",
+        },
+      ],
+    };
+
+    const appAr = renderToStaticMarkup(<App initialLang="ar" initialTab="structural" />);
+    expect(appAr).toContain("الإنشائي (I/O Support)");
+    expect(appAr).toContain("الخطوة 19");
+    expect(appAr).toContain("dir=\"rtl\"");
+
+    const appEn = renderToStaticMarkup(<App initialLang="en" initialTab="structural" />);
+    expect(appEn).toContain("Structural Support");
+    expect(appEn).toContain("Step 19");
+    expect(appEn).toContain("dir=\"ltr\"");
+
+    const viewEn = renderToStaticMarkup(
+      <StructuralView
+        lang="en"
+        initialPresets={[]}
+        initialAssessments={[sampleStructural]}
+        initialSelected={sampleStructural}
+      />
+    );
+    expect(viewEn).toContain("PRELIMINARY - for review by a licensed structural engineer");
+    expect(viewEn).toContain("no verified standard on file - verify against the locally adopted code");
+    expect(viewEn).toContain("UNVERIFIED AI DRAFT");
+    expect(viewEn).toContain("ETABS");
+    expect(viewEn).toContain("bead12345678");
+
+    const viewAr = renderToStaticMarkup(
+      <StructuralView
+        lang="ar"
+        initialPresets={[]}
+        initialAssessments={[sampleStructural]}
+        initialSelected={sampleStructural}
+      />
+    );
+    expect(viewAr).toContain("دعم التقييم الإنشائي وفحص المدخلات والمخرجات");
+    expect(viewAr).toContain("توصية البرمجيات الإنشائية المعتمدة");
+
+    const approved = { ...sampleStructural, ai_draft_status: "owner_approved", version: 2 };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ presets: [] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(sampleStructural), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ assessments: [sampleStructural], total: 1 }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(sampleStructural), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(approved), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(approved), { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            assessment: approved,
+            docx_deliverable: sampleStructural.deliverables[0],
+            pdf_deliverable: sampleStructural.deliverables[0],
+            xlsx_deliverable: sampleStructural.deliverables[0],
+          }),
+          { status: 201 }
+        )
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const pRes = await listStructuralPresets();
+    expect(pRes.presets).toEqual([]);
+    const created = await createStructuralAssessment("proj-19", {
+      assessment_type: "full_structural_check",
+      title: "Beam Check",
+      inputs: { beams: [] },
+    });
+    expect(created.id).toBe("str-19-1");
+    const listed = await listProjectStructuralAssessments("proj-19");
+    expect(listed.total).toBe(1);
+    const det = await getStructuralDetail("str-19-1");
+    expect(det.checks_passed).toBe(true);
+    const upd = await updateStructuralAssessment("str-19-1", { assessment_type: "simple_statics_beam" });
+    expect(upd.version).toBe(2);
+    const appRes = await approveStructuralAssessment("str-19-1", { approved_by: "PE" });
+    expect(appRes.ai_draft_status).toBe("owner_approved");
+    const expRes = await exportStructuralDeliverables("str-19-1", { language: "en" });
     expect(expRes.pdf_deliverable.folder_name).toBe("04_Engineering_Calculations");
   });
 });

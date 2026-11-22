@@ -63,6 +63,8 @@ class SpecialistRenderData:
     references: list[SpecialistReferenceOut] = field(default_factory=list)
     metrics: dict[str, Any] = field(default_factory=dict)
     summary: str | None = None
+    report_heading: str | None = None
+    preliminary_notice: str | None = None
 
 
 _LABELS: dict[ReportLanguage, dict[str, str]] = {
@@ -127,8 +129,11 @@ def generate_specialist_docx(out_path: Path, data: SpecialistRenderData) -> None
     doc.styles["Normal"].font.name = "Tahoma"
     doc.styles["Normal"].font.size = Pt(9.0)
 
+    heading_txt = data.report_heading or lbl["heading"]
+    prelim_txt = data.preliminary_notice or lbl["prelim"]
+
     _style_paragraph(
-        doc.add_heading(f"{lbl['heading']}: {data.title} [{data.classification}]", level=1),
+        doc.add_heading(f"{heading_txt}: {data.title} [{data.classification}]", level=1),
         is_ar=is_ar,
         bold=True,
         font_size=13,
@@ -139,7 +144,7 @@ def generate_specialist_docx(out_path: Path, data: SpecialistRenderData) -> None
         f"{lbl['project']}: {data.project_code} — {data.project_name} | {data.revision} v{data.version}",
         f"{lbl['domain']}: {data.domain.upper()} | {lbl['mode']}: {data.workflow_mode} | {lbl['verdict']}: {_status_txt(data)}",
         f"{lbl['software']}: {data.software_recommendation}",
-        lbl["prelim"],
+        prelim_txt,
     ]
     if data.ai_draft_status == "unverified_ai_draft":
         meta_lines.insert(0, lbl["ai_warn"])
@@ -298,11 +303,11 @@ td.bad {{ background-color: #fee2e2; color: #991b1b; }}
 </head>
 <body>
   <div class="hdr">
-    <h1>{_esc(lbl['heading'])}: {_esc_rtl_cell(data.title, is_ar=is_ar)} [{_esc_ltr(data.classification)}]</h1>
+    <h1>{_esc(data.report_heading or lbl['heading'])}: {_esc_rtl_cell(data.title, is_ar=is_ar)} [{_esc_ltr(data.classification)}]</h1>
     <div>{_esc(lbl['project'])}: {_esc_ltr(data.project_code)} — {_esc_rtl_cell(data.project_name, is_ar=is_ar)} | {_esc_ltr(data.revision)} v{_esc_ltr(data.version)} | {_esc_ltr(data.issued_at_iso)}</div>
     <div><strong>{_esc_ltr(data.domain.upper())}</strong> ({_esc_ltr(data.workflow_mode)}) — <strong>{_esc_ltr(_status_txt(data))}</strong></div>
     {ai_banner}
-    <div class="prelim">{_esc(lbl['prelim'])}</div>
+    <div class="prelim">{_esc(data.preliminary_notice or lbl['prelim'])}</div>
     <div class="soft"><strong>{_esc(lbl['software'])}:</strong> {_esc_ltr(data.software_recommendation)}</div>
   </div>
   <h2>{_esc(lbl['refs'])}</h2>
@@ -363,7 +368,7 @@ def generate_specialist_xlsx(out_path: Path, data: SpecialistRenderData) -> None
             (lbl["project"], f"{data.project_code} — {data.project_name}"),
             (lbl["domain"], f"{data.domain.upper()} / {data.workflow_mode} / {data.classification} / v{data.version}"),
             (lbl["verdict"], _status_txt(data)),
-            ("Notice", lbl["prelim"]),
+            ("Notice", data.preliminary_notice or lbl["prelim"]),
             (lbl["software"], data.software_recommendation),
         ),
         start=1,

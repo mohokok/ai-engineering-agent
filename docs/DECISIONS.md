@@ -284,7 +284,22 @@ Classification: For Review
 - **Alternatives:** Performing full dynamic thermal building loads or sprinkler network loop solving inside an LLM/Python script; hardcoding NFPA 13 hazard densities or FGI/WHO clinical ACH tables from model memory; or allowing missing inputs to pass with guessed default targets.
 - **Reason:** Limiting Step 18 to deterministic input preparation and sanity output verification with mandatory software-handoff notices protects life-safety design boundaries; verified-only code gating and `'not provided'` blocking prevent silent code or clinical hallucinations cleanly.
 
+---
 
-
-
+## ADR-028: Step 19 Structural Assessment Support, Simple Statics I/O Checking, Verified-Only Code Gating & QA Guard
+- **Date:** 2026-11-22
+- **Status:** Accepted
+- **Context:** Step 19 adds structural engineering support without crossing into automated member design or safety certification, while preventing hardcoded ACI/Eurocode/AISC/Libyan code factors, limits, or material strengths from model memory.
+- **Decision:**
+  1. Add `structural_assessments` (`StructuralAssessment` ORM model) and `deliverables.structural_id` FK (`ON DELETE SET NULL`) via reversible Alembic migration `0017_step19_structural_assessments.py` (`down_revision = "0016"`), storing `assessment_type` (`'takedown_check' | 'load_combinations' | 'simple_statics_beam' | 'full_structural_check'`), `checks_passed`, `blocked_missing_count`, `failed_checks_count`, `standards_status`, `inputs_json`, `results_json`, `references_json`, `preliminary_assumptions_json`, `software_recommendation`, `use_ai`, `ai_draft_status`, `tokens_used`, `version`, and `export_version`.
+  2. Implement deterministic assessment-support & I/O-checking library (`evaluate_structural_assessment` in `backend/app/skills/structural.py`) at `0` AI tokens by default:
+     - **Takedown Check:** Computes unfactored dead/live loads ($N_{\text{floors}} A_{\text{trib}} q + P_{\text{add}}$), owner-factored axial loads $P_u$, demand/capacity ratio against owner axial capacity, and software discrepancy (`+/- tol_pct`, default `2%`).
+     - **Load Combinations:** Evaluates linear governing envelopes $E_u = \sum \gamma_i S_i$ strictly from owner-supplied load factors and unfactored member actions, checking software-reported governing demand and owner capacity.
+     - **Simple Span Statics:** Computes closed-form Euler-Bernoulli reactions, max shear, max moment, and elastic service deflection (`simply_supported_udl`, `simply_supported_midspan_point`, `cantilever_udl`) compared against owner capacities, owner deflection limit, and commercial FEA outputs.
+     - Explicitly emits `'not provided'` whenever any required input or owner threshold is omitted (`status = "blocked_missing_inputs"`, `checks_passed = False`), labels all outputs `PRELIMINARY - for review by a licensed structural engineer`, and recommends validated commercial software (`ETABS`, `SAP2000`, `SAFE`, `RAM Structural System`, `Robot Structural Analysis`) for final code design.
+  3. Restrict structural code citations (ACI, Eurocode, AISC, ASCE, Libyan Code, etc.) strictly to confirmed `"current"` `StandardDocument` (`standards_library`) entries or reviewed `ResearchSource` log entries via `_validate_and_bind_references`; otherwise emit `'no verified standard on file - verify against the locally adopted code'`.
+  4. Support optional Gemini narrative (`use_ai = True`, tagged `UNVERIFIED AI DRAFT` until `POST /api/structural-assessments/{id}/approve` without touching numerical results) and export immutable Arabic RTL & English LTR `DOCX`, vector `PDF`, and live-formula `XLSX` (`=COUNTIF(...)` + `Inputs & Provenance`) bundles into `04_Engineering_Calculations/` with SHA-256 `Deliverable` entries.
+  5. Extend Step 12's independent QA Agent (`backend/app/agents/qa_agent.py`, `inspected_structural_ids` on `QaContextIsolationReport`): recompute every Step 19 structural evaluation (`arithmetic`), trap unverified `ACI`/`AISC`/`ASCE`/`EC2`/`EC3`/`Eurocode`/`Libyan Code`/standard citations & stale library links (`reference`), flag `'not provided'` blocked inputs & unapproved AI drafts (`schedule_consistency`), verify `04_Engineering_Calculations/` SHA-256 exports (`missing_deliverable`/`integrity`), and add a bilingual RTL/LTR **Structural Assessment Support** tab (`frontend/src/components/StructuralView.tsx`).
+- **Alternatives:** Designing concrete/steel sections and reinforcement inside Python/LLM scripts, hardcoding ACI 318 / EN 1992 / AISC load combinations or stress limits, or silently filling missing structural inputs with typical defaults.
+- **Reason:** Strict separation between deterministic I/O & statics verification and licensed code design prevents unsafe design claims, guarantees zero fabricated code parameters, and keeps commercial structural FEA software as the authoritative design tool.
 
