@@ -11,6 +11,7 @@ import { ProviderSettingsView } from "./components/ProviderSettingsView";
 import { QaIssuesView } from "./components/QaIssuesView";
 import { ResearchView } from "./components/ResearchView";
 import { SpecificationsView } from "./components/SpecificationsView";
+import { StandardsLibraryView } from "./components/StandardsLibraryView";
 import { TechnicalComparisonsView } from "./components/TechnicalComparisonsView";
 import type { HealthPayload, Lang } from "./types";
 
@@ -18,6 +19,7 @@ type ActiveTab =
   | "projects"
   | "assignments"
   | "research"
+  | "standards"
   | "deliverables"
   | "boq"
   | "drawings"
@@ -43,6 +45,7 @@ const COPY: Record<
     projectsTab: string;
     assignmentsTab: string;
     researchTab: string;
+    standardsTab: string;
     deliverablesTab: string;
     boqTab: string;
     drawingsTab: string;
@@ -57,7 +60,7 @@ const COPY: Record<
   ar: {
     title: "الوكيل الهندسي الاستشاري المحلي",
     subtitle:
-      "الخطوة 16 — التخطيط والجدولة (WBS / CPM / Gantt / Libya Calendar) + المقارنات + المواصفات + الحسابات + الجودة",
+      "الخطوة 17 — مكتبة المعايير القياسية (المزودة من المالك) + التخطيط + المقارنات + المواصفات + الحسابات + الجودة",
     classificationLabel: "التصنيف: أولي (Preliminary)",
     toggleLang: "Switch to English (LTR)",
     refreshHealth: "تحديث فحص الخادم",
@@ -68,6 +71,7 @@ const COPY: Record<
     projectsTab: "المشاريع والملفات",
     assignmentsTab: "المهام والتكليفات",
     researchTab: "البحث وسجل المصادر",
+    standardsTab: "مكتبة المعايير (Standards)",
     deliverablesTab: "التقارير والمخرجات",
     boqTab: "جداول الكميات (BOQ)",
     drawingsTab: "الرسم الهندسي (CAD)",
@@ -81,7 +85,7 @@ const COPY: Record<
   en: {
     title: "Local AI Engineering Consultancy Agent",
     subtitle:
-      "Step 16 — WBS / CPM / Gantt Project Planning (Libya Calendar), Technical Comparisons, Specs, MEP Calcs & QA",
+      "Step 17 — Standards Library (Owner-Supplied Only), Planning, Technical Comparisons, Specs, MEP Calcs & QA",
     classificationLabel: "Classification: Preliminary",
     toggleLang: "التبديل إلى العربية (RTL)",
     refreshHealth: "Refresh Health Check",
@@ -92,6 +96,7 @@ const COPY: Record<
     projectsTab: "Projects & Files",
     assignmentsTab: "New Assignment & History",
     researchTab: "Research & Source Log",
+    standardsTab: "Standards Library",
     deliverablesTab: "Deliverables & Reports",
     boqTab: "BOQ & Quantities",
     drawingsTab: "Parametric CAD",
@@ -218,6 +223,13 @@ export function App({
           </button>
           <button
             type="button"
+            className={`btn ${activeTab === "standards" ? "" : "btn-secondary"}`}
+            onClick={() => setActiveTab("standards")}
+          >
+            {text.standardsTab}
+          </button>
+          <button
+            type="button"
             className={`btn ${activeTab === "deliverables" ? "" : "btn-secondary"}`}
             onClick={() => setActiveTab("deliverables")}
           >
@@ -287,6 +299,8 @@ export function App({
           <AssignmentsView lang={lang} />
         ) : activeTab === "research" ? (
           <ResearchView lang={lang} />
+        ) : activeTab === "standards" ? (
+          <StandardsLibraryView lang={lang} />
         ) : activeTab === "deliverables" ? (
           <DeliverablesView lang={lang} />
         ) : activeTab === "boq" ? (

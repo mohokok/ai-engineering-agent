@@ -987,3 +987,169 @@ export function exportScheduleDeliverables(
     }
   );
 }
+
+export function listStandardPresets(): Promise<import("./types").StandardPresetListResponse> {
+  return requestJson<import("./types").StandardPresetListResponse>("/api/standards/presets");
+}
+
+export function listStandards(params?: {
+  project_id?: string | null;
+  include_global?: boolean;
+  q?: string;
+  number?: string;
+  status?: string;
+  issuing_body?: string;
+  adopted_locally?: boolean | null;
+}): Promise<import("./types").StandardListResponse> {
+  const qs = new URLSearchParams();
+  if (params?.project_id) qs.set("project_id", params.project_id);
+  if (params?.include_global !== undefined) {
+    qs.set("include_global", String(params.include_global));
+  }
+  if (params?.q) qs.set("q", params.q);
+  if (params?.number) qs.set("number", params.number);
+  if (params?.status) qs.set("status", params.status);
+  if (params?.issuing_body) qs.set("issuing_body", params.issuing_body);
+  if (params?.adopted_locally !== undefined && params?.adopted_locally !== null) {
+    qs.set("adopted_locally", String(params.adopted_locally));
+  }
+  const suffix = qs.toString();
+  return requestJson<import("./types").StandardListResponse>(
+    `/api/standards${suffix ? `?${suffix}` : ""}`
+  );
+}
+
+export function createStandard(
+  payload: import("./types").StandardCreatePayload
+): Promise<import("./types").StandardDocumentOut> {
+  return requestJson<import("./types").StandardDocumentOut>("/api/standards", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function uploadStandardDocument(params: {
+  file: File;
+  project_id?: string | null;
+  use_ai?: boolean;
+  complexity?: TaskComplexity;
+  jurisdiction?: string;
+  adopted_locally?: boolean;
+}): Promise<import("./types").StandardDocumentOut> {
+  const formData = new FormData();
+  formData.append("file", params.file);
+  if (params.project_id) formData.append("project_id", params.project_id);
+  formData.append("use_ai", String(Boolean(params.use_ai)));
+  if (params.complexity) formData.append("complexity", params.complexity);
+  if (params.jurisdiction) formData.append("jurisdiction", params.jurisdiction);
+  formData.append("adopted_locally", String(Boolean(params.adopted_locally)));
+
+  const res = await fetch("/api/standards/upload", {
+    method: "POST",
+    body: formData,
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Upload failed with status ${res.status}`);
+  }
+  return (await res.json()) as import("./types").StandardDocumentOut;
+}
+
+export function getStandardDetail(
+  standardId: string
+): Promise<import("./types").StandardDocumentOut> {
+  return requestJson<import("./types").StandardDocumentOut>(
+    `/api/standards/${encodeURIComponent(standardId)}`
+  );
+}
+
+export function updateStandard(
+  standardId: string,
+  payload: {
+    standard_number?: string;
+    title?: string;
+    issuing_body?: string;
+    edition_year?: string;
+    status?: import("./types").StandardStatus;
+    superseded_by_id?: string | null;
+    supersession_note?: string | null;
+    jurisdiction?: string;
+    adopted_locally?: boolean;
+    owner_notes?: string | null;
+    owner_excerpts?: import("./types").OwnerExcerptIn[];
+    confirm_metadata?: boolean;
+    change_note?: string;
+  }
+): Promise<import("./types").StandardDocumentOut> {
+  return requestJson<import("./types").StandardDocumentOut>(
+    `/api/standards/${encodeURIComponent(standardId)}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }
+  );
+}
+
+export function confirmStandardMetadata(
+  standardId: string,
+  payload: {
+    standard_number?: string;
+    title?: string;
+    issuing_body?: string;
+    edition_year?: string;
+    status?: import("./types").StandardStatus;
+    jurisdiction?: string;
+    adopted_locally?: boolean;
+    owner_notes?: string | null;
+    owner_excerpts?: import("./types").OwnerExcerptIn[];
+    confirmed_by?: string;
+  }
+): Promise<import("./types").StandardDocumentOut> {
+  return requestJson<import("./types").StandardDocumentOut>(
+    `/api/standards/${encodeURIComponent(standardId)}/confirm`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }
+  );
+}
+
+export function supersedeStandard(
+  standardId: string,
+  payload: {
+    superseded_by_id?: string | null;
+    new_standard?: import("./types").StandardCreatePayload | null;
+    supersession_note: string;
+  }
+): Promise<import("./types").StandardDocumentOut> {
+  return requestJson<import("./types").StandardDocumentOut>(
+    `/api/standards/${encodeURIComponent(standardId)}/supersede`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }
+  );
+}
+
+export function exportStandardsRegister(payload: {
+  project_id?: string | null;
+  language?: import("./types").ReportLanguage;
+  classification?: ProjectClassification;
+}): Promise<import("./types").StandardRegisterExportOut> {
+  return requestJson<import("./types").StandardRegisterExportOut>(
+    "/api/standards/export-register",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }
+  );
+}
+
+export function getStandardsRegisterDownloadUrl(filename: string): string {
+  return `/api/standards/register-files/${encodeURIComponent(filename)}`;
+}

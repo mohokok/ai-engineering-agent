@@ -6,11 +6,13 @@ import {
   approveSpecificationDraft,
   approveScheduleDraft,
   confirmExtractionDrawingUnit,
+  confirmStandardMetadata,
   createBoqSheet,
   createCalculation,
   createManualIssue,
   createProject,
   createProjectSchedule,
+  createStandard,
   createTask,
   createTechnicalComparison,
   decideTechnicalComparison,
@@ -20,6 +22,7 @@ import {
   exportCalculationDeliverables,
   exportScheduleDeliverables,
   exportSpecificationDeliverables,
+  exportStandardsRegister,
   exportTechnicalComparison,
   extractProjectFile,
   generateParametricDrawing,
@@ -31,6 +34,8 @@ import {
   getParametricDrawingDetail,
   getScheduleDetail,
   getSpecificationDetail,
+  getStandardDetail,
+  getStandardsRegisterDownloadUrl,
   listCalculationPresets,
   listComparisonPresets,
   listPlanningPresets,
@@ -42,11 +47,15 @@ import {
   listProjectSchedules,
   listProjectSpecifications,
   listSpecificationPresets,
+  listStandardPresets,
+  listStandards,
   setScheduleAsBaseline,
+  supersedeStandard,
   runProjectQaReview,
   suggestParametricModel,
   updateCalculation,
   updateQaIssue,
+  updateStandard,
   verifyTaskWithQa,
   getDeliverableDownloadUrl,
   getExtractionCapabilities,
@@ -87,6 +96,7 @@ import { ProjectWorkspaceView } from "./components/ProjectWorkspaceView";
 import { ProviderSettingsView } from "./components/ProviderSettingsView";
 import { ResearchView } from "./components/ResearchView";
 import { SpecificationsView } from "./components/SpecificationsView";
+import { StandardsLibraryView } from "./components/StandardsLibraryView";
 import { TechnicalComparisonsView } from "./components/TechnicalComparisonsView";
 import type {
   BoqDetailOut,
@@ -100,6 +110,7 @@ import type {
   ResearchRunDetailOut,
   ResearchRunSummaryOut,
   ReviewReportDetailOut,
+  StandardDocumentOut,
   TaskDetailOut,
   TaskSummaryOut,
 } from "./types";
@@ -3388,5 +3399,172 @@ describe("App Step 10 BOQ & quantity UI", () => {
     expect(appS.ai_draft_status).toBe("owner_approved");
     const expS = await exportScheduleDeliverables("sched-16", { language: "en" });
     expect(expS.pdf_deliverable.folder_name).toBe("03_Analysis");
+  });
+
+  it("renders Step 17 Standards Library view in RTL Arabic & LTR English and calls standards endpoints", async () => {
+    const sampleStandard: StandardDocumentOut = {
+      id: "std-17-1",
+      project_id: "proj-17",
+      standard_number: "SYN-1000-2018",
+      title: "Synthetic Electrical Distribution Panel Practice (2018 Old Edition)",
+      issuing_body: "Synthetic Standards Committee",
+      edition_year: "2018",
+      status: "superseded",
+      superseded_by_id: "std-17-2",
+      superseded_by_number: "SYN-1000-2024",
+      superseded_by_title: "Synthetic Electrical Distribution Panel Practice Baseline",
+      replacement_chain_summary: "SYN-1000-2018 (2018) -> SYN-1000-2024 (2024) [current]",
+      supersession_note: "Owner-registered synthetic supersession example.",
+      jurisdiction: "Synthetic Municipal Scope",
+      adopted_locally: true,
+      owner_notes: "Superseded fixture for testing.",
+      owner_excerpts: [
+        {
+          excerpt_id: "ex-1",
+          page_ref: "p. 4",
+          text: "Short owner-entered clause summary well under 300 characters.",
+          added_at: "2026-11-22T00:00:00Z",
+        },
+      ],
+      metadata_status: "unverified_ai_suggestion",
+      metadata_label: "UNVERIFIED AI SUGGESTION",
+      suggested_metadata: {
+        suggested_number: "SYN-1000-2018",
+        suggestion_origin: "UNVERIFIED AI SUGGESTION",
+      },
+      use_ai: true,
+      ai_suggestion_status: "unverified_ai_suggestion",
+      tokens_used: 95,
+      token_usage: {
+        prompt_tokens: 60,
+        output_tokens: 35,
+        total_tokens: 95,
+        thoughts_tokens: 0,
+        cached_tokens: 0,
+        latency_ms: 150,
+      },
+      original_filename: "syn_1000_2018.txt",
+      file_relative_path: "11_References/syn_1000_2018.txt",
+      file_sha256: "deadbeef1234567890",
+      file_size_bytes: 512,
+      mime_type: "text/plain",
+      version: 2,
+      history: [{ version: 1, action: "uploaded", note: "Initial upload", timestamp: "2026-11-22T00:00:00Z" }],
+      where_cited: [
+        {
+          module: "specification",
+          artifact_id: "spec-1",
+          artifact_title: "Clinic Electrical Specs",
+          location: "SEC-26 / standards_table",
+          flagged_status: "superseded",
+        },
+      ],
+      citation_warnings: [
+        "Standard 'SYN-1000-2018' has status/metadata flag 'superseded' while cited in 1 deliverable location(s).",
+      ],
+      created_at: "2026-11-22T00:00:00Z",
+      updated_at: "2026-11-22T00:00:00Z",
+    };
+
+    const appStdAr = renderToStaticMarkup(<App initialLang="ar" initialTab="standards" />);
+    expect(appStdAr).toContain("مكتبة المعايير (Standards)");
+    expect(appStdAr).toContain("الخطوة 17");
+    expect(appStdAr).toContain("dir=\"rtl\"");
+
+    const appStdEn = renderToStaticMarkup(<App initialLang="en" initialTab="standards" />);
+    expect(appStdEn).toContain("Standards Library");
+    expect(appStdEn).toContain("Step 17");
+    expect(appStdEn).toContain("dir=\"ltr\"");
+
+    const viewEn = renderToStaticMarkup(
+      <StandardsLibraryView
+        lang="en"
+        initialStandards={[sampleStandard]}
+        initialSelectedStd={sampleStandard}
+      />
+    );
+    expect(viewEn).toContain("SYN-1000-2018");
+    expect(viewEn).toContain("SYN-1000-2024");
+    expect(viewEn).toContain("UNVERIFIED AI SUGGESTION");
+    expect(viewEn).toContain("Clinic Electrical Specs");
+    expect(viewEn).toContain("deadbeef1234567890");
+    expect(viewEn).toContain("superseded");
+
+    const viewAr = renderToStaticMarkup(
+      <StandardsLibraryView
+        lang="ar"
+        initialStandards={[sampleStandard]}
+        initialSelectedStd={sampleStandard}
+      />
+    );
+    expect(viewAr).toContain("مكتبة المعايير والمواصفات القياسية");
+    expect(viewAr).toContain("أين تم الاستشهاد بهذا المعيار");
+
+    const confirmedStd = {
+      ...sampleStandard,
+      metadata_status: "owner_confirmed",
+      ai_suggestion_status: "owner_confirmed",
+      metadata_label: "Owner confirmed",
+      version: 3,
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ presets: [] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ standards: [sampleStandard], total: 1 }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(sampleStandard), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(sampleStandard), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(confirmedStd), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(confirmedStd), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(confirmedStd), { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            project_id: "proj-17",
+            language: "ar",
+            standards_count: 1,
+            cited_warnings_count: 1,
+            files: [
+              {
+                format: "xlsx",
+                filename: "standards_register_v1.xlsx",
+                relative_path: "11_References/standards_register_v1.xlsx",
+                sha256: "abc123",
+                size_bytes: 1024,
+                download_url: "/api/standards/register-files/standards_register_v1.xlsx",
+              },
+            ],
+          }),
+          { status: 201 }
+        )
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const pRes = await listStandardPresets();
+    expect(pRes.presets).toEqual([]);
+    const listRes = await listStandards({ project_id: "proj-17", status: "superseded" });
+    expect(listRes.total).toBe(1);
+    const created = await createStandard({
+      project_id: "proj-17",
+      standard_number: "SYN-1000-2018",
+      title: "Synthetic Standard",
+      status: "superseded",
+    });
+    expect(created.standard_number).toBe("SYN-1000-2018");
+    const det = await getStandardDetail("std-17-1");
+    expect(det.where_cited.length).toBe(1);
+    const conf = await confirmStandardMetadata("std-17-1", { confirmed_by: "Owner" });
+    expect(conf.metadata_status).toBe("owner_confirmed");
+    const upd = await updateStandard("std-17-1", { status: "superseded", change_note: "test" });
+    expect(upd.version).toBe(3);
+    const sup = await supersedeStandard("std-17-1", {
+      superseded_by_id: "std-17-2",
+      supersession_note: "Replaced by SYN-1000-2024",
+    });
+    expect(sup.superseded_by_number).toBe("SYN-1000-2024");
+    const exp = await exportStandardsRegister({ project_id: "proj-17", language: "ar" });
+    expect(exp.standards_count).toBe(1);
+    expect(getStandardsRegisterDownloadUrl("standards_register_v1.xlsx")).toBe(
+      "/api/standards/register-files/standards_register_v1.xlsx"
+    );
   });
 });
