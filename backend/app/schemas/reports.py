@@ -151,6 +151,7 @@ class DeliverableOut(BaseModel):
     comparison_id: str | None = None
     schedule_id: str | None = None
     assessment_id: str | None = None
+    structural_id: str | None = None
     task_id: str | None = None
     file_id: str | None = None
     title: str

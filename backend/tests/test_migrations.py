@@ -42,6 +42,7 @@ EXPECTED_TABLES = {
     "project_schedules",
     "standards_library",
     "specialist_assessments",
+    "structural_assessments",
     "settings",
     "audit_log",
 }
@@ -85,6 +86,26 @@ def test_alembic_upgrade_and_downgrade_round_trip(tmp_path: Path) -> None:
         assert "comparison_id" in deliv_columns
         assert "schedule_id" in deliv_columns
         assert "assessment_id" in deliv_columns
+        assert "structural_id" in deliv_columns
+        struct_columns = {col["name"] for col in inspector.get_columns("structural_assessments")}
+        assert {
+            "id",
+            "project_id",
+            "task_id",
+            "assessment_type",
+            "title",
+            "version",
+            "export_version",
+            "checks_passed",
+            "blocked_missing_count",
+            "failed_checks_count",
+            "standards_status",
+            "use_ai",
+            "ai_draft_status",
+            "inputs_json",
+            "results_json",
+            "software_recommendation",
+        }.issubset(struct_columns)
         spec_assess_columns = {col["name"] for col in inspector.get_columns("specialist_assessments")}
         assert {
             "id",

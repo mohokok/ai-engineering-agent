@@ -26,6 +26,7 @@ from app.db.models import (
     SpecialistAssessment,
     Specification,
     StandardDocument,
+    StructuralAssessment,
     Task,
     TechnicalComparison,
 )
@@ -48,6 +49,7 @@ from app.skills.comparisons import recompute_comparison_matrix
 from app.skills.planning import _detect_graph_issues, evaluate_project_schedule
 from app.skills.specialist import SpecialistInputError, evaluate_specialist_assessment
 from app.skills.standards import STANDARD_CODE_DETECT_RE, find_citations_for_standard, resolve_supersession_chain
+from app.skills.structural import StructuralInputError, evaluate_structural_assessment
 
 PRODUCER_REASONING_EXCLUDED_FIELDS: tuple[str, ...] = (
     "Task.plan_summary",
@@ -108,6 +110,7 @@ class QaContextData:
     schedules: list[dict[str, Any]] = field(default_factory=list)
     standards_library: list[dict[str, Any]] = field(default_factory=list)
     specialist_assessments: list[dict[str, Any]] = field(default_factory=list)
+    structural_assessments: list[dict[str, Any]] = field(default_factory=list)
     extractions: list[dict[str, Any]] = field(default_factory=list)
     project_files: list[dict[str, Any]] = field(default_factory=list)
     reviewed_research_urls: set[str] = field(default_factory=set)
@@ -159,6 +162,7 @@ def build_isolated_qa_context(
                 "comparison_id": d.comparison_id,
                 "schedule_id": d.schedule_id,
                 "assessment_id": d.assessment_id,
+                "structural_id": d.structural_id,
                 "title": d.title,
                 "deliverable_type": d.deliverable_type,
                 "discipline": d.discipline,
@@ -462,6 +466,40 @@ def build_isolated_qa_context(
             }
         )
 
+    struct_rows = db.scalars(
+        select(StructuralAssessment)
+        .where(StructuralAssessment.project_id == project.id)
+        .order_by(StructuralAssessment.created_at.desc())
+    ).all()
+    for st_row in struct_rows:
+        if task is not None and st_row.task_id and st_row.task_id != task.id:
+            continue
+        ctx.structural_assessments.append(
+            {
+                "id": st_row.id,
+                "task_id": st_row.task_id,
+                "assessment_type": st_row.assessment_type,
+                "title": st_row.title,
+                "language": st_row.language,
+                "classification": st_row.classification,
+                "revision": st_row.revision,
+                "version": st_row.version,
+                "export_version": st_row.export_version,
+                "status": st_row.status,
+                "checks_passed": bool(st_row.checks_passed),
+                "blocked_missing_count": st_row.blocked_missing_count,
+                "failed_checks_count": st_row.failed_checks_count,
+                "standards_status": st_row.standards_status,
+                "use_ai": bool(st_row.use_ai),
+                "ai_draft_status": st_row.ai_draft_status,
+                "inputs_json": dict(st_row.inputs_json or {}),
+                "results_json": dict(st_row.results_json or {}),
+                "references_json": list(st_row.references_json or []),
+                "software_recommendation": st_row.software_recommendation or "",
+                "summary": st_row.summary or "",
+            }
+        )
+
     files = db.scalars(select(ProjectFile).where(ProjectFile.project_id == project.id)).all()
     file_name_by_id = {f.id: f.original_filename for f in files}
     for f in files:
@@ -533,6 +571,7 @@ def count_inspected_artefacts(ctx: QaContextData) -> int:
         + len(ctx.comparisons)
         + len(ctx.schedules)
         + len(ctx.specialist_assessments)
+        + len(ctx.structural_assessments)
         + len(ctx.deliverables)
     )
 
@@ -566,6 +605,10 @@ def _expected_deliverable_covered(exp: str, ctx: QaContextData) -> bool:
         f"{sa.get('title', '')} {sa.get('domain', '')} {sa.get('workflow_mode', '')} hvac fire healthcare".lower()
         for sa in ctx.specialist_assessments
     )
+    haystacks.extend(
+        f"{st.get('title', '')} {st.get('assessment_type', '')} structural takedown beam statics".lower()
+        for st in ctx.structural_assessments
+    )
     if not haystacks:
         return False
 
@@ -594,6 +637,7 @@ def build_qa_context_isolation_report(ctx: QaContextData) -> QaContextIsolationR
         inspected_schedule_ids=[s["id"] for s in ctx.schedules],
         inspected_standard_ids=[s["id"] for s in ctx.standards_library],
         inspected_assessment_ids=[a["id"] for a in ctx.specialist_assessments],
+        inspected_structural_ids=[st["id"] for st in ctx.structural_assessments],
         inspected_deliverable_ids=[d["id"] for d in ctx.deliverables],
         inspected_extraction_ids=[e["id"] for e in ctx.extractions],
         inspected_research_source_count=len(ctx.all_research_sources),
@@ -702,6 +746,18 @@ def serialize_isolated_qa_prompt_context(ctx: QaContextData) -> str:
                 "standards_status": a["standards_status"],
             }
             for a in ctx.specialist_assessments
+        ],
+        "structural_assessments": [
+            {
+                "id": st["id"],
+                "assessment_type": st["assessment_type"],
+                "title": st["title"],
+                "checks_passed": st["checks_passed"],
+                "blocked_missing_count": st["blocked_missing_count"],
+                "failed_checks_count": st["failed_checks_count"],
+                "standards_status": st["standards_status"],
+            }
+            for st in ctx.structural_assessments
         ],
         "deliverables": ctx.deliverables,
         "reviewed_research_urls": sorted(ctx.reviewed_research_urls),
@@ -1376,6 +1432,82 @@ def _check_arithmetic(
                     corrective_action="Supply valid domain inputs cleanly.",
                     deliverable_id=a_deliv_id,
                     task_id=a_row.get("task_id"),
+                )
+            )
+
+    # Recompute Step 19 structural assessments independently (takedown, load combos, beam statics)
+    deliv_by_struct = {
+        d["structural_id"]: d["id"]
+        for d in ctx.deliverables
+        if d.get("structural_id") and d.get("format") == "xlsx"
+    }
+    for st_row in ctx.structural_assessments:
+        checked += 1
+        st_deliv_id = deliv_by_struct.get(st_row["id"])
+        st_ref = f"Structural {st_row['assessment_type']} / {st_row['title']} ({st_row['id'][:8]})"
+        try:
+            re_st = evaluate_structural_assessment(
+                assessment_type=st_row["assessment_type"],
+                inputs=st_row.get("inputs_json") or {},
+            )
+            stored_res = st_row.get("results_json") or {}
+            if (
+                bool(st_row.get("checks_passed")) != re_st.checks_passed
+                or int(st_row.get("failed_checks_count") or 0) != re_st.failed_checks_count
+                or int(st_row.get("blocked_missing_count") or 0) != re_st.blocked_missing_count
+                or stored_res.get("metrics") != re_st.metrics
+                or stored_res.get("check_rows") != re_st.check_rows
+            ):
+                findings.append(
+                    QaCandidateFinding(
+                        check_category="arithmetic",
+                        discipline="structural",
+                        severity="critical",
+                        title="Structural assessment arithmetic or verdict mismatch",
+                        description=(
+                            f"Structural assessment '{st_row['title']}' stored checks/results disagree with "
+                            "independent deterministic statics/takedown recomputation."
+                        ),
+                        reference=st_ref,
+                        corrective_action="Re-evaluate cleanly via PATCH /api/structural-assessments/{id}.",
+                        deliverable_id=st_deliv_id,
+                        task_id=st_row.get("task_id"),
+                    )
+                )
+            elif re_st.failed_checks_count > 0:
+                failed_labels = [
+                    f"{c.get('item_id')}: {c.get('label')} (actual={c.get('actual')}, expected={c.get('expected')})"
+                    for c in re_st.check_rows
+                    if "FAIL" in str(c.get("status") or "")
+                ]
+                findings.append(
+                    QaCandidateFinding(
+                        check_category="arithmetic",
+                        discipline="structural",
+                        severity="high",
+                        title="Structural I/O or capacity check failed",
+                        description=(
+                            f"Structural assessment '{st_row['title']}' has {re_st.failed_checks_count} failed check(s): "
+                            f"{'; '.join(failed_labels[:5])}."
+                        ),
+                        reference=st_ref,
+                        corrective_action="Resolve structural discrepancy/utilization exceedance in licensed engineering review.",
+                        deliverable_id=st_deliv_id,
+                        task_id=st_row.get("task_id"),
+                    )
+                )
+        except StructuralInputError as exc:
+            findings.append(
+                QaCandidateFinding(
+                    check_category="arithmetic",
+                    discipline="structural",
+                    severity="high",
+                    title="Invalid structural assessment input payload",
+                    description=f"Structural assessment '{st_row['title']}' failed deterministic evaluation: {exc}",
+                    reference=st_ref,
+                    corrective_action="Fix invalid structural inputs cleanly.",
+                    deliverable_id=st_deliv_id,
+                    task_id=st_row.get("task_id"),
                 )
             )
 
@@ -2602,30 +2734,41 @@ def _check_references(ctx: QaContextData) -> tuple[QaCheckMetricOut, list[QaCand
             task_id_val=s_row.get("task_id"),
         )
 
-    # 8. Check Step 18 specialist assessments: WHO/FGI/NFPA/ASHRAE/code references allowed ONLY when verified in Standards Library or reviewed ResearchSource log
+    # 8. Check Step 18 & Step 19 assessments: WHO/FGI/NFPA/ASHRAE/ACI/AISC/ASCE/Eurocode references allowed ONLY when verified in Standards Library or reviewed ResearchSource log
     deliv_by_assess_r = {d["assessment_id"]: d["id"] for d in ctx.deliverables if d.get("assessment_id")}
+    deliv_by_struct_r = {d["structural_id"]: d["id"] for d in ctx.deliverables if d.get("structural_id")}
     std_lib_by_id_r = {s["id"]: s for s in ctx.standards_library}
-    healthcare_code_re = re.compile(r"\b(?:WHO|FGI|NFPA|ASHRAE)\b")
-    for a_row in ctx.specialist_assessments:
-        a_deliv_id = deliv_by_assess_r.get(a_row["id"])
-        a_ref = f"Specialist {a_row['domain'].upper()} / {a_row['title']} ({a_row['id'][:8]})"
-        refs_list = a_row.get("references_json") or []
+    agency_or_code_re = re.compile(
+        r"(?<![A-Za-z0-9-])(?:WHO|FGI|NFPA|ASHRAE|ACI|AISC|ASCE|EC2|EC3|Eurocode|Libyan\s+Code)\b",
+        re.IGNORECASE,
+    )
+
+    def _audit_verified_code_assessment(
+        row: dict[str, Any],
+        *,
+        module_name: str,
+        discipline_val: str,
+        deliv_id: str | None,
+        ref_label: str,
+    ) -> None:
+        nonlocal checked
+        refs_list = row.get("references_json") or []
         if not refs_list:
             checked += 1
             findings.append(
                 QaCandidateFinding(
                     check_category="reference",
-                    discipline=a_row["domain"],
+                    discipline=discipline_val,
                     severity="high",
-                    title="Specialist assessment missing standard or fallback declaration",
+                    title=f"{module_name.title()} assessment missing standard or fallback declaration",
                     description=(
-                        f"Assessment '{a_row['title']}' has no references_json entries and fails to declare "
+                        f"Assessment '{row['title']}' has no references_json entries and fails to declare "
                         f"'{SPECIALIST_NO_STD_LABEL}'."
                     ),
-                    reference=a_ref,
+                    reference=ref_label,
                     corrective_action=f"Bind a verified Standards Library / ResearchSource entry or declare '{SPECIALIST_NO_STD_LABEL}'.",
-                    deliverable_id=a_deliv_id,
-                    task_id=a_row.get("task_id"),
+                    deliverable_id=deliv_id,
+                    task_id=row.get("task_id"),
                 )
             )
 
@@ -2639,14 +2782,14 @@ def _check_references(ctx: QaContextData) -> tuple[QaCheckMetricOut, list[QaCand
                     findings.append(
                         QaCandidateFinding(
                             check_category="reference",
-                            discipline=a_row["domain"],
+                            discipline=discipline_val,
                             severity="high",
-                            title="Missing unverified-standard disclaimer in specialist assessment",
-                            description=f"Assessment '{a_row['title']}' omits required '{SPECIALIST_NO_STD_LABEL}' notice.",
-                            reference=a_ref,
+                            title=f"Missing unverified-standard disclaimer in {module_name} assessment",
+                            description=f"Assessment '{row['title']}' omits required '{SPECIALIST_NO_STD_LABEL}' notice.",
+                            reference=ref_label,
                             corrective_action=f"State exact notice '{SPECIALIST_NO_STD_LABEL}'.",
-                            deliverable_id=a_deliv_id,
-                            task_id=a_row.get("task_id"),
+                            deliverable_id=deliv_id,
+                            task_id=row.get("task_id"),
                         )
                     )
             elif skind == "verified_source_log":
@@ -2655,14 +2798,14 @@ def _check_references(ctx: QaContextData) -> tuple[QaCheckMetricOut, list[QaCand
                     findings.append(
                         QaCandidateFinding(
                             check_category="reference",
-                            discipline=a_row["domain"],
+                            discipline=discipline_val,
                             severity="high",
-                            title="Specialist assessment cites unreviewed or missing ResearchSource",
-                            description=f"Assessment '{a_row['title']}' references unreviewed/missing ResearchSource '{rsid}'.",
-                            reference=a_ref,
+                            title=f"{module_name.title()} assessment cites unreviewed or missing ResearchSource",
+                            description=f"Assessment '{row['title']}' references unreviewed/missing ResearchSource '{rsid}'.",
+                            reference=ref_label,
                             corrective_action="Bind only a reviewed accessible/owner-provided ResearchSource.",
-                            deliverable_id=a_deliv_id,
-                            task_id=a_row.get("task_id"),
+                            deliverable_id=deliv_id,
+                            task_id=row.get("task_id"),
                         )
                     )
             elif skind == "standard_library":
@@ -2672,72 +2815,93 @@ def _check_references(ctx: QaContextData) -> tuple[QaCheckMetricOut, list[QaCand
                     findings.append(
                         QaCandidateFinding(
                             check_category="reference",
-                            discipline=a_row["domain"],
+                            discipline=discipline_val,
                             severity="high",
-                            title="Specialist assessment cites missing Standards Library entry",
-                            description=f"Assessment '{a_row['title']}' links standard_library_id '{stid}' not present in Standards Library.",
-                            reference=a_ref,
+                            title=f"{module_name.title()} assessment cites missing Standards Library entry",
+                            description=f"Assessment '{row['title']}' links standard_library_id '{stid}' not present in Standards Library.",
+                            reference=ref_label,
                             corrective_action="Register and confirm the standard in Step 17 Standards Library first.",
-                            deliverable_id=a_deliv_id,
-                            task_id=a_row.get("task_id"),
+                            deliverable_id=deliv_id,
+                            task_id=row.get("task_id"),
                         )
                     )
                 else:
                     st_status = str(st_doc.get("status") or "unknown")
                     ed_y = str(st_doc.get("edition_year") or "unknown").strip().lower()
-                    unconf = st_doc.get("metadata_status") == "unconfirmed" or st_doc.get("metadata_status") in {"unverified_suggestion", "unverified_ai_suggestion"} or st_doc.get("ai_suggestion_status") == "unverified_ai_suggestion"
+                    unconf = (
+                        st_doc.get("metadata_status") == "unconfirmed"
+                        or st_doc.get("metadata_status") in {"unverified_suggestion", "unverified_ai_suggestion"}
+                        or st_doc.get("ai_suggestion_status") == "unverified_ai_suggestion"
+                    )
                     if st_status != "current" or not ed_y or ed_y == "unknown" or unconf:
                         findings.append(
                             QaCandidateFinding(
                                 check_category="reference",
-                                discipline=a_row["domain"],
+                                discipline=discipline_val,
                                 severity="critical" if st_status in {"superseded", "withdrawn"} else "high",
-                                title=f"Specialist assessment cites {st_status} or unconfirmed standard '{st_doc['standard_number']}'",
-                                description=f"Assessment '{a_row['title']}' depends on non-current/unconfirmed standard '{st_doc['standard_number']}'.",
-                                reference=a_ref,
+                                title=f"{module_name.title()} assessment cites {st_status} or unconfirmed standard '{st_doc['standard_number']}'",
+                                description=f"Assessment '{row['title']}' depends on non-current/unconfirmed standard '{st_doc['standard_number']}'.",
+                                reference=ref_label,
                                 corrective_action="Replace with a confirmed current edition in Standards Library.",
-                                deliverable_id=a_deliv_id,
-                                task_id=a_row.get("task_id"),
+                                deliverable_id=deliv_id,
+                                task_id=row.get("task_id"),
                             )
                         )
 
-        # Scan inputs + references + summary for unverified WHO/FGI/NFPA/ASHRAE/SYN codes not grounded in Library or reviewed ResearchSource
         assess_text_blob = json.dumps(
             {
-                "inputs": a_row.get("inputs_json") or {},
+                "inputs": row.get("inputs_json") or {},
                 "references": refs_list,
-                "summary": a_row.get("summary") or "",
+                "summary": row.get("summary") or "",
             },
             ensure_ascii=False,
         )
         _emit_unregistered_std_findings(
             text_blob=assess_text_blob,
-            module_name="specialist",
-            art_id=a_row["id"],
-            art_title=a_row["title"],
+            module_name=module_name,
+            art_id=row["id"],
+            art_title=row["title"],
             location="inputs_and_references",
-            discipline_val=a_row["domain"],
-            task_id_val=a_row.get("task_id"),
+            discipline_val=discipline_val,
+            task_id_val=row.get("task_id"),
         )
-        for agency_hit in set(healthcare_code_re.findall(assess_text_blob)):
+        for agency_hit in set(agency_or_code_re.findall(assess_text_blob)):
             checked += 1
             if not _std_code_is_grounded(agency_hit):
                 findings.append(
                     QaCandidateFinding(
                         check_category="reference",
-                        discipline=a_row["domain"],
+                        discipline=discipline_val,
                         severity="high",
-                        title=f"Specialist assessment cites unverified code/guidance '{agency_hit}'",
+                        title=f"{module_name.title()} assessment cites unverified code/guidance '{agency_hit}'",
                         description=(
-                            f"Assessment '{a_row['title']}' mentions '{agency_hit}' which is neither registered as a verified "
+                            f"Assessment '{row['title']}' mentions '{agency_hit}' which is neither registered as a verified "
                             "standard in Standards Library nor verified in the ResearchSource log."
                         ),
-                        reference=f"{a_ref} / {agency_hit}",
+                        reference=f"{ref_label} / {agency_hit}",
                         corrective_action=f"Remove unverified '{agency_hit}' citation or add it via Standards Library / reviewed ResearchSource.",
-                        deliverable_id=a_deliv_id,
-                        task_id=a_row.get("task_id"),
+                        deliverable_id=deliv_id,
+                        task_id=row.get("task_id"),
                     )
                 )
+
+    for a_row in ctx.specialist_assessments:
+        _audit_verified_code_assessment(
+            a_row,
+            module_name="specialist",
+            discipline_val=a_row["domain"],
+            deliv_id=deliv_by_assess_r.get(a_row["id"]),
+            ref_label=f"Specialist {a_row['domain'].upper()} / {a_row['title']} ({a_row['id'][:8]})",
+        )
+
+    for st_row in ctx.structural_assessments:
+        _audit_verified_code_assessment(
+            st_row,
+            module_name="structural",
+            discipline_val="structural",
+            deliv_id=deliv_by_struct_r.get(st_row["id"]),
+            ref_label=f"Structural {st_row['assessment_type']} / {st_row['title']} ({st_row['id'][:8]})",
+        )
 
     failed_cnt = len(findings)
     return (
@@ -3287,56 +3451,83 @@ def _check_cross_deliverable_consistency(ctx: QaContextData) -> tuple[QaCheckMet
                 )
             )
 
-    # 7. Check Step 18 HVAC / Fire / Healthcare missing 'not provided' inputs, unapproved AI drafts, and software disclaimer
+    # 7. Check Step 18 & Step 19 missing 'not provided' inputs, unapproved AI drafts, and validated commercial software disclaimers
     deliv_by_assess_c = {d["assessment_id"]: d["id"] for d in ctx.deliverables if d.get("assessment_id")}
-    for a_row in ctx.specialist_assessments:
+    deliv_by_struct_c = {d["structural_id"]: d["id"] for d in ctx.deliverables if d.get("structural_id")}
+
+    def _audit_assessment_consistency(
+        row: dict[str, Any],
+        *,
+        label_prefix: str,
+        discipline_val: str,
+        deliv_id: str | None,
+        approve_hint: str,
+    ) -> None:
+        nonlocal checked
         checked += 1
-        a_deliv_id = deliv_by_assess_c.get(a_row["id"])
-        a_ref = f"Specialist {a_row['domain'].upper()} / {a_row['title']} ({a_row['id'][:8]})"
-        if int(a_row.get("blocked_missing_count") or 0) > 0:
+        ref_lbl = f"{label_prefix} / {row['title']} ({row['id'][:8]})"
+        if int(row.get("blocked_missing_count") or 0) > 0:
             findings.append(
                 QaCandidateFinding(
                     check_category="schedule_consistency",
-                    discipline=a_row["domain"],
+                    discipline=discipline_val,
                     severity="high",
-                    title="Specialist assessment blocked by missing ('not provided') inputs",
+                    title=f"{label_prefix} blocked by missing ('not provided') inputs",
                     description=(
-                        f"Assessment '{a_row['title']}' has {a_row['blocked_missing_count']} blocked item(s) due to '{NOT_PROVIDED_LABEL}' inputs."
+                        f"Assessment '{row['title']}' has {row['blocked_missing_count']} blocked item(s) due to '{NOT_PROVIDED_LABEL}' inputs."
                     ),
-                    reference=a_ref,
-                    corrective_action="Supply all required engineering inputs/targets and re-run Step 18 preflight checks.",
-                    deliverable_id=a_deliv_id,
-                    task_id=a_row.get("task_id"),
+                    reference=ref_lbl,
+                    corrective_action="Supply all required engineering inputs/limits and re-run deterministic checks.",
+                    deliverable_id=deliv_id,
+                    task_id=row.get("task_id"),
                 )
             )
-        if a_row.get("ai_draft_status") == "unverified_ai_draft":
+        if row.get("ai_draft_status") == "unverified_ai_draft":
             findings.append(
                 QaCandidateFinding(
                     check_category="schedule_consistency",
-                    discipline=a_row["domain"],
+                    discipline=discipline_val,
                     severity="high",
-                    title="Specialist assessment AI narrative pending owner / engineer approval",
-                    description=f"Assessment '{a_row['title']}' carries UNVERIFIED AI DRAFT summary awaiting owner approval.",
-                    reference=a_ref,
-                    corrective_action="Approve via POST /api/specialist-assessments/{id}/approve.",
-                    deliverable_id=a_deliv_id,
-                    task_id=a_row.get("task_id"),
+                    title=f"{label_prefix} AI narrative pending owner / engineer approval",
+                    description=f"Assessment '{row['title']}' carries UNVERIFIED AI DRAFT summary awaiting owner approval.",
+                    reference=ref_lbl,
+                    corrective_action=approve_hint,
+                    deliverable_id=deliv_id,
+                    task_id=row.get("task_id"),
                 )
             )
-        if not str(a_row.get("software_recommendation") or "").strip():
+        if not str(row.get("software_recommendation") or "").strip():
             findings.append(
                 QaCandidateFinding(
                     check_category="schedule_consistency",
-                    discipline=a_row["domain"],
+                    discipline=discipline_val,
                     severity="high",
-                    title="Specialist assessment missing validated commercial software recommendation",
-                    description=f"Assessment '{a_row['title']}' omits mandatory validated commercial software handoff notice.",
-                    reference=a_ref,
+                    title=f"{label_prefix} missing validated commercial software recommendation",
+                    description=f"Assessment '{row['title']}' omits mandatory validated commercial software handoff notice.",
+                    reference=ref_lbl,
                     corrective_action="Include validated commercial software handoff recommendation.",
-                    deliverable_id=a_deliv_id,
-                    task_id=a_row.get("task_id"),
+                    deliverable_id=deliv_id,
+                    task_id=row.get("task_id"),
                 )
             )
+
+    for a_row in ctx.specialist_assessments:
+        _audit_assessment_consistency(
+            a_row,
+            label_prefix=f"Specialist {a_row['domain'].upper()}",
+            discipline_val=a_row["domain"],
+            deliv_id=deliv_by_assess_c.get(a_row["id"]),
+            approve_hint="Approve via POST /api/specialist-assessments/{id}/approve.",
+        )
+
+    for st_row in ctx.structural_assessments:
+        _audit_assessment_consistency(
+            st_row,
+            label_prefix=f"Structural {st_row['assessment_type']}",
+            discipline_val="structural",
+            deliv_id=deliv_by_struct_c.get(st_row["id"]),
+            approve_hint="Approve via POST /api/structural-assessments/{id}/approve.",
+        )
 
     failed_cnt = len(findings)
     return (
@@ -3368,6 +3559,7 @@ def _check_missing_deliverables_and_integrity(
     delivs_by_cmp: dict[str, set[str]] = {}
     delivs_by_sched: dict[str, set[str]] = {}
     delivs_by_assess: dict[str, set[str]] = {}
+    delivs_by_struct: dict[str, set[str]] = {}
 
     for d in ctx.deliverables:
         checked += 1
@@ -3388,6 +3580,8 @@ def _check_missing_deliverables_and_integrity(
             delivs_by_sched.setdefault(d["schedule_id"], set()).add(str(d.get("format") or "").lower())
         if d.get("assessment_id"):
             delivs_by_assess.setdefault(d["assessment_id"], set()).add(str(d.get("format") or "").lower())
+        if d.get("structural_id"):
+            delivs_by_struct.setdefault(d["structural_id"], set()).add(str(d.get("format") or "").lower())
 
         if not rel:
             findings.append(
@@ -3607,6 +3801,28 @@ def _check_missing_deliverables_and_integrity(
                     )
                 )
 
+    for st_row in ctx.structural_assessments:
+        if int(st_row.get("export_version") or 0) > 0:
+            checked += 1
+            fmts = delivs_by_struct.get(st_row["id"], set())
+            missing = sorted({"docx", "pdf", "xlsx"} - fmts)
+            if missing:
+                findings.append(
+                    QaCandidateFinding(
+                        check_category="missing_deliverable",
+                        discipline="structural",
+                        severity="high",
+                        title="Exported structural assessment deliverables incomplete",
+                        description=(
+                            f"Structural assessment '{st_row['title']}' is missing {', '.join(missing).upper()} "
+                            "export file(s) in 04_Engineering_Calculations."
+                        ),
+                        reference=f"Structural {st_row['title']}",
+                        corrective_action="Re-export DOCX + PDF + XLSX via POST /api/structural-assessments/{id}/export.",
+                        task_id=st_row.get("task_id"),
+                    )
+                )
+
     # 3. Task expected deliverables coverage check (without reading producer reasoning)
     if ctx.task_id and ctx.expected_task_deliverables:
         has_boq = bool(ctx.boq_sheets) or any(d.get("folder_name") == "06_BOQ" for d in ctx.deliverables)
@@ -3744,7 +3960,7 @@ def _check_missing_deliverables_and_integrity(
 
     # Also catch zero-deliverable QA run on a task so an empty task never falsely passes verification
     if ctx.task_id and not (
-        ctx.deliverables or ctx.boq_sheets or ctx.drawings or ctx.review_reports or ctx.calculations or ctx.specifications or ctx.comparisons or ctx.schedules or ctx.specialist_assessments
+        ctx.deliverables or ctx.boq_sheets or ctx.drawings or ctx.review_reports or ctx.calculations or ctx.specifications or ctx.comparisons or ctx.schedules or ctx.specialist_assessments or ctx.structural_assessments
     ):
         checked += 1
         findings.append(

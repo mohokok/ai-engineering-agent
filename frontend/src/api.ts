@@ -1251,3 +1251,100 @@ export function exportSpecialistDeliverables(
     }
   );
 }
+
+export function listStructuralPresets(): Promise<import("./types").StructuralPresetListResponse> {
+  return requestJson<import("./types").StructuralPresetListResponse>(
+    "/api/structural-assessments/presets"
+  );
+}
+
+export function createStructuralAssessment(
+  projectId: string,
+  payload: {
+    task_id?: string | null;
+    assessment_type?: import("./types").StructuralAssessmentType;
+    title: string;
+    language?: import("./types").ReportLanguage;
+    classification?: ProjectClassification;
+    revision?: string;
+    inputs: Record<string, unknown>;
+    references?: import("./types").SpecialistReferenceIn[];
+    use_ai?: boolean;
+    complexity?: TaskComplexity;
+  }
+): Promise<import("./types").StructuralDetailOut> {
+  return requestJson<import("./types").StructuralDetailOut>(
+    `/api/projects/${encodeURIComponent(projectId)}/structural-assessments`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }
+  );
+}
+
+export function listProjectStructuralAssessments(
+  projectId: string
+): Promise<import("./types").StructuralListResponse> {
+  return requestJson<import("./types").StructuralListResponse>(
+    `/api/projects/${encodeURIComponent(projectId)}/structural-assessments`
+  );
+}
+
+export function getStructuralDetail(
+  assessmentId: string
+): Promise<import("./types").StructuralDetailOut> {
+  return requestJson<import("./types").StructuralDetailOut>(
+    `/api/structural-assessments/${encodeURIComponent(assessmentId)}`
+  );
+}
+
+export function updateStructuralAssessment(
+  assessmentId: string,
+  payload: {
+    assessment_type?: import("./types").StructuralAssessmentType;
+    title?: string;
+    language?: import("./types").ReportLanguage;
+    classification?: ProjectClassification;
+    revision?: string;
+    inputs?: Record<string, unknown>;
+    references?: import("./types").SpecialistReferenceIn[];
+  }
+): Promise<import("./types").StructuralDetailOut> {
+  return requestJson<import("./types").StructuralDetailOut>(
+    `/api/structural-assessments/${encodeURIComponent(assessmentId)}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }
+  );
+}
+
+export function approveStructuralAssessment(
+  assessmentId: string,
+  payload: { approved_by?: string; approval_note?: string | null }
+): Promise<import("./types").StructuralDetailOut> {
+  return requestJson<import("./types").StructuralDetailOut>(
+    `/api/structural-assessments/${encodeURIComponent(assessmentId)}/approve`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }
+  );
+}
+
+export function exportStructuralDeliverables(
+  assessmentId: string,
+  payload?: { language?: import("./types").ReportLanguage }
+): Promise<import("./types").StructuralExportOut> {
+  return requestJson<import("./types").StructuralExportOut>(
+    `/api/structural-assessments/${encodeURIComponent(assessmentId)}/export`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload ?? {}),
+    }
+  );
+}

@@ -25,6 +25,7 @@ from app.api.settings import router as settings_router
 from app.api.specialist import router as specialist_router
 from app.api.specifications import router as specifications_router
 from app.api.standards import router as standards_router
+from app.api.structural import router as structural_router
 from app.api.tasks import router as tasks_router
 from app.core.config import Settings, get_settings
 from app.db.migrations import upgrade_database
@@ -138,6 +139,7 @@ def create_app(
     application.include_router(planning_router, prefix="/api")
     application.include_router(standards_router, prefix="/api")
     application.include_router(specialist_router, prefix="/api")
+    application.include_router(structural_router, prefix="/api")
     application.include_router(qa_router, prefix="/api")
     application.include_router(settings_router, prefix="/api")
     return application

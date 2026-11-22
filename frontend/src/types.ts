@@ -776,6 +776,7 @@ export interface DeliverableOut {
   comparison_id?: string | null;
   schedule_id?: string | null;
   assessment_id?: string | null;
+  structural_id?: string | null;
   task_id?: string | null;
   file_id?: string | null;
   title: string;
@@ -1239,6 +1240,7 @@ export interface QaContextIsolationReport {
   inspected_schedule_ids?: string[];
   inspected_standard_ids?: string[];
   inspected_assessment_ids?: string[];
+  inspected_structural_ids?: string[];
   inspected_deliverable_ids: string[];
   inspected_extraction_ids: string[];
   inspected_research_source_count: number;
@@ -2099,4 +2101,75 @@ export interface SpecialistPresetOut {
 
 export interface SpecialistPresetListResponse {
   presets: SpecialistPresetOut[];
+}
+
+export type StructuralAssessmentType =
+  | "takedown_check"
+  | "load_combinations"
+  | "simple_statics_beam"
+  | "full_structural_check";
+
+export interface StructuralSummaryOut {
+  id: string;
+  project_id: string;
+  project_code: string;
+  project_name: string;
+  task_id?: string | null;
+  assessment_type: StructuralAssessmentType | string;
+  title: string;
+  language: ReportLanguage | string;
+  classification: ProjectClassification | string;
+  revision: string;
+  version: number;
+  export_version: number;
+  status: string;
+  checks_passed: boolean;
+  blocked_missing_count: number;
+  failed_checks_count: number;
+  standards_status: string;
+  use_ai: boolean;
+  ai_draft_status: "not_used" | "unverified_ai_draft" | "owner_approved" | string;
+  ai_draft_label: string;
+  owner_approved_by?: string | null;
+  owner_approved_at?: string | null;
+  tokens_used: number;
+  preliminary_label: string;
+  software_recommendation: string;
+  summary?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface StructuralDetailOut extends StructuralSummaryOut {
+  inputs: Record<string, unknown>;
+  results: SpecialistResultsOut;
+  references: SpecialistReferenceOut[];
+  preliminary_assumptions: string[];
+  token_usage: TaskTokenUsageOut;
+  deliverables: DeliverableOut[];
+}
+
+export interface StructuralListResponse {
+  assessments: StructuralSummaryOut[];
+  total: number;
+}
+
+export interface StructuralExportOut {
+  assessment: StructuralDetailOut;
+  docx_deliverable: DeliverableOut;
+  pdf_deliverable: DeliverableOut;
+  xlsx_deliverable: DeliverableOut;
+}
+
+export interface StructuralPresetOut {
+  key: string;
+  assessment_type: StructuralAssessmentType;
+  label_en: string;
+  label_ar: string;
+  preliminary_warning: string;
+  inputs: Record<string, unknown>;
+}
+
+export interface StructuralPresetListResponse {
+  presets: StructuralPresetOut[];
 }
